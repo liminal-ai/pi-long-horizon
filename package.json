@@ -1,0 +1,23 @@
+{
+  "name": "pi-long-horizon",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "agent": "PI_CODING_AGENT_DIR=.pi/agent pi --provider openai-codex --model gpt-5.4-mini --thinking xhigh --models openai-codex/gpt-5.4:high,openai-codex/gpt-5.4-mini:xhigh,openai-codex/gpt-5.5:medium,openai-codex/gpt-5.5:low,openai-codex/gpt-5.5:high",
+    "agent:print": "PI_CODING_AGENT_DIR=.pi/agent pi -p --provider openai-codex --model gpt-5.4-mini --thinking xhigh --models openai-codex/gpt-5.4:high,openai-codex/gpt-5.4-mini:xhigh,openai-codex/gpt-5.5:medium,openai-codex/gpt-5.5:low,openai-codex/gpt-5.5:high",
+    "login": "PI_CODING_AGENT_DIR=.pi/agent tsx src/login-chatgpt.ts",
+    "models": "tsx src/list-models.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@earendil-works/pi-ai": "0.74.0",
+    "@earendil-works/pi-agent-core": "0.74.0",
+    "@earendil-works/pi-coding-agent": "0.74.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "defaultProvider": "openai-codex",
+  "defaultModel": "gpt-5.4-mini",
+  "defaultThinkingLevel": "xhigh",
+  "transport": "auto",
+  "enabledModels": [
+    "openai-codex/gpt-5.4:high",
+    "openai-codex/gpt-5.4-mini:xhigh",
+    "openai-codex/gpt-5.5:medium",
+    "openai-codex/gpt-5.5:low",
+    "openai-codex/gpt-5.5:high"
+  ]
+}
