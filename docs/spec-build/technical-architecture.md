@@ -33,7 +33,7 @@ PI calls its native session JSONL files rollouts. This architecture uses generat
 
 ## System Shape
 
-The system has five top-tier surfaces. Context Steward Core owns canonical thread state. Context Navigator exposes legible traversal. Background Maintenance prepares derived memory. Projection Compiler emits generated session files. PI Runtime Integration captures live events and reloads the generated PI session file.
+The system has five top-tier surfaces. Context Steward Core owns canonical thread state. Context Workbench exposes legible traversal and editing support. Background Maintenance prepares derived memory. Projection Compiler emits generated session files. PI Runtime Integration captures live events and reloads the generated PI session file.
 
 ```mermaid
 flowchart TD
@@ -45,7 +45,7 @@ flowchart TD
 
     subgraph Steward["Context Steward"]
         Core["Context Steward Core"]
-        Navigator["Context Navigator"]
+        Workbench["Context Workbench"]
         Jobs["Background Maintenance"]
         Compiler["Projection Compiler"]
     end
@@ -66,9 +66,9 @@ flowchart TD
     Core --> Turns
     Core --> Chunks
     Core --> JobLog
-    Navigator --> Core
+    Workbench --> Core
     Jobs --> Core
-    Compiler --> Navigator
+    Compiler --> Workbench
     Compiler --> Projections
     Compiler --> PISession
     PISession --> PI
@@ -81,9 +81,9 @@ Downstream work should preserve this ownership split. PI integration is an adapt
 | Domain | Runtime Surface | Owns | Depends On | Downstream Inherits |
 |--------|-----------------|------|------------|---------------------|
 | Context Steward Core | Local TypeScript library + PI extension | Threads, actors, messages, turns, chunks, jobs, projections | Filesystem store, PI events | All epics treat canonical Thread as source of truth. |
-| Context Navigator | Local TypeScript library + CLI/extension commands | Readable views over messages, turns, parts, chunks, jobs, projection state | Context Steward Core | Deterministic code, future agents, and UI use the same navigation concepts. |
+| Context Workbench | Local TypeScript library + CLI/extension commands | Readable views and editing support over messages, turns, parts, chunks, jobs, and projection state | Context Steward Core | Deterministic code, future agents, and UI use the same navigation concepts. |
 | Background Maintenance | Local worker/job runner | Smooth turn jobs, boundary adjudication jobs, chunk summary jobs | Context Steward Core, model providers | Expensive model work does not run in the PI event capture critical path. |
-| Projection Compiler | Local TypeScript library + smart compact command | Generated PI session file compilation, projection revision records, archives | Navigator, chunks, band policy | PI is a target format; other targets can be added later. |
+| Projection Compiler | Local TypeScript library + smart compact command | Generated PI session file compilation, projection revision records, archives | Workbench, chunks, band policy | PI is a target format; other targets can be added later. |
 | PI Runtime Integration | PI extension + PI session reload | Event capture, command entrypoints, generated PI session file path, `switchSession` handoff | PI coding-agent APIs, Projection Compiler | PI remains extended, not forked. PI-native sessions are target/runtime files. |
 
 ---
@@ -124,7 +124,7 @@ erDiagram
 
 ### Store Interface
 
-The thread store should be treated as an interface, not as a file layout. The v1 implementation is file-backed, but the Context Navigator and Projection Compiler should depend on store operations with explicit ordering semantics.
+The thread store should be treated as an interface, not as a file layout. The v1 implementation is file-backed, but the Context Workbench and Projection Compiler should depend on store operations with explicit ordering semantics.
 
 | Store Capability | Required Behavior |
 |------------------|-------------------|
@@ -284,7 +284,7 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     participant Cmd as /smart-compact
-    participant Nav as Context Navigator
+    participant Nav as Context Workbench
     participant Jobs as Background Maintenance
     participant Compiler as Projection Compiler
     participant Store as Thread Store

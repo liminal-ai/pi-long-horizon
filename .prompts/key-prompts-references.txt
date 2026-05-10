@@ -1,0 +1,21 @@
+PRD LEVEL
+pi-long-horizon/docs/spec-build/prd.md
+pi-long-horizon/docs/spec-build/technical-architecture.md
+
+EPIC LEVEL
+docs/spec-build/epics/01-session-context-store/epic.md
+docs/spec-build/epics/01-session-context-store/tech-design.md
+docs/spec-build/epics/01-session-context-store/test-plan.md
+
+
+
+I am in the process of building out the core of a long horizon context management process in this PI configuration of a coding agent. You will be asisting me validate how well the first epic landed and perhaps get started planning and executing the second epic. In order to get up to speed, read the following documents in the order I give them to you 500 lines at a time. after 500 lines reflect on what you've read and your growing understanding of where we are. As you finish a file do a slightly more in depth reflection of the file as a whole. 
+pi-long-horizon/docs/spec-build/prd.md
+pi-long-horizon/docs/spec-build/technical-architecture.md
+docs/spec-build/epics/01-session-context-store/epic.md
+docs/spec-build/epics/01-session-context-store/tech-design.md
+docs/spec-build/epics/01-session-context-store/test-plan.md
+
+Then read the implementation log to see how that went: 
+docs/spec-build/epics/01-session-context-store/team-impl-log.md
+and then review the codebase. and give me your thoughts o nthe overall prd/arch the epic, the epic tech design and how well the epic landed

@@ -30,7 +30,7 @@ The v1 product manages PI's working context so coding sessions remain coherent p
 | Smart compact | The operation that rebuilds the shorter PI session file from raw, smooth, detailed, and brief representations. |
 | Generated PI session file | The shorter session file that PI loads after smart compact. It is output from the stored history, not the stored history itself. |
 | Projection revision | A recorded smart compact output, including the generated session file, source state, policy, size report, archive path, and reload result. |
-| Context Navigator | The inspection surface over the source thread, turns, message parts, chunks, jobs, and generated session files. |
+| Context Workbench | The stewardship surface over the source thread, turns, message parts, chunks, jobs, and generated session files. |
 
 ---
 
@@ -74,7 +74,7 @@ V1 delivers the context-maintenance foundation needed for a long-horizon PI CLI:
 - Complete stored history for messages, turns, chunks, jobs, and generated session file revisions.
 - PI extension capture of finalized runtime activity.
 - Prompt-bounded turns that can contain multiple agent responses and tool cycles.
-- Context Navigator views over messages, turns, typed parts, smooth state, chunks, jobs, and generated session files.
+- Context Workbench views over messages, turns, typed parts, smooth state, chunks, jobs, and generated session files.
 - Smooth turn generation.
 - Chunk formation from smooth turns.
 - Model-assisted chunk boundary decisions.
@@ -125,7 +125,7 @@ V1 delivers the context-maintenance foundation needed for a long-horizon PI CLI:
 
 V1 is a local TypeScript/Node system that runs as a PI extension plus supporting local commands and workers. The first target runtime is PI with ChatGPT OAuth-backed Codex models. The v1 store is file-backed under a Context Steward thread directory, with a store interface so later database storage can preserve the same ordering and active-record semantics.
 
-The system has five top-tier surfaces. Context Steward Core stores the source thread. Context Navigator exposes readable thread, turn, chunk, job, and generated-session state. Background Maintenance runs smoothing, boundary, and summary jobs. Projection Compiler builds the shorter PI session file. PI Runtime Integration captures PI events and reloads PI after smart compact.
+The system has five top-tier surfaces. Context Steward Core stores the source thread. Context Workbench exposes readable and editable thread, turn, chunk, job, and generated-session state. Background Maintenance runs smoothing, boundary, and summary jobs. Projection Compiler builds the shorter PI session file. PI Runtime Integration captures PI events and reloads PI after smart compact.
 
 V1 is single-user and single-machine. It extends PI through extension events, commands, and `switchSession`; it does not fork PI.
 
@@ -138,7 +138,7 @@ See `technical-architecture.md` for the deeper architecture.
 | Milestone | After | What Exists | Feedback Point |
 |-----------|-------|-------------|----------------|
 | M1 | Feature 1 | PI activity is captured into stored messages and prompt-bounded turns. | Dogfood live capture and inspect stored thread state. |
-| M2 | Feature 2 | The Context Navigator traverses thread, turn, message, part, chunk, job, and generated-session state. | Inspect real and fixture threads through Navigator output. |
+| M2 | Feature 2 | The Context Workbench traverses thread, turn, message, part, chunk, job, and generated-session state. | Inspect real and fixture threads through Workbench output. |
 | M3 | Feature 3 | Smooth turns, chunks, band allocation, and manual smart compact produce a generated PI session file. | Run smart compact, reload PI, and compare source thread to generated session. |
 | M4 | Feature 4 | Model-calibrated smoothing, chunk boundaries, and summaries produce detailed and brief memory layers. | Evaluate compression quality and context coherence across threshold fixtures. |
 
@@ -166,7 +166,7 @@ This feature gives the Context Steward a source thread for a live PI session. Af
 
 #### Out of Scope
 
-- Full Context Navigator query surface. Feature 2.
+- Full Context Workbench query surface. Feature 2.
 - Chunking and band allocation. Feature 3.
 - Smart compact projection. Feature 3.
 - Summary generation. Feature 4.
@@ -210,7 +210,7 @@ A thread may have messages whose turn state is missing or incomplete.
 
 ---
 
-## Feature 2: Context Navigator Surface
+## Feature 2: Context Workbench
 
 ### Feature Overview
 
@@ -242,21 +242,21 @@ This feature gives the Context Steward and operator a readable surface over the 
 
 The operator or future context agent opens a thread and reviews its current structure.
 
-**AC-1:** The Navigator shows whether a thread is usable for maintenance by reporting its target runtime, active turn state, derived-state health, and generated-session status.
+**AC-1:** The Workbench shows whether a thread is usable for maintenance by reporting its target runtime, active turn state, derived-state health, and generated-session status.
 
-**AC-2:** The Navigator presents the turn timeline in order, with enough context to understand the initiating prompt, responding actors, tool activity, derived-state readiness, and chunk placement.
+**AC-2:** The Workbench presents the turn timeline in order, with enough context to understand the initiating prompt, responding actors, tool activity, derived-state readiness, and chunk placement.
 
-**AC-3:** The Navigator supports part-level inspection so consumers can trace text, tool activity, reasoning, and runtime notes back to stored messages.
+**AC-3:** The Workbench supports part-level inspection so consumers can trace text, tool activity, reasoning, and runtime notes back to stored messages.
 
 #### Scenario 2: Finding Work That Needs Repair Or Generation
 
 The steward checks whether a thread is ready for smoothing, chunking, summarization, or smart compact.
 
-**AC-4:** The Navigator identifies missing derived work that blocks maintenance, including closed turns without smooth output, chunks awaiting boundary decisions, chunks without required summaries, failed jobs, and stale generated session files.
+**AC-4:** The Workbench identifies missing derived work that blocks maintenance, including closed turns without smooth output, chunks awaiting boundary decisions, chunks without required summaries, failed jobs, and stale generated session files.
 
-**AC-5:** The Navigator reports smart compact blockers in operator terms: missing smooth turns, pending boundary decisions, missing summaries, invalid generated-session candidates, and model/job failures.
+**AC-5:** The Workbench reports smart compact blockers in operator terms: missing smooth turns, pending boundary decisions, missing summaries, invalid generated-session candidates, and model/job failures.
 
-**AC-6:** The Navigator shows whether a record is source history or derived state before repair operations run.
+**AC-6:** The Workbench shows whether a record is source history or derived state before repair operations run.
 
 ---
 
@@ -402,7 +402,7 @@ Closed chunks receive detailed and brief summaries for projection bands.
 - **Operator-visible degraded state:** When smoothing, chunking, summarization, or smart compact cannot proceed, the system reports blocked work instead of silently producing lower-quality output.
 - **Manual smart compact in v1:** The operator triggers smart compact with a command. Automatic triggers are future scope.
 - **Closed chunks stay stable:** Normal aging changes which summary is used. Reworking closed chunks is an explicit future operation.
-- **Fixture-backed validation:** Real and expanded fixture threads are maintained for threshold, projection, and summarization tests. The Navigator reads fixtures as normal threads instead of treating fixture inspection as a separate product flow.
+- **Fixture-backed validation:** Real and expanded fixture threads are maintained for threshold, projection, and summarization tests. The Workbench reads fixtures as normal threads instead of treating fixture inspection as a separate product flow.
 
 ---
 
@@ -425,7 +425,7 @@ Closed chunks receive detailed and brief summaries for projection bands.
 Feature 1: Session Context Store
     |
     v
-Feature 2: Context Navigator Surface
+Feature 2: Context Workbench
     |
     v
 Feature 3: Band, Chunk, and Projection Mechanics
@@ -445,7 +445,7 @@ These notes preserve the initial implementation shape for planning. Full story b
 | Feature | Story Notes |
 |---------|-------------|
 | Feature 1 | Thread store foundation; actor/message capture; prompt-bounded turn creation; generated PI session metadata; attach/import; turn repair; real-session fixtures. |
-| Feature 2 | Navigator foundation; thread and turn status; typed-part traversal; derived-state health; smart compact blockers; fixture navigation; CLI status command. |
+| Feature 2 | Workbench foundation; thread and turn status; typed-part traversal; derived-state health; smart compact blockers; fixture navigation; CLI status command. |
 | Feature 3 | Compact range foundation; smooth turn jobs; chunk membership; boundary pending state; band allocation; prerequisite checks; PI session generation; manual smart compact; projection archive/status. |
 | Feature 4 | Evaluation fixture foundation; smooth prompt; boundary prompt; detailed summary prompt; brief summary prompt; model/cost reporting; end-to-end calibrated smart compact evaluation. |
 
