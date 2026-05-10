@@ -1,5 +1,5 @@
 import { fail, ok, type StewardIssue, type StewardResult } from "../domain/errors.js";
-import { createSourceRange, createTurnId, mergeSourceRanges } from "../domain/ids.js";
+import { compareSourceRanges, createSourceRange, createTurnId, mergeSourceRanges } from "../domain/ids.js";
 import type { MessageRecord, SourceRange, ThreadRecord, TurnRecord } from "../domain/records.js";
 import type { ThreadStore } from "../store/thread-store.js";
 import type { ThreadSnapshot } from "../store/thread-store.js";
@@ -30,6 +30,20 @@ export interface TurnHealthReport {
   preTurnRanges: SourceRange[];
 }
 
+export interface TurnMaintenanceReadinessReport {
+  status: "ready" | "blocked";
+  blockers: StewardIssue[];
+  uncoveredRanges: SourceRange[];
+  preTurnRanges: SourceRange[];
+}
+
+export interface ReconstructTurnsFromMessagesInput {
+  threadId: string;
+  messages: readonly MessageRecord[];
+  sourceRevision: number;
+  repairedAt?: string;
+}
+
 function cloneTurn(turn: TurnRecord): TurnRecord {
   return structuredClone(turn);
 }
@@ -58,6 +72,18 @@ function sortMessages(messages: readonly MessageRecord[]): MessageRecord[] {
 
 function isPromptMessage(message: MessageRecord): boolean {
   return message.messageKind === "prompt";
+}
+
+function isAmbiguousTurnBoundaryMessage(message: MessageRecord): boolean {
+  if (message.messageKind === "unknown") {
+    return true;
+  }
+
+  if (message.messageKind === "prompt") {
+    return message.actorType !== "human";
+  }
+
+  return message.actorType === "human";
 }
 
 function messageTimestamp(message: MessageRecord): string {
@@ -103,6 +129,15 @@ function turnStateMissingIssue(threadId: string, sourceRange: SourceRange): Stew
     message: `Turn state is missing for thread ${threadId}.`,
     threadId,
     sourceRange,
+  };
+}
+
+function turnRepairAmbiguousIssue(threadId: string, message: MessageRecord): StewardIssue {
+  return {
+    code: "TURN_REPAIR_AMBIGUOUS",
+    message: `Stored message ${message.messageId} has an ambiguous turn boundary classification.`,
+    threadId,
+    sourceRange: createSourceRange(message.sourceOrder),
   };
 }
 
@@ -233,6 +268,50 @@ export async function writeCapturedMessageTurns(
   });
 }
 
+function repairedTurnMetadata(
+  turn: TurnRecord,
+  sourceRevision: number,
+  repairedAt: string | undefined,
+): TurnRecord["repairMetadata"] {
+  return {
+    sourceRange: { ...turn.sourceRange },
+    sourceRevisionChecked: sourceRevision,
+    ...(repairedAt ? { repairedAt } : {}),
+  };
+}
+
+export function reconstructTurnsFromMessages(
+  input: ReconstructTurnsFromMessagesInput,
+): StewardResult<TurnRecord[]> {
+  const orderedMessages = sortMessages(input.messages);
+  let turns: TurnRecord[] = [];
+
+  for (const message of orderedMessages) {
+    if (isAmbiguousTurnBoundaryMessage(message)) {
+      return fail(turnRepairAmbiguousIssue(input.threadId, message));
+    }
+
+    const applied = applyCapturedMessageToTurns({
+      existingTurns: turns,
+      capturedMessage: message,
+    });
+    if (!applied.ok) {
+      return fail(...applied.issues);
+    }
+
+    turns = applied.value;
+  }
+
+  return ok(
+    turns.map((turn) => ({
+      ...structuredClone(turn),
+      repairStatus: "ready",
+      sourceRevision: input.sourceRevision,
+      repairMetadata: repairedTurnMetadata(turn, input.sourceRevision, input.repairedAt),
+    })),
+  );
+}
+
 function coveredMessageOrders(snapshot: ThreadSnapshot): Set<number> {
   const messagesById = new Map(snapshot.messages.map((message) => [message.messageId, message]));
   const covered = new Set<number>();
@@ -308,5 +387,126 @@ export function checkTurnHealth(snapshot: ThreadSnapshot): TurnHealthReport {
     issues,
     uncoveredRanges,
     preTurnRanges: buildSourceRanges(preTurnUncoveredMessages),
+  };
+}
+
+function sortIssues(issues: readonly StewardIssue[]): StewardIssue[] {
+  return [...issues]
+    .map((issue) => ({
+      ...issue,
+      sourceRange: issue.sourceRange ? { ...issue.sourceRange } : undefined,
+    }))
+    .sort((left, right) => {
+      const leftRange = left.sourceRange;
+      const rightRange = right.sourceRange;
+
+      if (leftRange && rightRange) {
+        const compared = compareSourceRanges(leftRange, rightRange);
+        if (compared !== 0) {
+          return compared;
+        }
+      } else if (leftRange) {
+        return -1;
+      } else if (rightRange) {
+        return 1;
+      }
+
+      if (left.code !== right.code) {
+        return left.code.localeCompare(right.code);
+      }
+
+      return left.message.localeCompare(right.message);
+    });
+}
+
+function issueKey(issue: StewardIssue): string {
+  return [
+    issue.code,
+    issue.threadId ?? "",
+    issue.sourceRange?.fromSourceOrder ?? "",
+    issue.sourceRange?.toSourceOrder ?? "",
+    issue.message,
+  ].join("|");
+}
+
+function postPromptRange(messages: readonly MessageRecord[]): SourceRange | undefined {
+  const orderedMessages = sortMessages(messages);
+  const firstPrompt = orderedMessages.find((message) => isPromptMessage(message));
+  const lastMessage = orderedMessages.at(-1);
+
+  if (!firstPrompt || !lastMessage || firstPrompt.sourceOrder > lastMessage.sourceOrder) {
+    return undefined;
+  }
+
+  return createSourceRange(firstPrompt.sourceOrder, lastMessage.sourceOrder);
+}
+
+function turnRepairBlocker(turn: TurnRecord, threadId: string): StewardIssue {
+  const failureCode = turn.repairMetadata?.failureCode;
+  const sourceRange = turn.repairMetadata?.sourceRange ?? turn.sourceRange;
+  const defaultMessage =
+    turn.repairStatus === "repair_failed"
+      ? `Turn repair is blocked for source range ${sourceRange.fromSourceOrder}-${sourceRange.toSourceOrder}.`
+      : `Turn state is not ready for source range ${sourceRange.fromSourceOrder}-${sourceRange.toSourceOrder}.`;
+
+  return {
+    code:
+      failureCode ??
+      (turn.repairStatus === "repair_failed" ? "TURN_REPAIR_WRITE_FAILED" : "TURN_STATE_INCOMPLETE"),
+    message: turn.repairMetadata?.failureReason ?? defaultMessage,
+    threadId,
+    sourceRange: { ...sourceRange },
+  };
+}
+
+function threadStatusBlocker(snapshot: ThreadSnapshot, health: TurnHealthReport): StewardIssue | undefined {
+  if (snapshot.thread.status.turnState === "ready" || snapshot.messages.length === 0) {
+    return undefined;
+  }
+
+  const blockerRange =
+    mergeSourceRanges(health.uncoveredRanges) ??
+    mergeSourceRanges(snapshot.turns.map((turn) => turn.repairMetadata?.sourceRange ?? turn.sourceRange)) ??
+    postPromptRange(snapshot.messages);
+
+  if (!blockerRange) {
+    return undefined;
+  }
+
+  return {
+    code: snapshot.thread.status.turnState === "repair_failed" ? "TURN_REPAIR_WRITE_FAILED" : "TURN_STATE_INCOMPLETE",
+    message:
+      snapshot.thread.status.turnState === "repair_failed"
+        ? `Turn repair remains blocked for thread ${snapshot.thread.threadId}.`
+        : `Turn state is not ready for thread ${snapshot.thread.threadId}.`,
+    threadId: snapshot.thread.threadId,
+    sourceRange: blockerRange,
+  };
+}
+
+export function checkMaintenanceReadiness(snapshot: ThreadSnapshot): TurnMaintenanceReadinessReport {
+  const health = checkTurnHealth(snapshot);
+  const blockers = [
+    ...health.issues,
+    ...snapshot.turns
+      .filter((turn) => turn.repairStatus !== "ready")
+      .map((turn) => turnRepairBlocker(turn, snapshot.thread.threadId)),
+  ];
+  const threadLevelBlocker =
+    blockers.length === 0 ? threadStatusBlocker(snapshot, health) : undefined;
+
+  if (threadLevelBlocker) {
+    blockers.push(threadLevelBlocker);
+  }
+
+  const uniqueBlockers = sortIssues(
+    blockers.filter((issue, index, issues) => issues.findIndex((candidate) => issueKey(candidate) === issueKey(issue)) === index),
+  );
+
+  return {
+    status: uniqueBlockers.length === 0 ? "ready" : "blocked",
+    blockers: uniqueBlockers,
+    uncoveredRanges: health.uncoveredRanges.map((range) => ({ ...range })),
+    preTurnRanges: health.preTurnRanges.map((range) => ({ ...range })),
   };
 }

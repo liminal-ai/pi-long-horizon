@@ -3,7 +3,7 @@
 ## Run Overview
 - State: STORY_ACTIVE
 - Spec Pack Root: /Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/01-session-context-store
-- Current Story: 05-attach-and-import-existing-pi-sessions
+- Current Story: 06-turn-health-and-repair
 - Current Phase: accept
 
 ## Run Configuration
@@ -153,10 +153,24 @@
 - Baseline Before: 544
 - Baseline After: 546
 
+### 06-turn-health-and-repair
+- Story Title: Story 6: Turn Health And Repair
+- Implementor Evidence: artifacts/06-turn-health-and-repair/003-implementor.json
+- Verifier Evidence:
+  - artifacts/06-turn-health-and-repair/004-verify.json (final: pass)
+- Story Gate: `npm run verify` — pass (typecheck clean, 91 tests pass — matches test plan target)
+- Epic Gate: `npm run verify-all` — pass
+- Dispositions:
+  - No findings — clean first-pass acceptance
+- Open Risks:
+  - none
+- Baseline Before: 546
+- Baseline After: 547
+
 ## Cumulative Baselines
-- Baseline Before Current Story: 544
-- Expected After Current Story: 546
-- Latest Actual Total: 546
+- Baseline Before Current Story: 546
+- Expected After Current Story: 547
+- Latest Actual Total: 547
 
 ## Epic Closeout
 - Current Epic Review Artifact: none

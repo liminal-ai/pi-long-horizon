@@ -1,0 +1,14 @@
+{"timestamp":"2026-05-10T05:24:44.481Z","command":"story-verify","phase":"verifier-initial","event":"command-started","summary":"story-verify started."}
+{"timestamp":"2026-05-10T05:24:44.490Z","command":"story-verify","phase":"verifier-initial","event":"verifier-started","summary":"Story verifier started for 06-turn-health-and-repair."}
+{"timestamp":"2026-05-10T05:24:44.500Z","command":"story-verify","phase":"verifier-initial","event":"provider-spawned","summary":"Provider spawned with pid 88168.","metadata":{"pid":88168}}
+{"timestamp":"2026-05-10T05:24:44.589Z","command":"story-verify","phase":"verifier-initial","event":"first-output-received","summary":"First provider stderr output received.","metadata":{"stream":"stderr"}}
+{"timestamp":"2026-05-10T05:25:16.367Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-10T05:25:51.825Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-10T05:26:31.684Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-10T05:27:22.105Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-10T05:28:22.508Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-10T05:29:09.753Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-10T05:30:06.996Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-10T05:30:07.111Z","command":"story-verify","phase":"verifier-initial","event":"provider-exit","summary":"Provider exited with code 0.","metadata":{"exitCode":0,"signal":null,"elapsedMs":322611,"configuredTimeoutMs":3600000}}
+{"timestamp":"2026-05-10T05:30:07.115Z","command":"story-verify","phase":"verifier-initial","event":"verifier-completed","summary":"Story verifier completed for 06-turn-health-and-repair.","metadata":{"outcome":"pass"}}
+{"timestamp":"2026-05-10T05:30:07.134Z","command":"story-verify","phase":"finalizing","event":"completed","summary":"story-verify completed for 06-turn-health-and-repair with outcome pass.","metadata":{"outcome":"pass","verifiersCompleted":1}}
