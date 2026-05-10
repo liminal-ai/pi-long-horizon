@@ -15,6 +15,7 @@ import type { ThreadRecord, ThreadTargetMetadata } from "../domain/records.js";
 import type { CanonicalActivity, CaptureActivityResult } from "../services/capture-service.js";
 import { captureFinalizedActivity, type CaptureActivityInput } from "../services/capture-service.js";
 import { openOrCreateManagedThread } from "../services/thread-service.js";
+import { writeCapturedMessageTurns } from "../services/turn-service.js";
 import { FileThreadStore } from "../store/file-thread-store.js";
 import type { ThreadStore } from "../store/thread-store.js";
 import { createPiRuntimeNoteActivity, mapPiMessageEnd } from "./pi-message-mapper.js";
@@ -157,7 +158,7 @@ export async function capturePiEvent(
     store: input.store,
     threadId: input.threadId,
     activity: activity.value,
-    turnWriter: input.turnWriter,
+    turnWriter: input.turnWriter ?? writeCapturedMessageTurns,
   });
 }
 
@@ -177,6 +178,7 @@ async function captureRuntimeStatus(input: {
         rawType: "capture_status",
       },
     }),
+    turnWriter: writeCapturedMessageTurns,
   });
 }
 

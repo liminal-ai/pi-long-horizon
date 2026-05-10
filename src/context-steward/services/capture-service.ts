@@ -9,7 +9,14 @@ import type {
   TurnRecord,
 } from "../domain/records.js";
 import type { ThreadStore } from "../store/thread-store.js";
-import { appendSourceMessage } from "./thread-service.js";
+import {
+  declareThreadActor,
+  withSerializedThreadOperation,
+} from "./thread-service.js";
+import {
+  writeCapturedMessageTurns,
+  type CapturedTurnWriter,
+} from "./turn-service.js";
 
 export interface CanonicalActivity {
   actor: ActorRecord;
@@ -33,20 +40,6 @@ export interface CaptureActivityResult {
   duplicate: boolean;
   turnStateOutcome: "updated" | "repair_needed" | "not_applicable";
 }
-
-export interface CapturedTurnWriteInput {
-  store: ThreadStore;
-  threadId: string;
-  message: MessageRecord;
-}
-
-export interface CapturedTurnWriteResult {
-  turns: TurnRecord[];
-}
-
-export type CapturedTurnWriter = (
-  input: CapturedTurnWriteInput,
-) => Promise<StewardResult<CapturedTurnWriteResult>>;
 
 function cloneTurns(turns: readonly TurnRecord[]): TurnRecord[] {
   return turns.map((turn) => structuredClone(turn));
@@ -157,29 +150,8 @@ async function applyCapturedTurns(
   input: CaptureActivityInput,
   message: MessageRecord,
 ): Promise<StewardResult<CaptureActivityResult>> {
-  if (!input.turnWriter) {
-    const turns = await readCurrentTurns(input.store, input.threadId);
-    if (!turns.ok) {
-      return ok(
-        {
-          message: structuredClone(message),
-          turns: [],
-          duplicate: false,
-          turnStateOutcome: "not_applicable",
-        },
-        turns.issues,
-      );
-    }
-
-    return ok({
-      message: structuredClone(message),
-      turns: turns.value,
-      duplicate: false,
-      turnStateOutcome: "not_applicable",
-    });
-  }
-
-  const writtenTurns = await input.turnWriter({
+  const turnWriter = input.turnWriter ?? writeCapturedMessageTurns;
+  const writtenTurns = await turnWriter({
     store: input.store,
     threadId: input.threadId,
     message,
@@ -212,60 +184,70 @@ async function applyCapturedTurns(
 export async function captureFinalizedActivity(
   input: CaptureActivityInput,
 ): Promise<StewardResult<CaptureActivityResult>> {
-  const targetEventKey = input.activity.targetEventKey ?? input.activity.targetMetadata.targetEventKey;
+  return withSerializedThreadOperation(input.threadId, async () => {
+    const targetEventKey = input.activity.targetEventKey ?? input.activity.targetMetadata.targetEventKey;
 
-  if (targetEventKey) {
-    const snapshot = await input.store.openThread(input.threadId);
-    if (!snapshot.ok) {
-      return snapshot;
+    if (targetEventKey) {
+      const snapshot = await input.store.openThread(input.threadId);
+      if (!snapshot.ok) {
+        return snapshot;
+      }
+
+      const existingMessage = findCapturedMessageByTargetEventKey(snapshot.value, targetEventKey);
+      if (existingMessage) {
+        return ok(
+          {
+            message: structuredClone(existingMessage),
+            turns: cloneTurns(snapshot.value.turns),
+            duplicate: true,
+            turnStateOutcome: "not_applicable",
+          },
+          [duplicateCaptureIssue(targetEventKey, input.threadId)],
+        );
+      }
     }
 
-    const existingMessage = findCapturedMessageByTargetEventKey(snapshot.value, targetEventKey);
-    if (existingMessage) {
-      return ok(
-        {
-          message: structuredClone(existingMessage),
-          turns: cloneTurns(snapshot.value.turns),
-          duplicate: true,
-          turnStateOutcome: "not_applicable",
-        },
-        [duplicateCaptureIssue(targetEventKey, input.threadId)],
-      );
+    const actor = await declareThreadActor(
+      input.store,
+      input.threadId,
+      structuredClone(input.activity.actor),
+    );
+    if (!actor.ok) {
+      return actor;
     }
-  }
 
-  const targetMetadata = {
-    ...structuredClone(input.activity.targetMetadata),
-    targetEventKey,
-  };
+    const targetMetadata = {
+      ...structuredClone(input.activity.targetMetadata),
+      targetEventKey,
+    };
 
-  const appended = await appendSourceMessage({
-    store: input.store,
-    threadId: input.threadId,
-    actor: structuredClone(input.activity.actor),
-    message: {
-      messageId: createMessageId(),
+    const appended = await input.store.appendMessage({
       threadId: input.threadId,
-      actorId: input.activity.actor.actorId,
-      actorType: input.activity.actor.actorType,
-      messageKind: input.activity.messageKind,
-      createdAt: input.activity.createdAt,
-      parts: input.activity.parts.map((part) => structuredClone(part)),
-      targetMetadata,
-    },
-    targetEventKey,
-  });
+      actor: actor.value,
+      message: {
+        messageId: createMessageId(),
+        threadId: input.threadId,
+        actorId: input.activity.actor.actorId,
+        actorType: input.activity.actor.actorType,
+        messageKind: input.activity.messageKind,
+        createdAt: input.activity.createdAt,
+        parts: input.activity.parts.map((part) => structuredClone(part)),
+        targetMetadata,
+      },
+      targetEventKey,
+    });
 
-  if (!appended.ok) {
-    if (targetEventKey && appended.issues.some((issue) => issue.code === "CAPTURE_DUPLICATE_EVENT")) {
-      return resolveDuplicateCapture(input.store, input.threadId, targetEventKey);
+    if (!appended.ok) {
+      if (targetEventKey && appended.issues.some((issue) => issue.code === "CAPTURE_DUPLICATE_EVENT")) {
+        return resolveDuplicateCapture(input.store, input.threadId, targetEventKey);
+      }
+
+      const cause = stringifyIssues(appended.issues);
+      return fail(captureAppendFailedIssue({ threadId: input.threadId, activity: input.activity, cause }), ...appended.issues);
     }
 
-    const cause = stringifyIssues(appended.issues);
-    return fail(captureAppendFailedIssue({ threadId: input.threadId, activity: input.activity, cause }), ...appended.issues);
-  }
-
-  return applyCapturedTurns(input, appended.value);
+    return applyCapturedTurns(input, appended.value);
+  });
 }
 
 export function getThreadTurnState(thread: ThreadRecord): ThreadRecord["status"]["turnState"] {

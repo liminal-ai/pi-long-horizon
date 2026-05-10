@@ -3,7 +3,7 @@
 ## Run Overview
 - State: STORY_ACTIVE
 - Spec Pack Root: /Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/01-session-context-store
-- Current Story: 02-live-pi-activity-capture
+- Current Story: 03-prompt-bounded-turn-lifecycle
 - Current Phase: accept
 
 ## Run Configuration
@@ -107,10 +107,26 @@
 - Baseline Before: 542
 - Baseline After: 543
 
+### 03-prompt-bounded-turn-lifecycle
+- Story Title: Story 3: Prompt-Bounded Turn Lifecycle
+- Implementor Evidence: artifacts/03-prompt-bounded-turn-lifecycle/003-implementor.json
+- Verifier Evidence:
+  - artifacts/03-prompt-bounded-turn-lifecycle/004-verify.json
+  - artifacts/03-prompt-bounded-turn-lifecycle/006-verify.json (final: pass after resume)
+- Story Gate: `npm run verify` — pass (typecheck clean, 60 tests pass)
+- Epic Gate: `npm run verify-all` — pass
+- Dispositions:
+  - All verifier findings: fixed via resume
+- Open Risks:
+  - none
+- Notes: story-orchestrate interrupted (Codex planner invalid output after first verify), resumed successfully
+- Baseline Before: 543
+- Baseline After: 544
+
 ## Cumulative Baselines
-- Baseline Before Current Story: 542
-- Expected After Current Story: 543
-- Latest Actual Total: 543
+- Baseline Before Current Story: 543
+- Expected After Current Story: 544
+- Latest Actual Total: 544
 
 ## Epic Closeout
 - Current Epic Review Artifact: none
@@ -149,3 +165,4 @@
 - Preflight attempt 1 blocked: `claude --version` timed out on first probe. Succeeded on retry.
 - Preflight attempt 2 needs-user-decision: gate policy ambiguous because Story 0 hasn't added verify scripts yet. Resolved by passing gates explicitly via CLI flags.
 - Story 1 story-orchestrate interrupted at planner turn 10: Codex gpt-5.5 returned malformed JSON (`inputs.artifactRefs` undefined). Recovery: resume from last valid artifact (quick-fix 006), fresh child provider session. All prior durable artifacts intact.
+- Story 3 story-orchestrate interrupted: same Codex planner invalid output pattern after first verify (revise). Recovery: resume.

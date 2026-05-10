@@ -13,6 +13,7 @@ import {
 } from "../../src/context-steward/pi/pi-extension.js";
 import { createPiRuntimeNoteActivity, mapPiMessageEnd } from "../../src/context-steward/pi/pi-message-mapper.js";
 import { captureFinalizedActivity } from "../../src/context-steward/services/capture-service.js";
+import { checkTurnHealth } from "../../src/context-steward/services/turn-service.js";
 import {
   makePiAssistantMessage,
   makePiExtensionContext,
@@ -51,6 +52,59 @@ class AppendFailingFileThreadStore extends FileThreadStore {
     }
 
     await super.appendJsonLine(filePath, value);
+  }
+}
+
+class FirstReadTurnsBlockingFileThreadStore extends FileThreadStore {
+  private firstReadTurnsStarted = false;
+  private secondReadTurnsStarted = false;
+  private readonly firstReadTurnsStartedSignal: Promise<void>;
+  private readonly releaseFirstReadTurnsSignal: Promise<void>;
+  private resolveFirstReadTurnsStarted!: () => void;
+  private resolveReleaseFirstReadTurns!: () => void;
+
+  constructor(storeRootDir: string) {
+    super(storeRootDir);
+    this.firstReadTurnsStartedSignal = new Promise<void>((resolve) => {
+      this.resolveFirstReadTurnsStarted = resolve;
+    });
+    this.releaseFirstReadTurnsSignal = new Promise<void>((resolve) => {
+      this.resolveReleaseFirstReadTurns = resolve;
+    });
+  }
+
+  async waitForFirstReadTurns(): Promise<void> {
+    await this.firstReadTurnsStartedSignal;
+  }
+
+  releaseFirstReadTurns(): void {
+    this.resolveReleaseFirstReadTurns();
+  }
+
+  async secondReadTurnsStartedWhileFirstBlocked(timeoutMs: number): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+
+    while (Date.now() < deadline) {
+      if (this.secondReadTurnsStarted) {
+        return true;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+
+    return this.secondReadTurnsStarted;
+  }
+
+  override async readTurns(threadId: string) {
+    if (!this.firstReadTurnsStarted) {
+      this.firstReadTurnsStarted = true;
+      this.resolveFirstReadTurnsStarted();
+      await this.releaseFirstReadTurnsSignal;
+    } else {
+      this.secondReadTurnsStarted = true;
+    }
+
+    return super.readTurns(threadId);
   }
 }
 
@@ -114,6 +168,36 @@ test("captures a finalized PI prompt with actor identity, source order, parts, a
     assert.equal(captured.message.targetMetadata?.sessionId, target.sessionId);
     assert.equal(captured.message.targetMetadata?.sessionFilePath, target.sessionFilePath);
     assert.equal(messages.length, 1);
+  });
+});
+
+test("defaults finalized capture to canonical turn persistence when no turn writer override is supplied", async () => {
+  await withTempThreadStore(async ({ storeRootDir }) => {
+    const { store, thread, ctx } = await createManagedThread(storeRootDir);
+    const prompt = expectOk(
+      mapPiMessageEnd({
+        message: makePiUserMessage({ content: "Open the default capture turn." }),
+        ctx,
+      }),
+    );
+    const response = expectOk(
+      mapPiMessageEnd({
+        message: makePiAssistantMessage({
+          content: [{ type: "text", text: "Stay in the same canonical turn." }],
+        }),
+        ctx,
+      }),
+    );
+
+    const promptCaptured = expectOk(await captureFinalizedActivity({ store, threadId: thread.threadId, activity: prompt }));
+    const responseCaptured = expectOk(await captureFinalizedActivity({ store, threadId: thread.threadId, activity: response }));
+    const turns = expectOk(await store.readTurns(thread.threadId));
+    const snapshot = expectOk(await store.openThread(thread.threadId));
+
+    assert.equal(promptCaptured.turnStateOutcome, "updated");
+    assert.equal(responseCaptured.turnStateOutcome, "updated");
+    assert.equal(snapshot.thread.status.turnState, "ready");
+    assert.deepEqual(turns.map((turn) => turn.messageIds), [[promptCaptured.message.messageId, responseCaptured.message.messageId]]);
   });
 });
 
@@ -470,6 +554,53 @@ test("marks the thread repair_needed when message capture succeeds but downstrea
     assert.equal(captured.turnStateOutcome, "repair_needed");
     assert.equal(snapshot.thread.status.turnState, "repair_needed");
     assert.equal(snapshot.messages.length, 1);
+  });
+});
+
+test("serializes overlapping finalized prompt and response capture through default turn persistence", async () => {
+  await withTempThreadStore(async ({ storeRootDir }) => {
+    const target = makeThreadTarget();
+    await ensureTargetSessionFile(target);
+
+    const store = new FirstReadTurnsBlockingFileThreadStore(storeRootDir);
+    const thread = expectOk(await openOrCreateManagedThread({ target }, store));
+    const ctx = makePiExtensionContext(target);
+    const prompt = expectOk(
+      mapPiMessageEnd({
+        message: makePiUserMessage({ content: "Open the serialized capture turn." }),
+        ctx,
+      }),
+    );
+    const response = expectOk(
+      mapPiMessageEnd({
+        message: makePiAssistantMessage({
+          content: [{ type: "text", text: "This response overlaps the prompt capture." }],
+        }),
+        ctx,
+      }),
+    );
+
+    const promptCapturePromise = captureFinalizedActivity({ store, threadId: thread.threadId, activity: prompt });
+    await store.waitForFirstReadTurns();
+
+    const responseCapturePromise = captureFinalizedActivity({ store, threadId: thread.threadId, activity: response });
+    assert.equal(await store.secondReadTurnsStartedWhileFirstBlocked(50), false);
+
+    store.releaseFirstReadTurns();
+
+    const promptCaptured = expectOk(await promptCapturePromise);
+    const responseCaptured = expectOk(await responseCapturePromise);
+    const snapshot = expectOk(await store.openThread(thread.threadId));
+    const health = checkTurnHealth(snapshot);
+
+    assert.equal(promptCaptured.turnStateOutcome, "updated");
+    assert.equal(responseCaptured.turnStateOutcome, "updated");
+    assert.equal(snapshot.thread.status.turnState, "ready");
+    assert.deepEqual(snapshot.messages.map((message) => message.sourceOrder), [1, 2]);
+    assert.deepEqual(snapshot.turns.map((turn) => turn.messageIds), [
+      [promptCaptured.message.messageId, responseCaptured.message.messageId],
+    ]);
+    assert.deepEqual(health.issues, []);
   });
 });
 

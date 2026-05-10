@@ -32,23 +32,23 @@ export interface GeneratedSessionMetadataInput {
   now?: () => Date;
 }
 
-const appendSourceMessageQueues = new Map<string, Promise<void>>();
+const serializedThreadOperationQueues = new Map<string, Promise<void>>();
 
 function nowIso(now: (() => Date) | undefined): string {
   return (now ?? (() => new Date()))().toISOString();
 }
 
-async function withSerializedAppendSourceMessage<T>(
+export async function withSerializedThreadOperation<T>(
   threadId: string,
   run: () => Promise<StewardResult<T>>,
 ): Promise<StewardResult<T>> {
-  const previous = appendSourceMessageQueues.get(threadId) ?? Promise.resolve();
+  const previous = serializedThreadOperationQueues.get(threadId) ?? Promise.resolve();
   let releaseQueue!: () => void;
   const current = new Promise<void>((resolve) => {
     releaseQueue = resolve;
   });
   const chain = previous.catch(() => undefined).then(() => current);
-  appendSourceMessageQueues.set(threadId, chain);
+  serializedThreadOperationQueues.set(threadId, chain);
 
   await previous.catch(() => undefined);
 
@@ -56,8 +56,8 @@ async function withSerializedAppendSourceMessage<T>(
     return await run();
   } finally {
     releaseQueue();
-    if (appendSourceMessageQueues.get(threadId) === chain) {
-      appendSourceMessageQueues.delete(threadId);
+    if (serializedThreadOperationQueues.get(threadId) === chain) {
+      serializedThreadOperationQueues.delete(threadId);
     }
   }
 }
@@ -170,7 +170,7 @@ export async function declareThreadActor(
 }
 
 export async function appendSourceMessage(input: AppendSourceMessageInput): Promise<StewardResult<MessageRecord>> {
-  return withSerializedAppendSourceMessage(input.threadId, async () => {
+  return withSerializedThreadOperation(input.threadId, async () => {
     const actor = await declareThreadActor(input.store, input.threadId, input.actor);
     if (!actor.ok) {
       return actor;
