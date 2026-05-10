@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "command": "story-verify",
+  "status": "completed",
+  "phase": "finalizing",
+  "startedAt": "2026-05-10T03:59:00.814Z",
+  "updatedAt": "2026-05-10T04:00:05.117Z",
+  "lastOutputAt": "2026-05-10T04:00:04.988Z",
+  "providerLiveness": "completed",
+  "provider": "codex",
+  "pid": 9437,
+  "cwd": "/Users/leemoore/code/pi-long-horizon",
+  "timeoutMs": 3600000,
+  "configuredStartupTimeoutMs": 300000,
+  "configuredSilenceTimeoutMs": 360000,
+  "artifactPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/01-session-context-store/artifacts/02-live-pi-activity-capture/006-verify.json",
+  "streamPaths": {
+    "stdoutPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/01-session-context-store/artifacts/02-live-pi-activity-capture/streams/006-verify.stdout.log",
+    "stderrPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/01-session-context-store/artifacts/02-live-pi-activity-capture/streams/006-verify.stderr.log"
+  },
+  "progressPaths": {
+    "statusPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/01-session-context-store/artifacts/02-live-pi-activity-capture/progress/006-verify.status.json",
+    "progressPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/01-session-context-store/artifacts/02-live-pi-activity-capture/progress/006-verify.progress.jsonl"
+  },
+  "lastEvent": "completed",
+  "lastEventSummary": "story-verify completed for 02-live-pi-activity-capture with outcome pass.",
+  "verifiersCompleted": 1,
+  "verifiersPlanned": 1
+}

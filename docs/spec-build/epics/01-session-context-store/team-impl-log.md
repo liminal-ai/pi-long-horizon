@@ -3,7 +3,7 @@
 ## Run Overview
 - State: STORY_ACTIVE
 - Spec Pack Root: /Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/01-session-context-store
-- Current Story: 01-thread-actor-message-part-store
+- Current Story: 02-live-pi-activity-capture
 - Current Phase: accept
 
 ## Run Configuration
@@ -91,10 +91,26 @@
 - Baseline Before: 541
 - Baseline After: 542
 
+### 02-live-pi-activity-capture
+- Story Title: Story 2: Live PI Activity Capture
+- Implementor Evidence: artifacts/02-live-pi-activity-capture/003-implementor.json
+- Verifier Evidence:
+  - artifacts/02-live-pi-activity-capture/004-verify.json
+  - artifacts/02-live-pi-activity-capture/006-verify.json (final: pass)
+- Story Continue: artifacts/02-live-pi-activity-capture/005-continue.json
+- Story Gate: `npm run verify` — pass (typecheck clean, 47 tests pass)
+- Epic Gate: `npm run verify-all` — pass
+- Dispositions:
+  - All verifier findings: fixed via story-continue
+- Open Risks:
+  - none
+- Baseline Before: 542
+- Baseline After: 543
+
 ## Cumulative Baselines
-- Baseline Before Current Story: 541
-- Expected After Current Story: 542
-- Latest Actual Total: 542
+- Baseline Before Current Story: 542
+- Expected After Current Story: 543
+- Latest Actual Total: 543
 
 ## Epic Closeout
 - Current Epic Review Artifact: none

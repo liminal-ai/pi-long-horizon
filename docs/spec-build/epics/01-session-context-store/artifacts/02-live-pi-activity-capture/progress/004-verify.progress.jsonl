@@ -1,0 +1,12 @@
+{"timestamp":"2026-05-10T03:48:38.762Z","command":"story-verify","phase":"verifier-initial","event":"command-started","summary":"story-verify started."}
+{"timestamp":"2026-05-10T03:48:38.772Z","command":"story-verify","phase":"verifier-initial","event":"verifier-started","summary":"Story verifier started for 02-live-pi-activity-capture."}
+{"timestamp":"2026-05-10T03:48:38.782Z","command":"story-verify","phase":"verifier-initial","event":"provider-spawned","summary":"Provider spawned with pid 98349.","metadata":{"pid":98349}}
+{"timestamp":"2026-05-10T03:48:38.872Z","command":"story-verify","phase":"verifier-initial","event":"first-output-received","summary":"First provider stderr output received.","metadata":{"stream":"stderr"}}
+{"timestamp":"2026-05-10T03:49:10.840Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-10T03:49:47.310Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-10T03:50:25.521Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-10T03:51:09.393Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-10T03:54:19.927Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-10T03:54:20.120Z","command":"story-verify","phase":"verifier-initial","event":"provider-exit","summary":"Provider exited with code 0.","metadata":{"exitCode":0,"signal":null,"elapsedMs":341338,"configuredTimeoutMs":3600000}}
+{"timestamp":"2026-05-10T03:54:20.127Z","command":"story-verify","phase":"verifier-initial","event":"verifier-completed","summary":"Story verifier completed for 02-live-pi-activity-capture.","metadata":{"outcome":"revise"}}
+{"timestamp":"2026-05-10T03:54:20.146Z","command":"story-verify","phase":"finalizing","event":"completed","summary":"story-verify completed for 02-live-pi-activity-capture with outcome revise.","metadata":{"outcome":"revise","verifiersCompleted":1}}

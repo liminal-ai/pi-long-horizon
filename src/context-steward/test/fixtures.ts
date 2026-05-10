@@ -9,7 +9,7 @@ import type {
   Usage,
   UserMessage,
 } from "@earendil-works/pi-ai";
-import type { SessionMessageEntry } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext, SessionMessageEntry } from "@earendil-works/pi-coding-agent";
 
 import { createSourceRange } from "../domain/ids.js";
 import {
@@ -63,6 +63,8 @@ export interface CanonicalActivityFixture {
   targetMetadata: PiTargetMetadata;
   targetEventKey?: string;
 }
+
+export type PiExtensionContextFixture = Pick<ExtensionContext, "cwd" | "sessionManager">;
 
 export type PiTextContentBlockFixture = TextContent;
 export type PiThinkingContentBlockFixture = ThinkingContent;
@@ -367,6 +369,18 @@ export function makeRuntimeNoteActivity(
     targetEventKey: "pi:session-001:runtime-note-001",
     ...overrides,
     parts,
+  };
+}
+
+export function makePiExtensionContext(
+  target: ThreadTargetMetadata = makeThreadTarget(),
+): PiExtensionContextFixture {
+  return {
+    cwd: target.cwd ?? "/tmp/project",
+    sessionManager: {
+      getSessionId: () => target.sessionId ?? "session-001",
+      getSessionFile: () => target.sessionFilePath,
+    } as PiExtensionContextFixture["sessionManager"],
   };
 }
 
