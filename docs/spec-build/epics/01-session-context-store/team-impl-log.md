@@ -3,7 +3,7 @@
 ## Run Overview
 - State: STORY_ACTIVE
 - Spec Pack Root: /Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/01-session-context-store
-- Current Story: 03-prompt-bounded-turn-lifecycle
+- Current Story: 04-generated-pi-session-target-metadata
 - Current Phase: accept
 
 ## Run Configuration
@@ -122,6 +122,20 @@
 - Notes: story-orchestrate interrupted (Codex planner invalid output after first verify), resumed successfully
 - Baseline Before: 543
 - Baseline After: 544
+
+### 04-generated-pi-session-target-metadata
+- Story Title: Story 4: Generated PI Session Target Metadata
+- Implementor Evidence: artifacts/04-generated-pi-session-target-metadata/003-implementor.json
+- Verifier Evidence:
+  - artifacts/04-generated-pi-session-target-metadata/004-verify.json (final: pass)
+- Story Gate: `npm run verify` — pass (typecheck clean, 62 tests pass)
+- Epic Gate: `npm run verify-all` — pass
+- Dispositions:
+  - No findings — clean first-pass acceptance
+- Open Risks:
+  - none
+- Baseline Before: 544
+- Baseline After: 544 (Story 4 TCs tested in existing thread-store.test.ts, no new test file)
 
 ## Cumulative Baselines
 - Baseline Before Current Story: 543

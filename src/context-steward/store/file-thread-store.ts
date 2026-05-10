@@ -529,7 +529,7 @@ export class FileThreadStore implements ThreadStore {
       const nextThread = structuredClone(thread.value);
       nextThread.projectionSummary = {
         count: nextProjections.length,
-        currentGeneratedFilePath: nextThread.target.currentGeneratedFilePath ?? latest?.generatedFilePath,
+        currentGeneratedFilePath: latest?.generatedFilePath,
         lastRevisionStatus: latest?.status,
       };
       nextThread.updatedAt = new Date().toISOString();
@@ -744,10 +744,7 @@ export class FileThreadStore implements ThreadStore {
         .at(-1);
       nextThread.projectionSummary = {
         count: projections.length,
-        currentGeneratedFilePath:
-          nextThread.projectionSummary.currentGeneratedFilePath ??
-          nextThread.target.currentGeneratedFilePath ??
-          latestProjection?.generatedFilePath,
+        currentGeneratedFilePath: latestProjection?.generatedFilePath,
         lastRevisionStatus: latestProjection?.status,
       };
     }

@@ -884,6 +884,73 @@ test("reads projection metadata without treating the generated file as source hi
   });
 });
 
+test("keeps the active generated path separate from the latest projection summary", async () => {
+  await withTempThreadStore(async ({ storeRootDir, resolveProjectPath }) => {
+    const store = new FileThreadStore(storeRootDir);
+    const thread = expectOk(
+      await openOrCreateManagedThread({ target: await makeManagedTarget(resolveProjectPath) }, store),
+    );
+    const latestProjectionPath = resolveProjectPath("generated", "projection-latest.jsonl");
+    const activeGeneratedPath = resolveProjectPath("generated", "projection-active.jsonl");
+
+    expectOk(
+      await store.writeProjectionRevision(
+        makeProjectionRevisionRecord({
+          revisionId: "projection-summary-001",
+          threadId: thread.threadId,
+          generatedFilePath: latestProjectionPath,
+          status: "available",
+        }),
+      ),
+    );
+
+    expectOk(
+      await updateGeneratedSessionMetadata({
+        store,
+        threadId: thread.threadId,
+        generatedFilePath: activeGeneratedPath,
+      }),
+    );
+
+    const snapshot = expectOk(await store.openThread(thread.threadId));
+
+    assert.equal(snapshot.thread.target.currentGeneratedFilePath, activeGeneratedPath);
+    assert.equal(snapshot.thread.projectionSummary.currentGeneratedFilePath, latestProjectionPath);
+    assert.equal(snapshot.thread.projectionSummary.count, 1);
+    assert.equal(snapshot.thread.projectionSummary.lastRevisionStatus, "available");
+  });
+});
+
+test("returns refreshed projection summary details after recording a revision through metadata updates", async () => {
+  await withTempThreadStore(async ({ storeRootDir, resolveProjectPath }) => {
+    const store = new FileThreadStore(storeRootDir);
+    const thread = expectOk(
+      await openOrCreateManagedThread({ target: await makeManagedTarget(resolveProjectPath) }, store),
+    );
+    const latestProjectionPath = resolveProjectPath("generated", "projection-revision.jsonl");
+    const activeGeneratedPath = resolveProjectPath("generated", "projection-active.jsonl");
+
+    const updatedThread = expectOk(
+      await updateGeneratedSessionMetadata({
+        store,
+        threadId: thread.threadId,
+        generatedFilePath: activeGeneratedPath,
+        revision: makeProjectionRevisionRecord({
+          revisionId: "projection-summary-002",
+          threadId: thread.threadId,
+          generatedFilePath: latestProjectionPath,
+          status: "stale",
+        }),
+      }),
+    );
+
+    assert.equal(updatedThread.target.currentGeneratedFilePath, activeGeneratedPath);
+    assert.equal(updatedThread.projectionSummary.currentGeneratedFilePath, latestProjectionPath);
+    assert.equal(updatedThread.projectionSummary.count, 1);
+    assert.equal(updatedThread.projectionSummary.lastRevisionStatus, "stale");
+  });
+});
+
 test("rejects managed reopen attempts that would rewrite a stored session id through an alias match", async () => {
   await withTempThreadStore(async ({ storeRootDir, resolveProjectPath, resolveStorePath }) => {
     const store = new FileThreadStore(storeRootDir);

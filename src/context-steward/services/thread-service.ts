@@ -188,40 +188,61 @@ export async function appendSourceMessage(input: AppendSourceMessageInput): Prom
 export async function updateGeneratedSessionMetadata(
   input: GeneratedSessionMetadataInput,
 ): Promise<StewardResult<ThreadRecord>> {
-  const mutationCheck = await input.store.assertCanMutate(input.threadId);
-  if (!mutationCheck.ok) {
-    return mutationCheck;
-  }
-
-  if (input.revision) {
-    if (input.revision.threadId !== input.threadId) {
-      return fail({
-        code: "STORE_UNAVAILABLE",
-        message: `Projection revision ${input.revision.revisionId} does not belong to thread ${input.threadId}.`,
-        threadId: input.threadId,
-      });
+  return withSerializedThreadOperation(input.threadId, async () => {
+    const mutationCheck = await input.store.assertCanMutate(input.threadId);
+    if (!mutationCheck.ok) {
+      return mutationCheck;
     }
 
-    const writtenRevision = await input.store.writeProjectionRevision(input.revision);
-    if (!writtenRevision.ok) {
-      return writtenRevision;
-    }
-  }
+    if (input.revision) {
+      if (input.revision.threadId !== input.threadId) {
+        return fail({
+          code: "STORE_UNAVAILABLE",
+          message: `Projection revision ${input.revision.revisionId} does not belong to thread ${input.threadId}.`,
+          threadId: input.threadId,
+        });
+      }
 
-  return input.store.updateThreadMetadata({
-    threadId: input.threadId,
-    expectedSourceRevision: mutationCheck.value.sourceRevision,
-    patch: {
-      target: {
-        ...mutationCheck.value.target,
-        currentGeneratedFilePath: input.generatedFilePath,
+      const writtenRevision = await input.store.writeProjectionRevision(input.revision);
+      if (!writtenRevision.ok) {
+        return writtenRevision;
+      }
+    }
+
+    const refreshedThread = input.revision
+      ? await input.store.openThread(input.threadId)
+      : ok({
+          thread: mutationCheck.value,
+          actors: [],
+          messages: [],
+          turns: [],
+          imports: [],
+          projections: [],
+        });
+    if (!refreshedThread.ok) {
+      return refreshedThread;
+    }
+
+    const nextProjectionSummary =
+      refreshedThread.value.thread.projectionSummary.count > 0
+        ? refreshedThread.value.thread.projectionSummary
+        : {
+            ...refreshedThread.value.thread.projectionSummary,
+            currentGeneratedFilePath: input.generatedFilePath,
+          };
+
+    return input.store.updateThreadMetadata({
+      threadId: input.threadId,
+      expectedSourceRevision: mutationCheck.value.sourceRevision,
+      patch: {
+        target: {
+          ...refreshedThread.value.thread.target,
+          currentGeneratedFilePath: input.generatedFilePath,
+        },
+        projectionSummary: nextProjectionSummary,
+        updatedAt: nowIso(input.now),
       },
-      projectionSummary: {
-        ...mutationCheck.value.projectionSummary,
-        currentGeneratedFilePath: input.generatedFilePath,
-      },
-      updatedAt: nowIso(input.now),
-    },
+    });
   });
 }
 
