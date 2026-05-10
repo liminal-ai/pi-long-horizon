@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "command": "story-implement",
+  "status": "completed",
+  "phase": "finalizing",
+  "startedAt": "2026-05-10T01:51:03.010Z",
+  "updatedAt": "2026-05-10T02:00:44.263Z",
+  "lastOutputAt": "2026-05-10T02:00:43.643Z",
+  "providerLiveness": "completed",
+  "provider": "codex",
+  "pid": 97129,
+  "cwd": "/Users/leemoore/code/pi-long-horizon",
+  "timeoutMs": 7200000,
+  "configuredStartupTimeoutMs": 300000,
+  "configuredSilenceTimeoutMs": 600000,
+  "artifactPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/01-session-context-store/artifacts/00-foundation/003-implementor.json",
+  "streamPaths": {
+    "stdoutPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/01-session-context-store/artifacts/00-foundation/streams/003-implementor.stdout.log",
+    "stderrPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/01-session-context-store/artifacts/00-foundation/streams/003-implementor.stderr.log"
+  },
+  "progressPaths": {
+    "statusPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/01-session-context-store/artifacts/00-foundation/progress/003-implementor.status.json",
+    "progressPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/01-session-context-store/artifacts/00-foundation/progress/003-implementor.progress.jsonl"
+  },
+  "lastEvent": "completed",
+  "lastEventSummary": "story-implement completed for 00-foundation with outcome ready-for-verification.",
+  "selfReviewPassesCompleted": 0,
+  "selfReviewPassesPlanned": 0
+}

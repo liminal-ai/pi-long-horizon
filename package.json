@@ -8,7 +8,14 @@
     "agent:print": "PI_CODING_AGENT_DIR=.pi/agent pi -p --provider openai-codex --model gpt-5.4-mini --thinking xhigh --models openai-codex/gpt-5.4:high,openai-codex/gpt-5.4-mini:xhigh,openai-codex/gpt-5.5:medium,openai-codex/gpt-5.5:low,openai-codex/gpt-5.5:high",
     "login": "PI_CODING_AGENT_DIR=.pi/agent tsx src/login-chatgpt.ts",
     "models": "tsx src/list-models.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node scripts/run-node-tests.mjs unit",
+    "red-verify": "npm run typecheck",
+    "verify": "npm run typecheck && npm run test",
+    "green-verify": "npm run verify && npm run guard:no-test-changes",
+    "verify-all": "npm run verify && npm run test:integration",
+    "test:integration": "node scripts/run-node-tests.mjs integration",
+    "guard:no-test-changes": "git diff --name-only --exit-code -- 'tests/**/*.test.ts' 'tests/**/*.integration.test.ts'"
   },
   "dependencies": {
     "@earendil-works/pi-ai": "0.74.0",

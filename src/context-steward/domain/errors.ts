@@ -1,0 +1,68 @@
+import type { SourceRange, TargetRuntime } from "./records.js";
+
+export const STEWARD_ERROR_CODES = [
+  "UNSUPPORTED_SCHEMA_VERSION",
+  "TARGET_ASSOCIATION_CONFLICT",
+  "STORE_UNAVAILABLE",
+  "CAPTURE_APPEND_FAILED",
+  "CAPTURE_DUPLICATE_EVENT",
+  "UNMAPPED_PART_TYPE",
+  "IMPORT_SOURCE_UNREADABLE",
+  "IMPORT_PATH_AMBIGUOUS",
+  "IMPORT_PARTIAL",
+  "TURN_STATE_MISSING",
+  "TURN_STATE_INCOMPLETE",
+  "TURN_REPAIR_AMBIGUOUS",
+  "TURN_REPAIR_WRITE_FAILED",
+  "FIXTURE_CREATE_FAILED",
+  "STALE_SOURCE_REVISION",
+] as const;
+
+export type StewardErrorCode = (typeof STEWARD_ERROR_CODES)[number];
+
+export interface StewardIssue {
+  code: StewardErrorCode;
+  message: string;
+  threadId?: string;
+  targetRuntime?: TargetRuntime;
+  targetSessionId?: string;
+  sourceRange?: SourceRange;
+  cause?: string;
+}
+
+export type StewardResult<T> =
+  | { ok: true; value: T; issues?: StewardIssue[] }
+  | { ok: false; issues: StewardIssue[] };
+
+export interface CreateStewardIssueInput extends StewardIssue {}
+
+export function createStewardIssue(input: CreateStewardIssueInput): StewardIssue {
+  return {
+    ...input,
+    sourceRange: input.sourceRange ? { ...input.sourceRange } : undefined,
+  };
+}
+
+export function ok<T>(value: T, issues?: readonly StewardIssue[]): StewardResult<T> {
+  if (!issues || issues.length === 0) {
+    return { ok: true, value };
+  }
+
+  return {
+    ok: true,
+    value,
+    issues: issues.map((issue) => createStewardIssue(issue)),
+  };
+}
+
+export function fail<T = never>(...issues: readonly StewardIssue[]): StewardResult<T> {
+  return {
+    ok: false,
+    issues: issues.map((issue) => createStewardIssue(issue)),
+  };
+}
+
+export function mergeIssues(...issueSets: ReadonlyArray<readonly StewardIssue[] | undefined>): StewardIssue[] {
+  return issueSets.flatMap((issueSet) => (issueSet ?? []).map((issue) => createStewardIssue(issue)));
+}
+
