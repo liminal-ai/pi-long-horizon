@@ -32,8 +32,8 @@
       "label": "epic-reviewer-1"
     },
     {
-      "secondary_harness": "none",
-      "model": "claude-sonnet",
+      "secondary_harness": "codex",
+      "model": "gpt-5.4",
       "reasoning_effort": "high",
       "label": "epic-reviewer-2"
     }

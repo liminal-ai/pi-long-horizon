@@ -17,6 +17,7 @@ import { checkTurnHealth } from "../../src/context-steward/services/turn-service
 import {
   makePiAssistantMessage,
   makePiExtensionContext,
+  makePiSessionEntries,
   makePiToolResultMessage,
   makePiUserMessage,
   makeRuntimeNoteActivity,
@@ -139,6 +140,29 @@ async function ensureTargetSessionFile(target: ReturnType<typeof makeThreadTarge
     await mkdir(dirname(target.sessionFilePath), { recursive: true });
     await writeFile(target.sessionFilePath, '{"type":"session"}\n');
   }
+}
+
+function makeImportCapableContext(
+  target: ReturnType<typeof makeThreadTarget>,
+  options: {
+    entries: ReturnType<typeof makePiSessionEntries>;
+    activeBranch?: ReturnType<typeof makePiSessionEntries>;
+    activeLeafId?: string;
+  },
+) {
+  const base = makePiExtensionContext(target);
+  const activeLeafId = options.activeLeafId ?? options.entries.at(-1)?.id ?? null;
+
+  return {
+    ...base,
+    sessionManager: {
+      ...base.sessionManager,
+      getBranch: () => options.activeBranch ?? options.entries,
+      getCwd: () => target.cwd,
+      getEntries: () => options.entries,
+      getLeafId: () => activeLeafId,
+    },
+  };
 }
 
 test("captures a finalized PI prompt with actor identity, source order, parts, and target metadata", async () => {
@@ -694,7 +718,6 @@ test("registers production PI handlers that capture live message_end prompt, res
     registerContextStewardExtension(pi as unknown as ExtensionAPI, {
       createStore: () => store,
     });
-    await pi.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
     await pi.emit("message_end", { type: "message_end", message: makePiUserMessage({ content: "Live prompt" }) }, ctx);
     await pi.emit(
       "message_end",
@@ -726,15 +749,84 @@ test("registers production PI handlers that capture live message_end prompt, res
 
     assert.deepEqual(
       messages.map((message) => message.messageKind),
-      ["runtime_event", "prompt", "response", "tool_result"],
+      ["prompt", "response", "tool_result"],
     );
     assert.deepEqual(
       messages.map((message) => message.sourceOrder),
-      [1, 2, 3, 4],
+      [1, 2, 3],
     );
-    assert.equal(messages[1]?.targetMetadata?.sessionId, "session-production-001");
-    assert.equal(messages[2]?.targetMetadata?.responseId, "response-production-001");
-    assert.equal(messages[3]?.targetMetadata?.toolCallId, "call-production-001");
+    assert.equal(messages[0]?.targetMetadata?.sessionId, "session-production-001");
+    assert.equal(messages[1]?.targetMetadata?.responseId, "response-production-001");
+    assert.equal(messages[2]?.targetMetadata?.toolCallId, "call-production-001");
+  });
+});
+
+test("production PI handlers create a managed thread on session_start for a fresh session", async () => {
+  await withTempThreadStore(async ({ storeRootDir, projectDir, resolveProjectPath }) => {
+    const target = makeThreadTarget({
+      sessionId: "session-production-fresh",
+      sessionFilePath: resolveProjectPath("pi", "session-production-fresh.jsonl"),
+      cwd: projectDir,
+    });
+    await ensureTargetSessionFile(target);
+    const store = new FileThreadStore(storeRootDir);
+    const ctx = makeImportCapableContext(target, {
+      entries: [],
+    });
+    const pi = new FakeExtensionApi();
+
+    registerContextStewardExtension(pi as unknown as ExtensionAPI, {
+      createStore: () => store,
+    });
+    await pi.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
+
+    const thread = expectOk(await store.findManagedThread(target));
+    assert.ok(thread);
+    const messages = expectOk(await store.readMessages(thread.threadId));
+
+    assert.deepEqual(messages.map((message) => message.messageKind), ["runtime_event"]);
+    assert.equal((messages[0]?.parts[0]?.content as { event?: string }).event, "session_start");
+  });
+});
+
+test("production PI handlers do not auto-manage pre-populated sessions before attach/import", async () => {
+  await withTempThreadStore(async ({ storeRootDir, projectDir, resolveProjectPath }) => {
+    const target = makeThreadTarget({
+      sessionId: "session-production-prepopulated",
+      sessionFilePath: resolveProjectPath("pi", "session-production-prepopulated.jsonl"),
+      cwd: projectDir,
+    });
+    await ensureTargetSessionFile(target);
+    const entries = makePiSessionEntries({
+      messages: [
+        makePiUserMessage({ content: "Imported prompt" }),
+        makePiAssistantMessage({ content: [{ type: "text", text: "Imported response" }] }),
+      ],
+    });
+    const store = new FileThreadStore(storeRootDir);
+    const ctx = makeImportCapableContext(target, {
+      entries,
+    });
+    const pi = new FakeExtensionApi();
+
+    registerContextStewardExtension(pi as unknown as ExtensionAPI, {
+      createStore: () => store,
+    });
+    await pi.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
+    await pi.emit(
+      "message_end",
+      {
+        type: "message_end",
+        message: makePiAssistantMessage({
+          timestamp: Date.parse("2026-05-09T13:30:00.000Z"),
+          content: [{ type: "text", text: "Live response after pre-populated history" }],
+        }),
+      },
+      ctx,
+    );
+
+    const thread = expectOk(await store.findManagedThread(target));
+    assert.equal(thread, undefined);
   });
 });
 
@@ -799,7 +891,6 @@ test("production PI handlers suppress duplicate live message_end events without 
     registerContextStewardExtension(pi as unknown as ExtensionAPI, {
       createStore: () => store,
     });
-    await pi.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
     await pi.emit("message_end", event, ctx);
     await pi.emit("message_end", event, ctx);
 
@@ -809,7 +900,7 @@ test("production PI handlers suppress duplicate live message_end events without 
 
     assert.deepEqual(
       messages.map((message) => message.messageKind),
-      ["runtime_event", "response"],
+      ["response"],
     );
   });
 });
@@ -825,6 +916,7 @@ test("production PI handlers capture relevant session and turn lifecycle events 
     const store = new FileThreadStore(storeRootDir);
     const ctx = makePiExtensionContext(target);
     const pi = new FakeExtensionApi();
+    expectOk(await openOrCreateManagedThread({ target }, store));
 
     registerContextStewardExtension(pi as unknown as ExtensionAPI, {
       createStore: () => store,

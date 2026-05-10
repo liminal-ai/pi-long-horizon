@@ -113,6 +113,61 @@ function importSessionManagerFromContext(ctx: PiExtensionCaptureContext): PiImpo
   return undefined;
 }
 
+function isSessionMessageEntry(
+  entry: ReturnType<PiImportSessionManager["getEntries"]>[number],
+): entry is ReturnType<PiImportSessionManager["getEntries"]>[number] & { type: "message"; message: AgentMessage } {
+  return entry.type === "message" && "message" in entry;
+}
+
+function samePiMessage(left: AgentMessage, right: AgentMessage): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function canAutoCreateManagedThreadForMessageEnd(input: {
+  event: Extract<PiCaptureEvent, { type: "message_end" }>;
+  ctx: PiExtensionCaptureContext;
+}): boolean {
+  const sessionManager = importSessionManagerFromContext(input.ctx);
+  if (!sessionManager) {
+    return true;
+  }
+
+  const entries = sessionManager.getEntries();
+  if (entries.length === 0) {
+    return true;
+  }
+
+  const activeLeafId = activeLeafIdFromContext(input.ctx) ?? sessionManager.getLeafId() ?? undefined;
+  if (!activeLeafId) {
+    return false;
+  }
+
+  const activePathEntries = sessionManager.getBranch(activeLeafId);
+  if (activePathEntries.length === 0) {
+    return false;
+  }
+
+  const activePathMessages = activePathEntries.filter(isSessionMessageEntry);
+  if (activePathMessages.length === 0) {
+    return true;
+  }
+
+  if (activePathMessages.length > 1) {
+    return false;
+  }
+
+  return samePiMessage(activePathMessages[0]!.message, input.event.message);
+}
+
+function canAutoCreateManagedThreadOnSessionStart(ctx: PiExtensionCaptureContext): boolean {
+  const sessionManager = importSessionManagerFromContext(ctx);
+  if (!sessionManager) {
+    return true;
+  }
+
+  return sessionManager.getEntries().length === 0;
+}
+
 function eventTimestampToIso(event: PiCaptureEvent): string | undefined {
   if ("timestamp" in event && typeof event.timestamp === "number" && Number.isFinite(event.timestamp)) {
     return new Date(event.timestamp).toISOString();
@@ -316,6 +371,8 @@ export async function executeAttachCommand(input: {
     store: input.store,
     target: targetFromContext(input.ctx),
     sessionFilePath,
+    activeLeafId: activeLeafIdFromContext(input.ctx),
+    sessionManager: importSessionManagerFromContext(input.ctx),
     now: input.now,
   });
   if (!attached.ok) {
@@ -560,14 +617,36 @@ export function registerContextStewardExtension(
   const createStore = options.createStore ?? defaultCreateStore;
   let activeThread: ThreadRecord | undefined;
 
-  async function ensureActiveThread(ctx: PiExtensionCaptureContext): Promise<{
+  async function resolveCaptureThread(
+    event: PiCaptureEvent,
+    ctx: PiExtensionCaptureContext,
+  ): Promise<{
     store: ThreadStore;
-    thread: ThreadRecord;
+    thread?: ThreadRecord;
   }> {
     const store = createStore(ctx);
     const target = targetFromContext(ctx);
     if (activeThread && targetsMatch(activeThread.target, target)) {
       return { store, thread: activeThread };
+    }
+
+    const existing = await store.findManagedThread(target);
+    if (!existing.ok) {
+      throw new Error(existing.issues.map((issue) => `${issue.code}: ${issue.message}`).join("; "));
+    }
+
+    if (existing.value) {
+      activeThread = existing.value;
+      return { store, thread: activeThread };
+    }
+
+    const shouldCreateOnSessionStart =
+      event.type === "session_start" && canAutoCreateManagedThreadOnSessionStart(ctx);
+    const shouldCreateOnMessageEnd =
+      event.type === "message_end" && canAutoCreateManagedThreadForMessageEnd({ event, ctx });
+
+    if (!shouldCreateOnSessionStart && !shouldCreateOnMessageEnd) {
+      return { store, thread: undefined };
     }
 
     const opened = await openOrCreateManagedThread({ target }, store);
@@ -580,7 +659,11 @@ export function registerContextStewardExtension(
   }
 
   async function captureEvent(event: PiCaptureEvent, ctx: PiExtensionCaptureContext): Promise<void> {
-    const { store, thread } = await ensureActiveThread(ctx);
+    const { store, thread } = await resolveCaptureThread(event, ctx);
+    if (!thread) {
+      return;
+    }
+
     const result = await captureAndReport({
       store,
       threadId: thread.threadId,

@@ -1,10 +1,10 @@
 # Team Implementation Log
 
 ## Run Overview
-- State: STORY_ACTIVE
+- State: COMPLETE
 - Spec Pack Root: /Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/01-session-context-store
-- Current Story: 07-real-session-fixtures
-- Current Phase: accept
+- Current Story: none
+- Current Phase: none
 
 ## Run Configuration
 - Primary Harness: claude-code
@@ -189,11 +189,12 @@
 - Latest Actual Total: 549
 
 ## Epic Closeout
-- Current Epic Review Artifact: none
-- Epic Review Status: not-started
-- Epic Fix Status: not-started
-- Epic Reverify Status: not-started
-- Final Gate Status: not-run
+- Current Epic Review Artifact: artifacts/epic/003-epic-review.json
+- Epic Review Status: pass (after fix rounds)
+- Epic Fix Status: cleaned (2 fix batches: batch 2 fixed CAN-001/002/003, batch 3 fixed thread creation timing + command-surface coverage)
+- Epic Reverify Status: ready-for-closeout (006-epic-reverify.json)
+- Final Gate Status: pass (112 unit + 4 integration = 116 tests, zero failures)
+- Non-blocking observation: CAN-005 synthetic sessionManager adapter in import-service.ts — accepted as non-blocking
 
 ## Open Risks / Accepted Risks
 - none
@@ -226,3 +227,7 @@
 - Preflight attempt 2 needs-user-decision: gate policy ambiguous because Story 0 hasn't added verify scripts yet. Resolved by passing gates explicitly via CLI flags.
 - Story 1 story-orchestrate interrupted at planner turn 10: Codex gpt-5.5 returned malformed JSON (`inputs.artifactRefs` undefined). Recovery: resume from last valid artifact (quick-fix 006), fresh child provider session. All prior durable artifacts intact.
 - Story 3 story-orchestrate interrupted: same Codex planner invalid output pattern after first verify (revise). Recovery: resume.
+- Epic review attempt 1 blocked: PROVIDER_UNAVAILABLE for claude-code (second reviewer). Retrying.
+- Epic review attempt 2 blocked: same PROVIDER_UNAVAILABLE. Reconfigured epic-reviewer-2 from claude-sonnet/none to gpt-5.4/codex to unblock. Reduces reviewer diversity but both reviewers can now complete.
+- Epic fix batch 1 (002-fix-result.json) was a silent no-op despite returning `outcome: cleaned`. Root cause: the CLI gates on a `- APPROVED:` bullet token in the fix batch (regex in `src/core/epic-fix.ts:229`). The batch I authored used `- **Finding:**` bullets, which the regex didn't match. The CLI minted a `noop-` session ID, never contacted a provider, returned `filesChanged: []` with `cleaned` outcome. I accepted this at face value and moved to reverify, which then confirmed all three blockers were still present. Three failures compounded: (1) skill docs don't document the APPROVED token requirement, (2) CLI returns success-flavored outcome on a no-op instead of warning, (3) I didn't check `filesChanged: []` before moving on.
+- Epic fix batch 2 (004-fix-result.json) used `- APPROVED:` prefixed bullets. Provider launched, 6 files changed, all three blocking findings addressed. Hypothesis confirmed: the batch format was the sole cause of the no-op.

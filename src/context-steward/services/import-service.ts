@@ -109,6 +109,35 @@ function importConflictIssue(target: ThreadTargetRef, threadId: string): Steward
   };
 }
 
+function normalizeTargetValue(value: string | undefined): string | undefined {
+  const normalized = value?.trim();
+  return normalized ? normalized : undefined;
+}
+
+function importTargetFromInput(input: AttachPiSessionInput): ThreadRecord["target"] {
+  const contextSessionFilePath = normalizeTargetValue(input.target.sessionFilePath);
+  const importSessionFilePath = normalizeTargetValue(input.sessionFilePath);
+  const reusesContextTarget =
+    contextSessionFilePath !== undefined &&
+    importSessionFilePath !== undefined &&
+    contextSessionFilePath === importSessionFilePath;
+
+  if (reusesContextTarget) {
+    return {
+      runtime: "pi",
+      sessionId: input.target.sessionId,
+      sessionFilePath: input.target.sessionFilePath ?? input.sessionFilePath,
+      cwd: input.target.cwd,
+      currentGeneratedFilePath: input.target.currentGeneratedFilePath,
+    };
+  }
+
+  return {
+    runtime: "pi",
+    sessionFilePath: input.sessionFilePath,
+  };
+}
+
 function importRuntimeContext(input: AttachPiSessionInput, sessionId: string | undefined) {
   return {
     cwd: input.target.cwd ?? process.cwd(),
@@ -273,13 +302,7 @@ export async function previewPiSessionImport(
 export async function attachExistingPiSession(
   input: AttachPiSessionInput,
 ): Promise<StewardResult<AttachPiSessionResult>> {
-  const targetRef: ThreadRecord["target"] = {
-    runtime: "pi",
-    sessionId: input.target.sessionId,
-    sessionFilePath: input.target.sessionFilePath ?? input.sessionFilePath,
-    cwd: input.target.cwd,
-    currentGeneratedFilePath: input.target.currentGeneratedFilePath,
-  };
+  const targetRef = importTargetFromInput(input);
 
   const existing = await input.store.findThreadByTarget({
     runtime: targetRef.runtime,

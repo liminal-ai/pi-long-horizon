@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "command": "epic-fix",
+  "status": "completed",
+  "phase": "finalizing",
+  "startedAt": "2026-05-10T06:39:23.041Z",
+  "updatedAt": "2026-05-10T06:39:23.052Z",
+  "lastOutputAt": null,
+  "providerLiveness": "starting",
+  "provider": "codex",
+  "pid": null,
+  "cwd": "/Users/leemoore/code/pi-long-horizon",
+  "timeoutMs": 3600000,
+  "configuredStartupTimeoutMs": 300000,
+  "configuredSilenceTimeoutMs": 480000,
+  "artifactPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/01-session-context-store/artifacts/fix/002-fix-result.json",
+  "streamPaths": {
+    "stdoutPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/01-session-context-store/artifacts/fix/streams/002-fix-result.stdout.log",
+    "stderrPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/01-session-context-store/artifacts/fix/streams/002-fix-result.stderr.log"
+  },
+  "progressPaths": {
+    "statusPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/01-session-context-store/artifacts/fix/progress/002-fix-result.status.json",
+    "progressPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/01-session-context-store/artifacts/fix/progress/002-fix-result.progress.jsonl"
+  },
+  "lastEvent": "completed",
+  "lastEventSummary": "epic-fix completed as a no-op because there were no approved fix items."
+}

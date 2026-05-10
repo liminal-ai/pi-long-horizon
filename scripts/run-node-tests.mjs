@@ -40,7 +40,7 @@ const testFiles = existsSync(testsRoot) ? listFiles(testsRoot).filter(matchesMod
 
 if (testFiles.length === 0) {
   console.log(`No ${mode} tests found.`);
-  process.exit(0);
+  process.exit(mode === "integration" ? 1 : 0);
 }
 
 const result = spawnSync(process.execPath, ["--import", "tsx", "--test", ...testFiles], {
@@ -52,4 +52,3 @@ if (typeof result.status === "number") {
 }
 
 process.exit(1);
-

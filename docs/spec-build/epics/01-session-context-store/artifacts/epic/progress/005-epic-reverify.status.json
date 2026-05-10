@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "command": "epic-reverify",
+  "status": "completed",
+  "phase": "finalizing",
+  "startedAt": "2026-05-10T11:15:46.958Z",
+  "updatedAt": "2026-05-10T11:20:51.137Z",
+  "lastOutputAt": "2026-05-10T11:20:51.046Z",
+  "providerLiveness": "completed",
+  "provider": "codex",
+  "pid": 2375,
+  "cwd": "/Users/leemoore/code/pi-long-horizon",
+  "timeoutMs": 3600000,
+  "configuredStartupTimeoutMs": 300000,
+  "configuredSilenceTimeoutMs": 600000,
+  "artifactPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/01-session-context-store/artifacts/epic/005-epic-reverify.json",
+  "streamPaths": {
+    "stdoutPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/01-session-context-store/artifacts/epic/streams/005-epic-reverify.stdout.log",
+    "stderrPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/01-session-context-store/artifacts/epic/streams/005-epic-reverify.stderr.log"
+  },
+  "progressPaths": {
+    "statusPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/01-session-context-store/artifacts/epic/progress/005-epic-reverify.status.json",
+    "progressPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/01-session-context-store/artifacts/epic/progress/005-epic-reverify.progress.jsonl"
+  },
+  "lastEvent": "completed",
+  "lastEventSummary": "epic-reverify completed with outcome blocked."
+}

@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "command": "epic-review",
+  "status": "failed",
+  "phase": "finalizing",
+  "startedAt": "2026-05-10T06:06:19.768Z",
+  "updatedAt": "2026-05-10T06:13:01.859Z",
+  "lastOutputAt": "2026-05-10T06:13:01.672Z",
+  "providerLiveness": "completed",
+  "provider": "codex",
+  "pid": 24056,
+  "cwd": "/Users/leemoore/code/pi-long-horizon",
+  "timeoutMs": 3600000,
+  "configuredStartupTimeoutMs": 300000,
+  "configuredSilenceTimeoutMs": 600000,
+  "artifactPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/01-session-context-store/artifacts/epic/001-epic-review.json",
+  "streamPaths": {
+    "stdoutPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/01-session-context-store/artifacts/epic/streams/001-epic-review.stdout.log",
+    "stderrPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/01-session-context-store/artifacts/epic/streams/001-epic-review.stderr.log"
+  },
+  "progressPaths": {
+    "statusPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/01-session-context-store/artifacts/epic/progress/001-epic-review.status.json",
+    "progressPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/01-session-context-store/artifacts/epic/progress/001-epic-review.progress.jsonl"
+  },
+  "lastEvent": "failed",
+  "lastEventSummary": "epic-review failed during provider execution.",
+  "verifiersCompleted": 1,
+  "verifiersPlanned": 2,
+  "verifierLanes": [
+    {
+      "label": "epic-reviewer-1",
+      "provider": "codex",
+      "state": "completed",
+      "providerLiveness": "completed",
+      "lastOutputAt": "2026-05-10T06:13:01.672Z",
+      "lastEvent": "verifier-completed",
+      "lastEventSummary": "epic-reviewer-1 completed for epic review."
+    },
+    {
+      "label": "epic-reviewer-2",
+      "provider": "claude-code",
+      "state": "failed",
+      "providerLiveness": "active-with-output",
+      "lastOutputAt": "2026-05-10T06:06:22.256Z",
+      "lastEvent": "failed",
+      "lastEventSummary": "epic-reviewer-2 failed for epic review."
+    }
+  ]
+}
