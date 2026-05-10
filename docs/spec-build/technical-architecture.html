@@ -1,0 +1,1961 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>PI Long Horizon — Technical Architecture</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght,SOFT@0,9..144,200..900,0..100;1,9..144,200..900,0..100&family=Newsreader:ital,opsz,wght@0,6..72,200..800;1,6..72,200..800&family=JetBrains+Mono:ital,wght@0,100..800;1,100..800&display=swap" rel="stylesheet" />
+
+<style>
+:root {
+  --paper:        #f4ede3;
+  --paper-deep:   #ebe1cf;
+  --paper-warm:   #ece5d6;
+  --paper-faded:  #eee7d8;
+  --ink:          #1a1816;
+  --ink-soft:     #443e36;
+  --ink-muted:    #8a8378;
+  --rule:         #d6cab5;
+  --rule-soft:    #e3d9c5;
+  --rust:         #b54e2c;
+  --rust-deep:    #8b3a1f;
+  --rust-soft:    rgba(181, 78, 44, 0.08);
+  --rust-glow:    rgba(181, 78, 44, 0.18);
+  --moss:         #5a6f4a;
+  --moss-soft:    rgba(90, 111, 74, 0.08);
+
+  --serif-display: 'Fraunces', Georgia, 'Times New Roman', serif;
+  --serif-body:    'Newsreader', 'Iowan Old Style', Georgia, serif;
+  --mono:          'JetBrains Mono', 'IBM Plex Mono', ui-monospace, monospace;
+}
+
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--serif-body);
+  font-size: 17px;
+  line-height: 1.65;
+  font-feature-settings: "kern", "liga", "onum";
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+  background-image:
+    radial-gradient(circle at 20% 30%, transparent 0, rgba(0,0,0,0.012) 100%),
+    repeating-linear-gradient(0deg, transparent 0, transparent 2px, rgba(0,0,0,0.005) 2px, rgba(0,0,0,0.005) 3px);
+  mix-blend-mode: multiply;
+}
+
+::selection { background: var(--rust); color: var(--paper); }
+
+/* ─── Layout ─────────────────────────────────────────── */
+
+.document {
+  max-width: 1140px;
+  margin: 0 auto;
+  padding: 80px 60px 160px;
+  position: relative;
+  z-index: 2;
+}
+
+@media (max-width: 720px) { .document { padding: 50px 28px 100px; } }
+
+/* ─── Frontispiece ───────────────────────────────────── */
+
+.frontispiece {
+  border-top: 2px solid var(--ink);
+  border-bottom: 1px solid var(--ink);
+  padding: 28px 0 48px;
+  margin-bottom: 100px;
+  position: relative;
+}
+
+.frontispiece::after {
+  content: "";
+  position: absolute;
+  left: 0; right: 0;
+  bottom: -7px;
+  height: 1px;
+  background: var(--ink);
+}
+
+.eyebrow-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  margin-bottom: 56px;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.eyebrow-row .accent { color: var(--rust); }
+
+.title {
+  font-family: var(--serif-display);
+  font-weight: 250;
+  font-size: clamp(48px, 8vw, 92px);
+  line-height: 0.95;
+  letter-spacing: -0.025em;
+  margin: 0 0 28px;
+  font-variation-settings: "SOFT" 30, "opsz" 144;
+}
+
+.title em {
+  font-style: italic;
+  font-weight: 200;
+  color: var(--rust);
+  font-variation-settings: "SOFT" 100, "opsz" 144;
+}
+
+.subtitle {
+  font-family: var(--serif-body);
+  font-size: clamp(17px, 2vw, 21px);
+  font-style: italic;
+  font-weight: 300;
+  line-height: 1.4;
+  color: var(--ink-soft);
+  max-width: 640px;
+  margin: 0;
+}
+
+.frontispiece-meta {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 28px;
+  margin-top: 56px;
+  padding-top: 28px;
+  border-top: 1px solid var(--rule);
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+
+.frontispiece-meta dt {
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  font-size: 10px;
+  color: var(--ink-muted);
+  margin-bottom: 6px;
+}
+
+.frontispiece-meta dd { margin: 0; color: var(--ink); }
+
+/* ─── Contents ───────────────────────────────────────── */
+
+.contents {
+  margin-bottom: 120px;
+  display: grid;
+  grid-template-columns: 200px 1fr;
+  gap: 60px;
+}
+
+.contents h2 {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--rust);
+  font-weight: 600;
+  margin: 0;
+}
+
+.contents ol {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  counter-reset: toc;
+  columns: 2;
+  column-gap: 48px;
+}
+
+.contents li {
+  counter-increment: toc;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--rule-soft);
+  break-inside: avoid;
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+}
+
+.contents li::before {
+  content: counter(toc, decimal-leading-zero);
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--rust);
+}
+
+.contents a {
+  color: var(--ink);
+  text-decoration: none;
+  font-family: var(--serif-display);
+  font-weight: 400;
+  font-size: 15.5px;
+  flex: 1;
+  transition: color 0.2s ease;
+}
+
+.contents a:hover { color: var(--rust); }
+
+@media (max-width: 720px) {
+  .contents { grid-template-columns: 1fr; gap: 16px; }
+  .contents ol { columns: 1; }
+}
+
+/* ─── Section structure ──────────────────────────────── */
+
+section.essay {
+  display: grid;
+  grid-template-columns: 1fr 220px;
+  gap: 60px;
+  margin-bottom: 100px;
+  scroll-margin-top: 40px;
+}
+
+section.essay.full { display: block; max-width: 920px; }
+
+@media (max-width: 920px) {
+  section.essay { grid-template-columns: 1fr; gap: 28px; }
+}
+
+.section-eyebrow {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--rust);
+  margin: 0 0 18px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.section-eyebrow::before {
+  content: "";
+  width: 32px;
+  height: 1px;
+  background: var(--rust);
+}
+
+h2.section-title {
+  font-family: var(--serif-display);
+  font-weight: 350;
+  font-size: clamp(32px, 4vw, 46px);
+  line-height: 1.05;
+  letter-spacing: -0.018em;
+  margin: 0 0 32px;
+  font-variation-settings: "SOFT" 30;
+}
+
+h2.section-title em {
+  font-style: italic;
+  font-weight: 300;
+}
+
+.prose p { margin: 0 0 1.4em; }
+
+aside.marginalia {
+  font-family: var(--serif-body);
+  font-size: 13.5px;
+  line-height: 1.55;
+  font-style: italic;
+  color: var(--ink-soft);
+  border-top: 1px solid var(--rust);
+  padding-top: 12px;
+  margin-top: 8px;
+}
+
+aside.marginalia .label {
+  display: block;
+  font-family: var(--mono);
+  font-style: normal;
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--rust);
+  margin-bottom: 8px;
+}
+
+aside.marginalia + aside.marginalia { margin-top: 28px; }
+
+.section-intro {
+  font-family: var(--serif-body);
+  font-size: 16px;
+  line-height: 1.55;
+  font-style: italic;
+  color: var(--ink-soft);
+  margin: 0 0 32px;
+  max-width: 720px;
+}
+
+/* ─── Architecture Thesis (special treatment) ─────── */
+
+.thesis {
+  margin-bottom: 100px;
+  padding: 56px 64px;
+  border-top: 4px double var(--ink);
+  border-bottom: 4px double var(--ink);
+  background:
+    radial-gradient(ellipse at top right, var(--paper-warm) 0%, var(--paper) 60%);
+}
+
+.thesis-eyebrow {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--rust);
+  margin: 0 0 24px;
+}
+
+.thesis blockquote {
+  margin: 0;
+  font-family: var(--serif-display);
+  font-weight: 300;
+  font-size: clamp(24px, 3vw, 36px);
+  line-height: 1.25;
+  letter-spacing: -0.012em;
+  font-variation-settings: "SOFT" 50, "opsz" 144;
+  color: var(--ink);
+}
+
+.thesis blockquote p { margin: 0 0 1em; }
+
+.thesis blockquote em {
+  font-style: italic;
+  color: var(--rust);
+  font-weight: 250;
+}
+
+.vocab-bridge {
+  margin-top: 36px;
+  padding-top: 24px;
+  border-top: 1px solid var(--rule);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--ink-soft);
+  letter-spacing: 0.005em;
+}
+
+.vocab-bridge strong { color: var(--rust); font-weight: 600; }
+
+@media (max-width: 720px) { .thesis { padding: 36px 28px; } }
+
+/* ─── Tables ─────────────────────────────────────────── */
+
+table.editorial {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 24px 0 12px;
+  font-size: 14.5px;
+  line-height: 1.5;
+}
+
+table.editorial thead th {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--rust);
+  font-weight: 600;
+  padding: 10px 12px;
+  text-align: left;
+  border-top: 1px solid var(--ink);
+  border-bottom: 1px solid var(--ink);
+  vertical-align: bottom;
+}
+
+table.editorial tbody td {
+  padding: 14px 12px;
+  border-bottom: 1px solid var(--rule-soft);
+  color: var(--ink-soft);
+  vertical-align: top;
+}
+
+table.editorial tbody td:first-child {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  letter-spacing: 0.04em;
+  color: var(--ink);
+  font-weight: 500;
+}
+
+table.editorial tbody tr:last-child td { border-bottom: 1px solid var(--ink); }
+
+table.editorial code {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  background: var(--rust-soft);
+  padding: 1px 5px;
+  border-radius: 2px;
+  color: var(--rust-deep);
+}
+
+/* Rejected alternatives — strikethrough treatment */
+
+table.rejected tbody td:first-child {
+  text-decoration: line-through;
+  text-decoration-color: var(--rust);
+  text-decoration-thickness: 1px;
+  color: var(--ink-muted);
+}
+
+/* ─── System diagram (custom SVG) ──────────────────── */
+
+.diagram-frame {
+  margin: 32px 0;
+  padding: 28px;
+  border: 1px solid var(--rule);
+  background: linear-gradient(180deg, var(--paper-warm) 0%, var(--paper) 100%);
+  position: relative;
+  overflow: visible;
+}
+
+.diagram-frame::before {
+  content: attr(data-label);
+  position: absolute;
+  top: -10px;
+  left: 24px;
+  background: var(--paper);
+  padding: 0 12px;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--rust);
+}
+
+.diagram-frame svg { width: 100%; height: auto; display: block; }
+
+/* ─── BANDS VISUALIZATION (centerpiece) ────────────── */
+
+.bands-figure {
+  margin: 56px 0 24px;
+  padding: 48px 32px 36px;
+  background: var(--paper-deep);
+  border: 1px solid var(--rust);
+  position: relative;
+}
+
+.bands-figure::before {
+  content: "Figure 01 — The Bands";
+  position: absolute;
+  top: -10px;
+  left: 28px;
+  background: var(--paper-deep);
+  padding: 0 14px;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--rust);
+  font-weight: 600;
+}
+
+.bands-axis {
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+  margin-bottom: 18px;
+  padding: 0 4px;
+}
+
+.bands-axis .arrow {
+  flex: 1;
+  border-top: 1px dashed var(--ink-muted);
+  margin: 8px 16px 0;
+  position: relative;
+}
+
+.bands-axis .arrow::after {
+  content: "";
+  position: absolute;
+  right: -1px;
+  top: -5px;
+  width: 0; height: 0;
+  border-left: 8px solid var(--ink-muted);
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+}
+
+.bands-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 0;
+  border: 1px solid var(--ink);
+}
+
+@media (max-width: 920px) {
+  .bands-grid { grid-template-columns: 1fr; }
+}
+
+.band {
+  padding: 24px 20px;
+  border-right: 1px solid var(--rule);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 480px;
+  position: relative;
+}
+
+.band:last-child { border-right: none; }
+
+@media (max-width: 920px) {
+  .band {
+    border-right: none;
+    border-bottom: 1px solid var(--rule);
+    min-height: auto;
+  }
+  .band:last-child { border-bottom: none; }
+}
+
+/* progressive opacity / saturation: oldest faintest, present brightest */
+.band-brief    { background: rgba(181, 78, 44, 0.025); }
+.band-detailed { background: rgba(181, 78, 44, 0.05); }
+.band-smooth   { background: rgba(181, 78, 44, 0.075); }
+.band-full     { background: rgba(181, 78, 44, 0.10); }
+
+.band-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  border-bottom: 1px solid var(--rust);
+  padding-bottom: 10px;
+}
+
+.band-name {
+  font-family: var(--serif-display);
+  font-weight: 500;
+  font-size: 17px;
+  letter-spacing: -0.005em;
+  color: var(--ink);
+}
+
+.band-pct {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  color: var(--rust);
+}
+
+.band-source {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+  margin: 0;
+}
+
+.band-content {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--ink-soft);
+  flex: 1;
+}
+
+.band-content .actor {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  color: var(--rust);
+  display: block;
+  margin-bottom: 2px;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+
+.band-content .msg {
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px dotted var(--rule);
+}
+
+.band-content .msg:last-child {
+  border-bottom: none;
+  margin-bottom: 0;
+}
+
+.band-content .tool {
+  font-family: var(--mono);
+  font-size: 11px;
+  background: var(--rust-soft);
+  padding: 4px 6px;
+  display: block;
+  margin: 4px 0;
+  color: var(--rust-deep);
+  border-left: 2px solid var(--rust);
+}
+
+.band-content em {
+  font-style: italic;
+  color: var(--ink);
+}
+
+.band-rep {
+  margin-top: auto;
+  padding-top: 10px;
+  border-top: 1px dotted var(--rule);
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+
+.bands-caption {
+  margin-top: 24px;
+  padding-top: 18px;
+  border-top: 1px solid var(--rule);
+  font-family: var(--serif-body);
+  font-size: 13.5px;
+  font-style: italic;
+  line-height: 1.55;
+  color: var(--ink-soft);
+}
+
+.bands-caption strong { color: var(--rust); font-style: normal; font-weight: 600; }
+
+/* ─── Numbered decisions (cross-cutting) ─────────── */
+
+.cc-decisions {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  counter-reset: ccd;
+  border-top: 1px solid var(--ink);
+}
+
+.cc-decisions > li {
+  counter-increment: ccd;
+  display: grid;
+  grid-template-columns: 60px 1fr;
+  gap: 28px;
+  padding: 32px 0;
+  border-bottom: 1px solid var(--rule-soft);
+}
+
+.cc-decisions > li::before {
+  content: counter(ccd, decimal-leading-zero);
+  font-family: var(--mono);
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  color: var(--rust);
+  font-weight: 600;
+  padding-top: 4px;
+}
+
+.cc-decisions h3 {
+  font-family: var(--serif-display);
+  font-weight: 500;
+  font-size: 22px;
+  margin: 0 0 16px;
+  letter-spacing: -0.005em;
+  color: var(--ink);
+  font-variation-settings: "SOFT" 30;
+}
+
+.cc-decisions .triplet {
+  display: grid;
+  grid-template-columns: 100px 1fr;
+  gap: 14px;
+  margin-bottom: 10px;
+  font-size: 14.5px;
+  line-height: 1.55;
+}
+
+.cc-decisions .triplet dt {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--rust);
+  font-weight: 600;
+  padding-top: 3px;
+}
+
+.cc-decisions .triplet dd {
+  margin: 0;
+  color: var(--ink-soft);
+}
+
+@media (max-width: 720px) {
+  .cc-decisions .triplet { grid-template-columns: 1fr; gap: 4px; }
+  .cc-decisions > li { grid-template-columns: 1fr; gap: 12px; }
+}
+
+/* ─── Sequence storyboard ────────────────────────────── */
+
+.flow {
+  margin: 36px 0;
+  border: 1px solid var(--rule);
+  background: var(--paper-warm);
+  padding: 32px;
+  position: relative;
+}
+
+.flow::before {
+  content: attr(data-label);
+  position: absolute;
+  top: -10px;
+  left: 24px;
+  background: var(--paper);
+  padding: 0 12px;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--rust);
+}
+
+.flow-participants {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px 28px;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--ink-soft);
+  margin-bottom: 28px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--rule);
+}
+
+.flow-participants .pp {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.flow-participants .dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--rust);
+  display: inline-block;
+}
+
+.flow-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  counter-reset: flowstep;
+  display: grid;
+  gap: 0;
+}
+
+.flow-steps li {
+  counter-increment: flowstep;
+  display: grid;
+  grid-template-columns: 36px 140px 1fr;
+  gap: 16px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--rule-soft);
+  align-items: baseline;
+}
+
+.flow-steps li:last-child { border-bottom: none; }
+
+.flow-steps li::before {
+  content: counter(flowstep, decimal-leading-zero);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  color: var(--rust);
+  font-weight: 600;
+}
+
+.flow-steps .arrow {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink);
+  white-space: nowrap;
+}
+
+.flow-steps .arrow .from { color: var(--rust); }
+.flow-steps .arrow .to { color: var(--rust); }
+.flow-steps .arrow .glyph { color: var(--ink-muted); padding: 0 4px; }
+
+.flow-steps .action {
+  font-size: 14.5px;
+  line-height: 1.55;
+  color: var(--ink-soft);
+}
+
+.flow-branch {
+  display: grid;
+  grid-template-columns: 36px 140px 1fr;
+  gap: 16px;
+  padding: 16px 0;
+  border-bottom: 1px solid var(--rule-soft);
+  border-left: 2px solid var(--rust);
+  padding-left: 14px;
+  margin-left: -16px;
+  background: var(--rust-soft);
+}
+
+.flow-branch .branch-label {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--rust);
+  font-weight: 600;
+  grid-column: 1 / 3;
+}
+
+.flow-branch .action {
+  font-size: 14px;
+  font-style: italic;
+  color: var(--ink-soft);
+}
+
+.flow-takeaway {
+  margin-top: 24px;
+  padding-top: 18px;
+  border-top: 1px solid var(--rule);
+  font-family: var(--serif-body);
+  font-style: italic;
+  font-size: 14.5px;
+  line-height: 1.55;
+  color: var(--ink-soft);
+}
+
+.flow-takeaway strong { color: var(--rust); font-style: normal; font-weight: 600; }
+
+@media (max-width: 720px) {
+  .flow-steps li { grid-template-columns: 1fr; gap: 4px; }
+  .flow-branch { grid-template-columns: 1fr; }
+}
+
+/* ─── Compaction ramp visualization ─────────────────── */
+
+.ramp-figure {
+  margin: 32px 0;
+  border: 1px solid var(--rule);
+  background: var(--paper-warm);
+  padding: 32px;
+  position: relative;
+}
+
+.ramp-figure::before {
+  content: "Figure 02 — Compaction Bound Schedule";
+  position: absolute;
+  top: -10px;
+  left: 24px;
+  background: var(--paper);
+  padding: 0 12px;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--rust);
+}
+
+.ramp-figure svg { width: 100%; height: auto; }
+
+.ramp-caption {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--rule);
+  font-style: italic;
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--ink-soft);
+}
+
+/* ─── Code block ─────────────────────────────────────── */
+
+.codeblock {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.7;
+  background: var(--paper-warm);
+  border-left: 3px solid var(--rust);
+  padding: 24px 28px;
+  margin: 24px 0;
+  white-space: pre;
+  overflow-x: auto;
+  color: var(--ink);
+}
+
+/* ─── Constraints list ──────────────────────────────── */
+
+.constraints-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  counter-reset: con;
+}
+
+.constraints-list li {
+  counter-increment: con;
+  display: grid;
+  grid-template-columns: 60px 1fr;
+  gap: 24px;
+  padding: 22px 0;
+  border-bottom: 1px solid var(--rule-soft);
+  align-items: baseline;
+}
+
+.constraints-list li:first-child { border-top: 1px solid var(--ink); }
+
+.constraints-list li::before {
+  content: counter(con, decimal-leading-zero);
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--rust);
+  font-weight: 600;
+}
+
+.constraints-list strong {
+  font-family: var(--serif-display);
+  font-weight: 500;
+  font-size: 17px;
+  letter-spacing: -0.005em;
+  color: var(--ink);
+  display: block;
+  margin-bottom: 4px;
+}
+
+.constraints-list p {
+  margin: 0;
+  font-size: 14.5px;
+  line-height: 1.55;
+  color: var(--ink-soft);
+}
+
+/* ─── Open questions ─────────────────────────────────── */
+
+.questions-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--ink-soft);
+  border-top: 1px solid var(--ink);
+}
+
+.questions-list li {
+  padding: 14px 0 14px 28px;
+  border-bottom: 1px solid var(--rule-soft);
+  position: relative;
+}
+
+.questions-list li::before {
+  content: "?";
+  position: absolute;
+  left: 0;
+  top: 14px;
+  font-family: var(--serif-display);
+  font-style: italic;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--rust);
+}
+
+/* ─── Numbered list (prerequisite policy) ──────────── */
+
+.policy-list {
+  list-style: none;
+  padding: 0;
+  margin: 24px 0 12px;
+  counter-reset: policy;
+}
+
+.policy-list li {
+  counter-increment: policy;
+  display: grid;
+  grid-template-columns: 36px 1fr;
+  gap: 16px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--rule-soft);
+  align-items: baseline;
+  font-size: 15px;
+  line-height: 1.55;
+  color: var(--ink-soft);
+}
+
+.policy-list li::before {
+  content: counter(policy, decimal-leading-zero);
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--rust);
+  font-weight: 600;
+  padding-top: 1px;
+}
+
+/* ─── Footer ─────────────────────────────────────────── */
+
+footer.colophon {
+  margin-top: 120px;
+  padding-top: 36px;
+  border-top: 2px solid var(--ink);
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 56px;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+footer.colophon .companion { text-align: right; }
+footer.colophon a { color: var(--rust); text-decoration: none; font-weight: 600; }
+footer.colophon a:hover { color: var(--rust-deep); text-decoration: underline; }
+
+@media (max-width: 560px) {
+  footer.colophon { grid-template-columns: 1fr; gap: 16px; }
+  footer.colophon .companion { text-align: left; }
+}
+
+/* ─── Inline ─────────────────────────────────────────── */
+
+code {
+  font-family: var(--mono);
+  font-size: 0.88em;
+  color: var(--rust-deep);
+  background: var(--rust-soft);
+  padding: 1px 5px;
+  border-radius: 2px;
+}
+
+a {
+  color: var(--rust);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-thickness: 1px;
+  text-decoration-color: var(--rust-glow);
+}
+
+a:hover { text-decoration-color: var(--rust); }
+
+/* SVG diagram styles */
+
+svg .box {
+  fill: var(--paper);
+  stroke: var(--ink);
+  stroke-width: 1;
+}
+
+svg .box-rust {
+  fill: var(--rust-soft);
+  stroke: var(--rust);
+  stroke-width: 1;
+}
+
+svg .group-frame {
+  fill: var(--paper-warm);
+  stroke: var(--ink);
+  stroke-width: 1;
+  stroke-dasharray: 4 3;
+}
+
+svg .label-mono {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  fill: var(--rust);
+  font-weight: 600;
+}
+
+svg .label-display {
+  font-family: 'Fraunces', serif;
+  font-size: 13px;
+  fill: var(--ink);
+  font-weight: 450;
+}
+
+svg .label-small {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9.5px;
+  fill: var(--ink-soft);
+}
+
+svg .arrow-line {
+  stroke: var(--rust);
+  stroke-width: 1.25;
+  fill: none;
+}
+
+svg .arrow-line-soft {
+  stroke: var(--ink-muted);
+  stroke-width: 1;
+  stroke-dasharray: 3 2;
+  fill: none;
+}
+
+svg .arrowhead { fill: var(--rust); }
+svg .er-line { stroke: var(--ink); stroke-width: 1; fill: none; }
+svg .er-cardinality {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  fill: var(--ink-muted);
+}
+</style>
+</head>
+<body>
+
+<article class="document">
+
+  <!-- ─── Frontispiece ─────────────────────────────── -->
+  <header class="frontispiece">
+    <div class="eyebrow-row">
+      <span><span class="accent">No. II</span> &nbsp;·&nbsp; PI Long Horizon &nbsp;·&nbsp; Volume 0.1</span>
+      <span>Technical Architecture</span>
+    </div>
+
+    <h1 class="title">The technical world<br>downstream <em>inherits</em>.</h1>
+
+    <p class="subtitle">Settles foundational technical decisions across the four features so downstream tech designers inherit the technical world rather than re-derive it.</p>
+
+    <dl class="frontispiece-meta">
+      <div><dt>Companion</dt><dd><a href="prd.html">← Product Requirements</a></dd></div>
+      <div><dt>Top-tier surfaces</dt><dd>Five</dd></div>
+      <div><dt>Cross-cutting decisions</dt><dd>Eleven</dd></div>
+      <div><dt>Status</dt><dd>Ready for tech-design handoff</dd></div>
+    </dl>
+  </header>
+
+  <!-- ─── Contents ───────────────────────────────── -->
+  <nav class="contents" aria-label="Contents">
+    <h2>Contents</h2>
+    <ol>
+      <li><a href="#thesis">Architecture Thesis</a></li>
+      <li><a href="#stack">Core Stack</a></li>
+      <li><a href="#rejected">Rejected Alternatives</a></li>
+      <li><a href="#shape">System Shape</a></li>
+      <li><a href="#data">Core Data Shape</a></li>
+      <li><a href="#store">Store Interface</a></li>
+      <li><a href="#axes">Actor &amp; Message Axes</a></li>
+      <li><a href="#decisions">Cross-Cutting Decisions</a></li>
+      <li><a href="#flows">Boundaries &amp; Flows</a></li>
+      <li><a href="#bands">Band &amp; Projection Model</a></li>
+      <li><a href="#prereq">Smart Compact Prerequisites</a></li>
+      <li><a href="#layout">Thread Store Layout</a></li>
+      <li><a href="#fork">PI Fork &amp; Attach Behavior</a></li>
+      <li><a href="#constraints">Constraints That Shape Epics</a></li>
+      <li><a href="#open">Open Questions</a></li>
+      <li><a href="#assumptions">Assumptions</a></li>
+    </ol>
+  </nav>
+
+  <!-- ─── Architecture Thesis ───────────────────── -->
+  <section class="thesis" id="thesis">
+    <p class="thesis-eyebrow">i. Architecture Thesis</p>
+    <blockquote>
+      <p>PI Long Horizon is a <em>local, file-backed context substrate</em> layered around PI through extensions. The Context Steward owns a target-neutral canonical Thread, derived smooth turns and chunks, async maintenance jobs, and generated session files.</p>
+      <p>PI remains the first runtime target: it emits events into the steward and loads a generated PI session file when smart compact runs.</p>
+    </blockquote>
+    <p class="vocab-bridge">
+      <strong>A note on vocabulary.</strong> PI calls its native session JSONL files <em>rollouts</em>. This architecture uses <strong>generated PI session file</strong> for the PI-compatible file produced by smart compact, and <strong>projection revision</strong> for the recorded output metadata.
+    </p>
+  </section>
+
+  <!-- ─── Core Stack ───────────────────────────── -->
+  <section class="essay full" id="stack">
+    <p class="section-eyebrow">ii. Core Stack</p>
+    <h2 class="section-title">Decisions that constrain everything <em>downstream</em>.</h2>
+
+    <table class="editorial">
+      <thead>
+        <tr><th>Component</th><th>Choice</th><th>Version</th><th>Rationale</th><th>Checked</th><th>Compatibility</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Runtime</td><td>Node.js</td><td>24 LTS · v24.15.0</td><td>Matches PI package ecosystem and current TypeScript tooling.</td><td>2026-05-09</td><td>Local v24.14.0; repo has no <code>engines</code> field yet.</td></tr>
+        <tr><td>Package manager</td><td>npm</td><td>11.9.0</td><td>Matches the checked-in <code>package-lock.json</code> workflow.</td><td>2026-05-09</td><td>Local npm version.</td></tr>
+        <tr><td>Language</td><td>TypeScript</td><td>5.9.3</td><td>Keeps canonical models, target adapters, and extension code typed.</td><td>2026-05-09</td><td>Installed in <code>devDependencies</code>.</td></tr>
+        <tr><td>Runtime helper</td><td>tsx</td><td>4.21.0</td><td>Runs TypeScript helper scripts without a separate build step.</td><td>2026-05-09</td><td>Used by <code>npm run login</code> and <code>npm run models</code>.</td></tr>
+        <tr><td>PI packages</td><td>@earendil-works/pi-*</td><td>0.74.0</td><td>Provides PI AI, agent-core, and coding-agent extension/runtime APIs.</td><td>2026-05-09</td><td>Installed in <code>dependencies</code>.</td></tr>
+        <tr><td>First provider</td><td>openai-codex</td><td>via PI 0.74.0</td><td>Uses ChatGPT OAuth-backed Codex models.</td><td>2026-05-09</td><td>Model scope: gpt-5.4, gpt-5.4-mini, gpt-5.5 variants.</td></tr>
+        <tr><td>V1 storage</td><td>Local filesystem</td><td>—</td><td>Keeps the substrate inspectable while the shape is still evolving.</td><td>2026-05-09</td><td>Store interface defined for future database mapping.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ─── Rejected Alternatives ───────────────────── -->
+  <section class="essay full" id="rejected">
+    <p class="section-eyebrow">iii. Rejected Alternatives</p>
+    <h2 class="section-title">Roads <em>not</em> taken.</h2>
+
+    <table class="editorial rejected">
+      <thead>
+        <tr><th>Considered</th><th>Why Rejected</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Fork PI for direct session ownership</td><td>Extension events provide enough capture and reload surface for v1. Forking would couple the project to PI internals before the context model is stable.</td></tr>
+        <tr><td>PI-native compaction entries as core projection</td><td>PI compaction/custom-message entries are useful primitives, but PI's context walker is not the owner of the multi-band memory substrate. The steward should own the source thread and compile target-specific projections.</td></tr>
+        <tr><td>PI session JSONL as source thread</td><td>PI sessions are tree-shaped runtime records. The canonical domain needs linear Threads, prompt-bounded Turns, typed Messages, and target-neutral projection state.</td></tr>
+        <tr><td>Loose ingest from generated PI session files</td><td>The source thread should not depend on later catch-up from the generated PI file. Runtime capture writes the source thread from PI extension events.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ─── System Shape ───────────────────────────── -->
+  <section class="essay full" id="shape">
+    <p class="section-eyebrow">iv. System Shape</p>
+    <h2 class="section-title">Five top-tier <em>surfaces</em>.</h2>
+    <p class="section-intro">Context Steward Core owns canonical thread state. Context Navigator exposes legible traversal. Background Maintenance prepares derived memory. Projection Compiler emits generated session files. PI Runtime Integration captures live events and reloads the generated PI session file.</p>
+
+    <div class="diagram-frame" data-label="Figure — System Surfaces">
+    <svg viewBox="0 0 1080 540" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="System shape diagram">
+      <defs>
+        <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" class="arrowhead"/>
+        </marker>
+      </defs>
+
+      <!-- PI Runtime group -->
+      <rect x="20" y="40" width="240" height="460" rx="2" class="group-frame"/>
+      <text x="40" y="68" class="label-mono">PI Runtime</text>
+
+      <rect x="50" y="100" width="180" height="60" rx="2" class="box"/>
+      <text x="140" y="128" text-anchor="middle" class="label-display">PI TUI / Agent Session</text>
+      <text x="140" y="146" text-anchor="middle" class="label-small">interactive runtime</text>
+
+      <rect x="50" y="220" width="180" height="60" rx="2" class="box"/>
+      <text x="140" y="248" text-anchor="middle" class="label-display">Extension Events</text>
+      <text x="140" y="266" text-anchor="middle" class="label-small">message_end, turn_end</text>
+
+      <rect x="50" y="380" width="180" height="60" rx="2" class="box-rust"/>
+      <text x="140" y="408" text-anchor="middle" class="label-display">Generated PI Session File</text>
+      <text x="140" y="426" text-anchor="middle" class="label-small">target output</text>
+
+      <!-- Steward group -->
+      <rect x="320" y="40" width="380" height="460" rx="2" class="group-frame"/>
+      <text x="340" y="68" class="label-mono">Context Steward</text>
+
+      <rect x="350" y="100" width="320" height="64" rx="2" class="box"/>
+      <text x="510" y="128" text-anchor="middle" class="label-display">Context Steward Core</text>
+      <text x="510" y="148" text-anchor="middle" class="label-small">canonical thread state</text>
+
+      <rect x="350" y="200" width="148" height="64" rx="2" class="box"/>
+      <text x="424" y="228" text-anchor="middle" class="label-display">Context Navigator</text>
+      <text x="424" y="248" text-anchor="middle" class="label-small">readable traversal</text>
+
+      <rect x="522" y="200" width="148" height="64" rx="2" class="box"/>
+      <text x="596" y="228" text-anchor="middle" class="label-display">Background Maintenance</text>
+      <text x="596" y="248" text-anchor="middle" class="label-small">async jobs</text>
+
+      <rect x="350" y="300" width="320" height="64" rx="2" class="box"/>
+      <text x="510" y="328" text-anchor="middle" class="label-display">Projection Compiler</text>
+      <text x="510" y="348" text-anchor="middle" class="label-small">smart compact, target output</text>
+
+      <rect x="350" y="400" width="320" height="64" rx="2" class="box"/>
+      <text x="510" y="428" text-anchor="middle" class="label-display">PI Runtime Integration</text>
+      <text x="510" y="448" text-anchor="middle" class="label-small">extension + switchSession</text>
+
+      <!-- Store group -->
+      <rect x="760" y="40" width="300" height="460" rx="2" class="group-frame"/>
+      <text x="780" y="68" class="label-mono">Thread Store</text>
+
+      <rect x="790" y="100" width="240" height="40" rx="2" class="box"/>
+      <text x="910" y="124" text-anchor="middle" class="label-display">thread.json · actors.json</text>
+
+      <rect x="790" y="155" width="240" height="40" rx="2" class="box"/>
+      <text x="910" y="179" text-anchor="middle" class="label-display">messages.jsonl</text>
+
+      <rect x="790" y="210" width="240" height="40" rx="2" class="box"/>
+      <text x="910" y="234" text-anchor="middle" class="label-display">turns.jsonl</text>
+
+      <rect x="790" y="265" width="240" height="40" rx="2" class="box"/>
+      <text x="910" y="289" text-anchor="middle" class="label-display">chunks.jsonl</text>
+
+      <rect x="790" y="320" width="240" height="40" rx="2" class="box"/>
+      <text x="910" y="344" text-anchor="middle" class="label-display">jobs.jsonl</text>
+
+      <rect x="790" y="375" width="240" height="40" rx="2" class="box"/>
+      <text x="910" y="399" text-anchor="middle" class="label-display">projections.jsonl</text>
+
+      <rect x="790" y="430" width="240" height="40" rx="2" class="box"/>
+      <text x="910" y="454" text-anchor="middle" class="label-display">archives/</text>
+
+      <!-- Connections -->
+      <!-- PI TUI ↔ Extension Events -->
+      <path d="M 140 160 L 140 220" class="arrow-line" marker-end="url(#ah)"/>
+      <!-- Extension Events → Steward Core -->
+      <path d="M 230 250 L 350 132" class="arrow-line" marker-end="url(#ah)"/>
+      <!-- Generated PI Session → PI TUI (loop back) -->
+      <path d="M 50 410 Q 10 410 10 250 Q 10 130 50 130" class="arrow-line" marker-end="url(#ah)"/>
+      <!-- Steward Core → Store -->
+      <path d="M 670 132 L 790 175" class="arrow-line" marker-end="url(#ah)"/>
+      <path d="M 670 132 L 790 230" class="arrow-line-soft"/>
+      <path d="M 670 132 L 790 285" class="arrow-line-soft"/>
+      <path d="M 670 132 L 790 340" class="arrow-line-soft"/>
+      <!-- Navigator → Core -->
+      <path d="M 424 200 L 460 164" class="arrow-line" marker-end="url(#ah)"/>
+      <!-- Jobs → Core -->
+      <path d="M 596 200 L 560 164" class="arrow-line" marker-end="url(#ah)"/>
+      <!-- Compiler → Navigator -->
+      <path d="M 424 300 L 424 264" class="arrow-line" marker-end="url(#ah)"/>
+      <!-- Compiler → projections in store -->
+      <path d="M 670 332 L 790 395" class="arrow-line" marker-end="url(#ah)"/>
+      <!-- Compiler → Generated PI Session File via Runtime Integration -->
+      <path d="M 510 364 L 510 400" class="arrow-line" marker-end="url(#ah)"/>
+      <path d="M 350 432 L 230 410" class="arrow-line" marker-end="url(#ah)"/>
+    </svg>
+    </div>
+
+    <h3 style="font-family:var(--mono); font-size:11px; letter-spacing:0.18em; text-transform:uppercase; color:var(--rust); margin-top:48px; margin-bottom:18px; padding-bottom:12px; border-bottom: 1px solid var(--rust);">Top-Tier Domains</h3>
+
+    <table class="editorial">
+      <thead><tr><th>Domain</th><th>Runtime Surface</th><th>Owns</th><th>Depends On</th><th>Downstream Inherits</th></tr></thead>
+      <tbody>
+        <tr><td>Context Steward Core</td><td>Local TS library + PI extension</td><td>Threads, actors, messages, turns, chunks, jobs, projections</td><td>Filesystem store, PI events</td><td>All epics treat canonical Thread as source of truth.</td></tr>
+        <tr><td>Context Navigator</td><td>Local TS library + CLI/extension commands</td><td>Readable views over messages, turns, parts, chunks, jobs, projection state</td><td>Context Steward Core</td><td>Deterministic code, future agents, and UI use the same navigation concepts.</td></tr>
+        <tr><td>Background Maintenance</td><td>Local worker/job runner</td><td>Smooth turn jobs, boundary adjudication jobs, chunk summary jobs</td><td>Context Steward Core, model providers</td><td>Expensive model work does not run in the PI event capture critical path.</td></tr>
+        <tr><td>Projection Compiler</td><td>Local TS library + smart compact command</td><td>Generated PI session file compilation, projection revision records, archives</td><td>Navigator, chunks, band policy</td><td>PI is a target format; other targets can be added later.</td></tr>
+        <tr><td>PI Runtime Integration</td><td>PI extension + PI session reload</td><td>Event capture, command entrypoints, generated PI session file path, <code>switchSession</code> handoff</td><td>PI coding-agent APIs, Projection Compiler</td><td>PI remains extended, not forked. PI-native sessions are target/runtime files.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ─── Core Data Shape ─────────────────────────── -->
+  <section class="essay full" id="data">
+    <p class="section-eyebrow">v. Core Data Shape</p>
+    <h2 class="section-title">The vocabulary downstream tech designs <em>share</em>.</h2>
+    <p class="section-intro">Reaches into light tech-design territory because downstream tech designs need a shared vocabulary for the interlocking pieces.</p>
+
+    <div class="diagram-frame" data-label="Figure — Domain Relationships">
+    <svg viewBox="0 0 1080 460" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Entity relationship diagram">
+      <!-- Thread root, top center -->
+      <rect x="450" y="20" width="180" height="60" rx="2" class="box-rust"/>
+      <text x="540" y="48" text-anchor="middle" class="label-display" style="font-weight:500">Thread</text>
+      <text x="540" y="66" text-anchor="middle" class="label-small">linear canonical record</text>
+
+      <!-- Children level: Actor, Message, Turn, Chunk, Job, Projection -->
+      <!-- 6 children spread evenly -->
+      <rect x="20" y="180" width="140" height="50" rx="2" class="box"/>
+      <text x="90" y="208" text-anchor="middle" class="label-display">Actor</text>
+      <text x="90" y="222" text-anchor="middle" class="label-small">type + id</text>
+
+      <rect x="180" y="180" width="140" height="50" rx="2" class="box"/>
+      <text x="250" y="208" text-anchor="middle" class="label-display">Message</text>
+      <text x="250" y="222" text-anchor="middle" class="label-small">actor + kind + parts</text>
+
+      <rect x="340" y="180" width="140" height="50" rx="2" class="box"/>
+      <text x="410" y="208" text-anchor="middle" class="label-display">Turn</text>
+      <text x="410" y="222" text-anchor="middle" class="label-small">prompt-bounded</text>
+
+      <rect x="500" y="180" width="140" height="50" rx="2" class="box"/>
+      <text x="570" y="208" text-anchor="middle" class="label-display">Chunk</text>
+      <text x="570" y="222" text-anchor="middle" class="label-small">stable aggregate</text>
+
+      <rect x="660" y="180" width="140" height="50" rx="2" class="box"/>
+      <text x="730" y="208" text-anchor="middle" class="label-display">Job</text>
+      <text x="730" y="222" text-anchor="middle" class="label-small">async work item</text>
+
+      <rect x="820" y="180" width="220" height="50" rx="2" class="box"/>
+      <text x="930" y="208" text-anchor="middle" class="label-display">ProjectionRevision</text>
+      <text x="930" y="222" text-anchor="middle" class="label-small">smart compact output</text>
+
+      <!-- Sub-children: Smooth, DetailedSummary, BriefSummary -->
+      <rect x="340" y="320" width="140" height="50" rx="2" class="box"/>
+      <text x="410" y="348" text-anchor="middle" class="label-display">Smooth</text>
+      <text x="410" y="362" text-anchor="middle" class="label-small">on Turn</text>
+
+      <rect x="500" y="320" width="140" height="50" rx="2" class="box"/>
+      <text x="570" y="348" text-anchor="middle" class="label-display">DetailedSummary</text>
+      <text x="570" y="362" text-anchor="middle" class="label-small">on Chunk</text>
+
+      <rect x="660" y="320" width="140" height="50" rx="2" class="box"/>
+      <text x="730" y="348" text-anchor="middle" class="label-display">BriefSummary</text>
+      <text x="730" y="362" text-anchor="middle" class="label-small">on Chunk</text>
+
+      <!-- Connections from Thread -->
+      <path d="M 540 80 L 90 180" class="er-line"/>
+      <path d="M 540 80 L 250 180" class="er-line"/>
+      <path d="M 540 80 L 410 180" class="er-line"/>
+      <path d="M 540 80 L 570 180" class="er-line"/>
+      <path d="M 540 80 L 730 180" class="er-line"/>
+      <path d="M 540 80 L 930 180" class="er-line"/>
+
+      <!-- Cardinality labels at thread end -->
+      <text x="180" y="135" class="er-cardinality">declares 1..*</text>
+      <text x="320" y="135" class="er-cardinality">contains 1..*</text>
+      <text x="460" y="135" class="er-cardinality">contains 1..*</text>
+      <text x="610" y="135" class="er-cardinality">contains 0..*</text>
+      <text x="710" y="135" class="er-cardinality">queues 0..*</text>
+      <text x="850" y="135" class="er-cardinality">emits 0..*</text>
+
+      <!-- Sub-relationships -->
+      <path d="M 410 230 L 410 320" class="er-line"/>
+      <text x="430" y="280" class="er-cardinality">has current 0..1</text>
+
+      <path d="M 570 230 L 570 320" class="er-line"/>
+      <text x="588" y="280" class="er-cardinality">has current 0..1</text>
+
+      <path d="M 600 230 Q 680 270 720 320" class="er-line"/>
+      <text x="660" y="270" class="er-cardinality">has current 0..1</text>
+
+      <!-- Turn → Message (groups) -->
+      <path d="M 340 200 L 320 200" class="er-line"/>
+      <text x="278" y="170" class="er-cardinality">groups</text>
+
+      <!-- Chunk → Turn (groups smooth turns) -->
+      <path d="M 500 200 L 480 200" class="er-line"/>
+      <text x="440" y="170" class="er-cardinality">groups</text>
+    </svg>
+    </div>
+
+    <table class="editorial">
+      <thead><tr><th>Concept</th><th>Expected Shape</th><th>Invariant</th></tr></thead>
+      <tbody>
+        <tr><td>Thread</td><td>Linear canonical context record.</td><td>Forking creates a new Thread with parent metadata; active threads do not maintain PI-style branch cursors.</td></tr>
+        <tr><td>Actor</td><td>Thread-level actor definition keyed by slug/id.</td><td>Messages store <code>actorType</code> and <code>actorId</code>; actor metadata can be resolved from the thread.</td></tr>
+        <tr><td>Message</td><td>Actor + message kind + ordered typed parts.</td><td>Messages are append-only source records. Smooth/summarization never mutates them.</td></tr>
+        <tr><td>Part</td><td>Typed content inside a message.</td><td>Text, reasoning, tool call, tool result, image/file, and runtime notes are parts rather than separate top-level records unless tech design proves otherwise.</td></tr>
+        <tr><td>Turn</td><td>Prompt-bounded grouping of messages.</td><td>Any agent-addressed prompt starts a turn. A turn may contain multiple assistant responses/tool cycles.</td></tr>
+        <tr><td>Smooth</td><td>Current smoothed text representation on a Turn.</td><td>Generated asynchronously; missing smooth output is repairable from canonical messages.</td></tr>
+        <tr><td>Chunk</td><td>Stable aggregate of closed turns' smooth text.</td><td>One open chunk per thread. Closed chunks are immutable by default and remain active unless explicitly replaced.</td></tr>
+        <tr><td>Summary</td><td>Current detailed/brief representation on a Chunk.</td><td>Detailed and brief are named summary slots, not band names.</td></tr>
+        <tr><td>Job</td><td>Durable async work item.</td><td>Expensive model work is visible and resumable.</td></tr>
+        <tr><td>ProjectionRevision</td><td>Generated target context output.</td><td>Records source state, band policy, output path, stats, and reload result.</td></tr>
+      </tbody>
+    </table>
+
+    <p class="flow-takeaway"><strong>Downstream inherits:</strong> Every epic and tech design uses these concept names for the context domain. New derived state composes against Thread, Message, Turn, Chunk, Job, and ProjectionRevision rather than introducing parallel domain types.</p>
+  </section>
+
+  <!-- ─── Store Interface ───────────────────────── -->
+  <section class="essay full" id="store">
+    <p class="section-eyebrow">vi. Store Interface</p>
+    <h2 class="section-title">An <em>interface</em>, not a file layout.</h2>
+    <p class="section-intro">The thread store should be treated as an interface, not as a file layout. The v1 implementation is file-backed, but the Context Navigator and Projection Compiler should depend on store operations with explicit ordering semantics.</p>
+
+    <table class="editorial">
+      <thead><tr><th>Capability</th><th>Required Behavior</th></tr></thead>
+      <tbody>
+        <tr><td>Append message</td><td>Writes messages while preserving stable thread order across reads.</td></tr>
+        <tr><td>Read message range</td><td>Returns messages in canonical order for turn repair, smoothing, and projection.</td></tr>
+        <tr><td>Write turn state</td><td>Creates and updates prompt-bounded turn records without mutating messages.</td></tr>
+        <tr><td>Read active chunks</td><td>Returns active chunks in source order.</td></tr>
+        <tr><td>Write job state</td><td>Records async job status, attempts, errors, timing, model, and size/cost metadata when available.</td></tr>
+        <tr><td>Write projection revision</td><td>Records the generated target path, source state, policy, size estimates, archive path, and reload result.</td></tr>
+      </tbody>
+    </table>
+
+    <p style="font-size:14.5px; line-height:1.55; color:var(--ink-soft); font-style:italic; margin-top:24px;">File-backed storage can use JSON/JSONL files and atomic rewrites where needed. Future database storage should preserve the same ordering and active-record semantics rather than exposing file-specific assumptions to consumers.</p>
+  </section>
+
+  <!-- ─── Actor & Message Axes ──────────────────── -->
+  <section class="essay full" id="axes">
+    <p class="section-eyebrow">vii. Actor &amp; Message Axes</p>
+    <h2 class="section-title">Two <em>independent</em> dimensions on every message.</h2>
+    <p class="section-intro"><code>actorType</code> / <code>actorId</code> identify <em>who</em> emitted the message. <code>messageKind</code> identifies <em>what</em> the message is.</p>
+
+    <table class="editorial">
+      <thead><tr><th>Case</th><th>Actor</th><th>Message Kind</th></tr></thead>
+      <tbody>
+        <tr><td>Human prompt</td><td><code>human:lee</code></td><td><code>prompt</code></td></tr>
+        <tr><td>System prompt to agent</td><td><code>system:pi-system</code></td><td><code>prompt</code></td></tr>
+        <tr><td>Agent response</td><td><code>agent:pi-main</code></td><td><code>response</code></td></tr>
+        <tr><td>Agent tool request</td><td><code>agent:pi-main</code></td><td><code>response</code> with <code>tool_call</code> part</td></tr>
+        <tr><td>Tool result</td><td><code>tool:bash</code></td><td><code>tool_result</code> with <code>tool_result</code> part</td></tr>
+        <tr><td>Runtime note</td><td><code>runtime:pi-runtime</code></td><td><code>runtime_event</code></td></tr>
+        <tr><td>Generated smooth/chunk projection message</td><td>Context Steward actor</td><td><code>projection_note</code> or target-specific generated prompt</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ─── Cross-Cutting Decisions ──────────────── -->
+  <section class="essay full" id="decisions">
+    <p class="section-eyebrow">viii. Cross-Cutting Decisions</p>
+    <h2 class="section-title">Eleven <em>commitments</em> that bind across features.</h2>
+
+    <ol class="cc-decisions">
+      <li>
+        <div>
+          <h3>Canonical Thread Ownership</h3>
+          <dl class="triplet"><dt>Choice</dt><dd>The Context Steward owns a canonical, target-neutral Thread as source of truth.</dd></dl>
+          <dl class="triplet"><dt>Rationale</dt><dd>Long-horizon memory needs stable turns, chunks, summaries, jobs, and projections that are not bound to PI's tree-shaped native session file. PI is the first runtime target, not the domain model.</dd></dl>
+          <dl class="triplet"><dt>Consequence</dt><dd>All features write and read the canonical Thread. PI session JSONL is target output and secondary repair/import input only.</dd></dl>
+        </div>
+      </li>
+      <li>
+        <div>
+          <h3>Runtime Capture</h3>
+          <dl class="triplet"><dt>Choice</dt><dd>PI extension events write the source thread in the sync event path.</dd></dl>
+          <dl class="triplet"><dt>Rationale</dt><dd>PI's <code>message_end</code> extension handlers run before PI persists native session entries. This lets the steward capture finalized messages in-process without forking PI.</dd></dl>
+          <dl class="triplet"><dt>Consequence</dt><dd>The initial implementation should use a PI extension as the live event adapter. Loose periodic ingest from generated PI session files is not the normal capture path.</dd></dl>
+        </div>
+      </li>
+      <li>
+        <div>
+          <h3>Canonical Turn Semantics</h3>
+          <dl class="triplet"><dt>Choice</dt><dd>Canonical turns are prompt-bounded, not PI-core-turn-bounded.</dd></dl>
+          <dl class="triplet"><dt>Rationale</dt><dd>PI's internal turn means one assistant response plus tool results. The context system needs a larger unit: one initiating prompt plus all resulting agent/tool/runtime activity until the next initiating prompt.</dd></dl>
+          <dl class="triplet"><dt>Consequence</dt><dd>PI <code>turn_start</code> and <code>turn_end</code> can inform capture, but Context Steward constructs domain turns from prompt boundaries and runtime activity.</dd></dl>
+        </div>
+      </li>
+      <li>
+        <div>
+          <h3>Smooth Turn Timing</h3>
+          <dl class="triplet"><dt>Choice</dt><dd>Smoothing can run after a local PI activity boundary, then refresh when the canonical turn receives more activity.</dd></dl>
+          <dl class="triplet"><dt>Rationale</dt><dd>A canonical turn may remain open until the next initiating prompt, but waiting that long delays smoothing by one prompt. PI <code>turn_end</code> is useful as an activity boundary even though it is not the canonical turn boundary.</dd></dl>
+          <dl class="triplet"><dt>Consequence</dt><dd>Smooth output should support draft and final states. A draft smooth can be generated after PI reports no more current activity for the prompt. If more messages enter the same canonical turn, the smooth output becomes stale and is regenerated. When the canonical turn closes, the current smooth output becomes final if it covers all turn messages.</dd></dl>
+        </div>
+      </li>
+      <li>
+        <div>
+          <h3>Projection Ownership</h3>
+          <dl class="triplet"><dt>Choice</dt><dd>Smart compact produces generated session files owned by Context Steward.</dd></dl>
+          <dl class="triplet"><dt>Rationale</dt><dd>A generated PI session file should be disposable, inspectable, archivable, and reproducible from canonical state. PI-native compaction entries do not define the multi-band substrate.</dd></dl>
+          <dl class="triplet"><dt>Consequence</dt><dd>The PI projection compiler is the first target adapter. Other target compilers can later emit different CLI/session formats from the same Thread.</dd></dl>
+        </div>
+      </li>
+      <li>
+        <div>
+          <h3>Chunk Stability</h3>
+          <dl class="triplet"><dt>Choice</dt><dd>Closed chunks are immutable by default and remain <code>active: true</code> until explicitly replaced.</dd></dl>
+          <dl class="triplet"><dt>Rationale</dt><dd>Constantly reshuffling chunks creates unstable derived memory. Boundary rework is closer to a Git rebase: allowed, expensive, and explicit.</dd></dl>
+          <dl class="triplet"><dt>Consequence</dt><dd>Normal aging changes which chunk summary is used, not chunk membership. Future rework creates replacement chunks or revisions and marks old chunks inactive.</dd></dl>
+        </div>
+      </li>
+      <li>
+        <div>
+          <h3>Smart Compact Bounds</h3>
+          <dl class="triplet"><dt>Choice</dt><dd>Smart compact uses a ramped operating range schedule with upper trigger bounds and lower target bounds.</dd></dl>
+          <dl class="triplet"><dt>Rationale</dt><dd>Mature sessions may target a large range such as 220k upper / 170k lower, but early sessions should engage smart compact gradually.</dd></dl>
+          <dl class="triplet"><dt>Consequence</dt><dd>Band allocation is computed against the current schedule stage. Successful compacts can advance the thread toward mature operating bounds.</dd></dl>
+        </div>
+      </li>
+      <li>
+        <div>
+          <h3>Degraded Maintenance State</h3>
+          <dl class="triplet"><dt>Choice</dt><dd>Missing model decisions or derived state blocks the affected maintenance step and produces operator-visible status.</dd></dl>
+          <dl class="triplet"><dt>Rationale</dt><dd>Boundary decisions, smoothing, and summaries are model-dependent. A silent deterministic fallback can produce low-quality memory state while hiding that the smart path failed.</dd></dl>
+          <dl class="triplet"><dt>Consequence</dt><dd>The system reports blocked states such as missing smooth turns, pending boundary decisions, missing summaries, failed jobs, or projection candidates that cannot reach the lower bound. The operator can retry, wait for jobs, manually intervene, or accept a clearly labeled degraded projection if a future command supports that path.</dd></dl>
+        </div>
+      </li>
+      <li>
+        <div>
+          <h3>Fork &amp; Attach Posture</h3>
+          <dl class="triplet"><dt>Choice</dt><dd>A fork creates a new canonical Thread. A late attach imports existing PI session history into a new Thread before normal event capture continues.</dd></dl>
+          <dl class="triplet"><dt>Rationale</dt><dd>Canonical Threads stay linear. PI's native session tree and <code>/fork</code> behavior should not turn the steward's active source record into a branch cursor structure.</dd></dl>
+          <dl class="triplet"><dt>Consequence</dt><dd>V1 should detect PI session replacement/fork events where PI exposes them. A child Thread records parent thread metadata and copies or imports the source history needed for the new working line. Closed chunks that fully precede the fork point may be reused or copied; uncertain derived state should be marked for repair or regeneration. A PI session that starts before Context Steward capture can be attached through explicit import, with import metadata recorded at the thread/import level.</dd></dl>
+        </div>
+      </li>
+      <li>
+        <div>
+          <h3>Concurrency Model</h3>
+          <dl class="triplet"><dt>Choice</dt><dd>Synchronous capture, async maintenance, and smart compact use separate write phases with clear ownership.</dd></dl>
+          <dl class="triplet"><dt>Rationale</dt><dd>PI extension event handling, background model jobs, and smart compact can overlap if the store does not define serialization expectations.</dd></dl>
+          <dl class="triplet"><dt>Consequence</dt><dd>PI event capture writes source messages and turn state in the sync event path. Background jobs operate on closed turns, open chunks, or closed chunks through durable job state. Smart compact reads the current store state, verifies prerequisites using the Smart Compact Prerequisite Policy below, writes a generated PI session file atomically, records a projection revision, then reloads PI through the command path. Tech design should choose locking or optimistic revision checks so smart compact never compiles from partially updated derived state.</dd></dl>
+        </div>
+      </li>
+      <li>
+        <div>
+          <h3>Schema Versioning</h3>
+          <dl class="triplet"><dt>Choice</dt><dd>Stored thread data includes schema version metadata.</dd></dl>
+          <dl class="triplet"><dt>Rationale</dt><dd>Thread, turn, chunk, job, and projection shapes will evolve while the system is dogfooded.</dd></dl>
+          <dl class="triplet"><dt>Consequence</dt><dd><code>thread.json</code> or equivalent store metadata should record schema version, created version, and last migrated version. Readers should detect unsupported versions before mutation. Migrations belong in tech design, but every v1 record family should assume future schema evolution.</dd></dl>
+        </div>
+      </li>
+    </ol>
+  </section>
+
+  <!-- ─── Boundaries & Flows ──────────────────────── -->
+  <section class="essay full" id="flows">
+    <p class="section-eyebrow">ix. Boundaries &amp; Flows</p>
+    <h2 class="section-title">Two <em>journeys</em> through the system.</h2>
+
+    <div class="flow" data-label="Flow A — Live Capture &amp; Background Preparation">
+      <div class="flow-participants">
+        <span class="pp"><span class="dot"></span> Operator</span>
+        <span class="pp"><span class="dot"></span> PI Runtime</span>
+        <span class="pp"><span class="dot"></span> Extension Adapter</span>
+        <span class="pp"><span class="dot"></span> Steward Core</span>
+        <span class="pp"><span class="dot"></span> Background Maintenance</span>
+        <span class="pp"><span class="dot"></span> Thread Store</span>
+      </div>
+      <ol class="flow-steps">
+        <li><span class="arrow"><span class="from">Operator</span><span class="glyph">→</span><span class="to">PI</span></span><span class="action">Agent-addressed prompt arrives in the PI TUI.</span></li>
+        <li><span class="arrow"><span class="from">PI</span><span class="glyph">→</span><span class="to">Extension</span></span><span class="action">PI fires <code>message_end</code> for the prompt before persisting natively.</span></li>
+        <li><span class="arrow"><span class="from">Extension</span><span class="glyph">→</span><span class="to">Steward Core</span></span><span class="action">Capture the message and open a canonical turn.</span></li>
+        <li><span class="arrow"><span class="from">Steward Core</span><span class="glyph">→</span><span class="to">Store</span></span><span class="action">Append message and turn state.</span></li>
+        <li><span class="arrow"><span class="from">PI</span><span class="glyph">→</span><span class="to">Extension</span></span><span class="action"><code>message_end</code> for response and tool result events.</span></li>
+        <li><span class="arrow"><span class="from">Extension</span><span class="glyph">→</span><span class="to">Steward Core</span></span><span class="action">Capture canonical message; update turn membership.</span></li>
+        <li><span class="arrow"><span class="from">PI</span><span class="glyph">→</span><span class="to">Extension</span></span><span class="action">Activity finalized for the prompt, or next prompt boundary.</span></li>
+        <li><span class="arrow"><span class="from">Extension</span><span class="glyph">→</span><span class="to">Steward Core</span></span><span class="action">Mark activity boundary or close canonical turn.</span></li>
+        <li><span class="arrow"><span class="from">Steward Core</span><span class="glyph">→</span><span class="to">Jobs</span></span><span class="action">Enqueue draft or final smooth-turn job.</span></li>
+        <li><span class="arrow"><span class="from">Jobs</span><span class="glyph">→</span><span class="to">Store</span></span><span class="action">Write smooth output and job status when ready.</span></li>
+      </ol>
+      <p class="flow-takeaway"><strong>Downstream inherits:</strong> Capture writes source records synchronously and keeps expensive model work outside the event critical path. Smoothing is derived state, not mutation of messages.</p>
+    </div>
+
+    <div class="flow" data-label="Flow B — Chunking &amp; Smart Compact">
+      <div class="flow-participants">
+        <span class="pp"><span class="dot"></span> /smart-compact</span>
+        <span class="pp"><span class="dot"></span> Navigator</span>
+        <span class="pp"><span class="dot"></span> Background Maintenance</span>
+        <span class="pp"><span class="dot"></span> Projection Compiler</span>
+        <span class="pp"><span class="dot"></span> Thread Store</span>
+        <span class="pp"><span class="dot"></span> PI Runtime</span>
+      </div>
+      <ol class="flow-steps">
+        <li><span class="arrow"><span class="from">Cmd</span><span class="glyph">→</span><span class="to">Navigator</span></span><span class="action">Inspect thread state.</span></li>
+        <li><span class="arrow"><span class="from">Navigator</span><span class="glyph">→</span><span class="to">Store</span></span><span class="action">Read turns, smooth state, chunks, and summaries.</span></li>
+      </ol>
+
+      <div class="flow-branch">
+        <span class="branch-label">Branch — Missing smooth or summary</span>
+        <span class="action">/smart-compact runs or waits for selected required jobs; jobs update derived state.</span>
+      </div>
+      <div class="flow-branch">
+        <span class="branch-label">Branch — Blocked prerequisite</span>
+        <span class="action">/smart-compact stops and emits a blocked report naming the missing work.</span>
+      </div>
+
+      <ol class="flow-steps" start="3" style="counter-reset: flowstep 2">
+        <li><span class="arrow"><span class="from">Cmd</span><span class="glyph">→</span><span class="to">Compiler</span></span><span class="action">Compile generated PI session file from current source thread plus derived state.</span></li>
+        <li><span class="arrow"><span class="from">Compiler</span><span class="glyph">→</span><span class="to">Store</span></span><span class="action">Record projection revision (source state, policy, size, archive path).</span></li>
+        <li><span class="arrow"><span class="from">Compiler</span><span class="glyph">→</span><span class="to">PI</span></span><span class="action">Atomically replace generated PI session file at the target path.</span></li>
+        <li><span class="arrow"><span class="from">Cmd</span><span class="glyph">→</span><span class="to">PI</span></span><span class="action"><code>switchSession(generatedFilePath)</code>.</span></li>
+      </ol>
+      <p class="flow-takeaway"><strong>Downstream inherits:</strong> Background jobs can prepare derived layers before pressure. The smart compact command owns prerequisite checks, final generation, atomic write, archive, and PI reload.</p>
+    </div>
+  </section>
+
+  <!-- ─── Band & Projection Model (CENTERPIECE) ─── -->
+  <section class="essay full" id="bands">
+    <p class="section-eyebrow">x. Band &amp; Projection Model</p>
+    <h2 class="section-title">Four bands of <em>fidelity</em>, allocated newest-first.</h2>
+    <p class="section-intro">The projection compiler chooses representation by fidelity band. Band boundaries are budget-based and recency-ordered. The compiler starts with newest/highest-fidelity content and works backward until the current lower-bound target is met.</p>
+
+    <!-- THE BANDS FIGURE -->
+    <div class="bands-figure">
+      <div class="bands-axis">
+        <span>Oldest history</span>
+        <span class="arrow"></span>
+        <span>Present</span>
+      </div>
+
+      <div class="bands-grid">
+
+        <!-- Band 1: Brief -->
+        <div class="band band-brief">
+          <div class="band-header">
+            <span class="band-name">Brief</span>
+            <span class="band-pct">~5–10%</span>
+          </div>
+          <p class="band-source">Source: closed chunks (oldest)</p>
+          <div class="band-content">
+            <em>Decided chunk boundaries are model-assisted with degraded-mode visibility, no deterministic fallback.</em>
+          </div>
+          <div class="band-rep">Representation: 1 message · <code>chunk.summaries.brief</code></div>
+        </div>
+
+        <!-- Band 2: Detailed -->
+        <div class="band band-detailed">
+          <div class="band-header">
+            <span class="band-name">Detailed</span>
+            <span class="band-pct">~25–35%</span>
+          </div>
+          <p class="band-source">Source: closed chunks (middle)</p>
+          <div class="band-content">
+            <em>Across several turns, Lee and PI settled the chunk boundary behavior: model-assisted close/continue decisions in a 3–7k smooth-token range, with no deterministic fallback. When the boundary model is unavailable, smart chunking pauses and reports degraded state rather than inventing a boundary.</em>
+          </div>
+          <div class="band-rep">Representation: 1 message · <code>chunk.summaries.detailed</code></div>
+        </div>
+
+        <!-- Band 3: Smooth -->
+        <div class="band band-smooth">
+          <div class="band-header">
+            <span class="band-name">Smooth</span>
+            <span class="band-pct">per-turn</span>
+          </div>
+          <p class="band-source">Source: closed turns</p>
+          <div class="band-content">
+            <em>Lee asked whether deterministic fallback for chunk boundary decisions made sense when the model is unavailable. PI looked back at earlier grilling notes, which observed that if the boundary model is down, the rest of the smart-compaction pipeline is also down, so a deterministic fallback only creates false comfort. PI agreed and proposed pause/degrade with visible operator status instead.</em>
+          </div>
+          <div class="band-rep">Representation: 1 synthetic message per turn · <code>turn.smooth.text</code></div>
+        </div>
+
+        <!-- Band 4: Full Fidelity -->
+        <div class="band band-full">
+          <div class="band-header">
+            <span class="band-name">Full fidelity</span>
+            <span class="band-pct">recent</span>
+          </div>
+          <p class="band-source">Source: recent messages/turns</p>
+          <div class="band-content">
+            <div class="msg">
+              <span class="actor">human:lee · prompt</span>
+              Should we have a deterministic fallback for chunk boundary decisions when the model is unavailable?
+            </div>
+            <div class="msg">
+              <span class="actor">agent:pi-main · response</span>
+              Let me check what we agreed earlier.
+              <span class="tool">→ tool:read_file { path: "docs/grilling.md", offset: 1200 }</span>
+            </div>
+            <div class="msg">
+              <span class="actor">tool:read_file · tool_result</span>
+              <span class="tool">… if the boundary model is unavailable, the whole smart-compaction pipeline is degraded anyway …</span>
+            </div>
+            <div class="msg">
+              <span class="actor">agent:pi-main · response</span>
+              You're right. Deterministic fallback creates false comfort. Better: pause/degrade with visible status.
+            </div>
+          </div>
+          <div class="band-rep">Representation: native PI messages · raw parts/tools</div>
+        </div>
+
+      </div>
+
+      <p class="bands-caption">
+        <strong>How to read this figure.</strong> Each column shows the same conversational content compressed to a different fidelity. The right-most band carries native PI messages with parts and tools intact; the left-most carries a single-line distillation. The compiler chooses representation per source span, working backward from present until the lower-bound token target is met. Closed chunks remain stable as they age — the band advances over them rather than reshuffling their membership.
+      </p>
+    </div>
+
+    <p class="flow-takeaway" style="margin-top:32px;"><strong>Downstream inherits:</strong> The compiler should not use missing derived representations silently. If smooth text or chunk summaries are missing, smart compact follows the prerequisite policy below — run or wait for selected jobs, or report blocked/degraded state.</p>
+
+    <!-- Compaction ramp -->
+    <div class="ramp-figure" style="margin-top:48px;">
+      <svg viewBox="0 0 720 280" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Compaction bound schedule chart">
+        <!-- axes -->
+        <line x1="60" y1="40" x2="60" y2="220" stroke="var(--ink)" stroke-width="1"/>
+        <line x1="60" y1="220" x2="700" y2="220" stroke="var(--ink)" stroke-width="1"/>
+
+        <!-- y-axis labels -->
+        <text x="50" y="50" text-anchor="end" class="label-small">240k</text>
+        <text x="50" y="90" text-anchor="end" class="label-small">200k</text>
+        <text x="50" y="130" text-anchor="end" class="label-small">160k</text>
+        <text x="50" y="170" text-anchor="end" class="label-small">120k</text>
+        <text x="50" y="210" text-anchor="end" class="label-small">80k</text>
+
+        <!-- gridlines -->
+        <line x1="60" y1="50" x2="700" y2="50" stroke="var(--rule)" stroke-width="0.5" stroke-dasharray="2 4"/>
+        <line x1="60" y1="90" x2="700" y2="90" stroke="var(--rule)" stroke-width="0.5" stroke-dasharray="2 4"/>
+        <line x1="60" y1="130" x2="700" y2="130" stroke="var(--rule)" stroke-width="0.5" stroke-dasharray="2 4"/>
+        <line x1="60" y1="170" x2="700" y2="170" stroke="var(--rule)" stroke-width="0.5" stroke-dasharray="2 4"/>
+
+        <!-- stages on x axis -->
+        <text x="160" y="240" text-anchor="middle" class="label-mono">Stage 1</text>
+        <text x="320" y="240" text-anchor="middle" class="label-mono">Stage 2</text>
+        <text x="480" y="240" text-anchor="middle" class="label-mono">Stage 3</text>
+        <text x="640" y="240" text-anchor="middle" class="label-mono">Mature</text>
+
+        <!-- upper bound polyline (220k mature, scaling up) -->
+        <!-- Stage1: 100k upper, lower 80k. Stage2: 150/125. Stage3: 180/155. Mature: 220/170 -->
+        <!-- y mapping: 240k=40, 80k=220 -> y = 40 + ((240-val)/160)*180. simpler: y = 40 + (240-val)*1.125 -->
+        <!-- 100k -> 197.5; 150k -> 141.25; 180k -> 107.5; 220k -> 62.5 -->
+        <!-- 80k -> 220; 125k -> 169.4; 155k -> 135.6; 170k -> 118.75 -->
+        <polyline points="160,197 320,141 480,107 640,62" stroke="var(--rust)" stroke-width="2" fill="none"/>
+        <polyline points="160,220 320,169 480,135 640,118" stroke="var(--moss)" stroke-width="2" fill="none" stroke-dasharray="4 3"/>
+
+        <!-- markers -->
+        <circle cx="160" cy="197" r="4" fill="var(--rust)"/>
+        <circle cx="320" cy="141" r="4" fill="var(--rust)"/>
+        <circle cx="480" cy="107" r="4" fill="var(--rust)"/>
+        <circle cx="640" cy="62" r="4" fill="var(--rust)"/>
+
+        <circle cx="160" cy="220" r="4" fill="var(--moss)"/>
+        <circle cx="320" cy="169" r="4" fill="var(--moss)"/>
+        <circle cx="480" cy="135" r="4" fill="var(--moss)"/>
+        <circle cx="640" cy="118" r="4" fill="var(--moss)"/>
+
+        <!-- labels for points -->
+        <text x="160" y="190" text-anchor="middle" class="label-small" style="fill:var(--rust)">100k</text>
+        <text x="320" y="134" text-anchor="middle" class="label-small" style="fill:var(--rust)">150k</text>
+        <text x="480" y="100" text-anchor="middle" class="label-small" style="fill:var(--rust)">180k</text>
+        <text x="640" y="55"  text-anchor="middle" class="label-small" style="fill:var(--rust)">220k</text>
+
+        <!-- legend -->
+        <line x1="500" y1="20" x2="520" y2="20" stroke="var(--rust)" stroke-width="2"/>
+        <text x="525" y="24" class="label-small">upper trigger</text>
+        <line x1="600" y1="20" x2="620" y2="20" stroke="var(--moss)" stroke-width="2" stroke-dasharray="4 3"/>
+        <text x="625" y="24" class="label-small">lower target</text>
+
+        <text x="60" y="20" class="label-mono">tokens</text>
+      </svg>
+      <p class="ramp-caption">Early-thread bounds engage smart compact gradually. Each successful compact can advance the schedule; mature operating range is the final stage. Sample sizing only — defaults are an open tech-design question.</p>
+    </div>
+  </section>
+
+  <!-- ─── Smart Compact Prerequisite Policy ──────── -->
+  <section class="essay full" id="prereq">
+    <p class="section-eyebrow">xi. Smart Compact Prerequisites</p>
+    <h2 class="section-title">What must be <em>true</em> before generation starts.</h2>
+
+    <ol class="policy-list">
+      <li>Closed turns selected for smooth or chunk bands have smooth text.</li>
+      <li>Chunks selected for detailed or brief bands are closed and active.</li>
+      <li>Selected chunks have the summary level required by the projection band.</li>
+      <li>Pending boundary decisions do not prevent the projection from reaching the current lower bound.</li>
+      <li>The PI target path can be written atomically.</li>
+    </ol>
+
+    <p class="flow-takeaway" style="margin-top:24px;">If prerequisites are missing, the command can run or wait for selected jobs when that is operator-approved. Otherwise it stops with a report naming the missing work and the generated context size impact.</p>
+  </section>
+
+  <!-- ─── Thread Store Layout ─────────────────────── -->
+  <section class="essay full" id="layout">
+    <p class="section-eyebrow">xii. Thread Store Layout</p>
+    <h2 class="section-title">A file-backed shape, treated as an <em>interface</em>.</h2>
+    <p class="section-intro">The v1 store is local and file-backed. Exact filenames can be finalized in tech design, but the architectural shape is:</p>
+
+    <pre class="codeblock">.context-steward/
+  threads/
+    &lt;thread-id&gt;/
+      thread.json
+      actors.json
+      messages.jsonl
+      turns.jsonl
+      chunks.jsonl
+      jobs.jsonl
+      projections.jsonl
+      archives/
+        projections/
+        chunks/</pre>
+
+    <p style="font-size:15px; line-height:1.6; color:var(--ink-soft); margin-top:24px;">Generated PI session files live where PI expects them, not inside the canonical store unless PI is configured that way. <code>thread.json</code> records target metadata:</p>
+
+    <pre class="codeblock">target runtime: pi
+target session id: &lt;pi session id&gt;
+current generated file path: &lt;path PI loads&gt;</pre>
+
+    <p style="font-size:14.5px; line-height:1.55; color:var(--ink-soft); font-style:italic; margin-top:18px;">This keeps the source store target-neutral while allowing PI to resume the generated file normally.</p>
+  </section>
+
+  <!-- ─── PI Fork & Attach Behavior ───────────────── -->
+  <section class="essay full" id="fork">
+    <p class="section-eyebrow">xiii. PI Fork &amp; Attach Behavior</p>
+    <h2 class="section-title">How the steward <em>responds</em> to PI lifecycle events.</h2>
+
+    <table class="editorial">
+      <thead><tr><th>PI Event / Situation</th><th>Expected Context Steward Behavior</th></tr></thead>
+      <tbody>
+        <tr><td>PI starts with steward active</td><td>Create or open the matching Thread and capture new messages from extension events.</td></tr>
+        <tr><td>PI has prior messages before attach</td><td>Import existing PI messages into a new Thread, record import metadata, then switch to event capture for new activity.</td></tr>
+        <tr><td>PI forks from an earlier point</td><td>Create a child Thread with parent metadata and source content through the fork point. Reuse only derived state that is fully valid for the child Thread.</td></tr>
+        <tr><td>PI switches to another session</td><td>Open or create the Thread associated with that target session path. If no association exists, require attach/import before treating it as managed.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ─── Constraints That Shape Epics ─────────── -->
+  <section class="essay full" id="constraints">
+    <p class="section-eyebrow">xiv. Constraints That Shape Epics</p>
+    <h2 class="section-title">Realities that bind <em>downstream scope</em>.</h2>
+
+    <ol class="constraints-list">
+      <li><div><strong>No PI fork for v1.</strong><p>Epics work through PI extensions, commands, and <code>switchSession</code>.</p></div></li>
+      <li><div><strong>Canonical Thread is linear.</strong><p>Branch/fork creates a new Thread with parent metadata. Active thread storage does not become a PI-style tree.</p></div></li>
+      <li><div><strong>Derived state can be missing.</strong><p>Epics report missing smooth/chunk/summary state and provide repair paths.</p></div></li>
+      <li><div><strong>Generated PI session file is disposable.</strong><p>Epics cannot treat the PI target file as authoritative source of truth.</p></div></li>
+      <li><div><strong>Model work is async unless explicitly command-driven.</strong><p>Smoothing and summarization should not block PI event capture.</p></div></li>
+      <li><div><strong>Chunked-band projection depends on boundary decisions.</strong><p>Epics that need closed chunks should surface pending boundary work as blocked or degraded maintenance state.</p></div></li>
+      <li><div><strong>Storage order is explicit.</strong><p>Message and turn order cannot depend on filesystem line order once the store moves to a database.</p></div></li>
+      <li><div><strong>Schema versions are visible.</strong><p>Readers should detect incompatible stored data before writing.</p></div></li>
+      <li><div><strong>Degraded state is operator-visible.</strong><p>Missing model outputs, blocked boundaries, and incomplete projection prerequisites are reported instead of hidden.</p></div></li>
+      <li><div><strong>Cost and latency are tracked.</strong><p>Model jobs should record input size, output size, model, duration, and estimated cost when available.</p></div></li>
+    </ol>
+  </section>
+
+  <!-- ─── Open Questions ─────────────────────────── -->
+  <section class="essay full" id="open">
+    <p class="section-eyebrow">xv. Open Questions for Tech Design</p>
+    <h2 class="section-title">Decisions <em>deliberately</em> deferred.</h2>
+
+    <ul class="questions-list">
+      <li>Exact file schemas for <code>thread.json</code>, <code>messages.jsonl</code>, <code>turns.jsonl</code>, <code>chunks.jsonl</code>, <code>jobs.jsonl</code>, and <code>projections.jsonl</code>.</li>
+      <li>Exact PI extension command names and UX for status, repair, and smart compact.</li>
+      <li>Exact model prompts and structured output formats for smoothing, boundary decisions, detailed summaries, and brief summaries.</li>
+      <li>Exact compact ramp schedule defaults and mature upper/lower bounds.</li>
+      <li>Exact chunk token range defaults. Current working range: roughly 3k–7k smooth tokens.</li>
+      <li>Exact treatment of provider reasoning parts in full-fidelity PI projection.</li>
+      <li>Exact archive retention policy for prior generated PI session files and inactive chunk sets.</li>
+      <li>Exact degraded-mode operator commands: retry, wait, manual close, accept degraded projection, or abort.</li>
+      <li>Exact schema migration mechanism and compatibility policy.</li>
+      <li>Exact store locking or optimistic revision strategy for async jobs and smart compact.</li>
+      <li>Exact evaluation rubric for smooth turn and chunk summary quality.</li>
+    </ul>
+  </section>
+
+  <!-- ─── Assumptions ─────────────────────────────── -->
+  <section class="essay full" id="assumptions">
+    <p class="section-eyebrow">xvi. Assumptions</p>
+    <h2 class="section-title">What this document <em>depends on</em>.</h2>
+
+    <table class="editorial">
+      <thead><tr><th>Id</th><th>Assumption</th><th>Status</th><th>Notes</th></tr></thead>
+      <tbody>
+        <tr><td>A1</td><td>PI extension events provide enough finalized message data to construct canonical messages.</td><td>Validated from source</td><td>Needs implementation confirmation with dogfooding.</td></tr>
+        <tr><td>A2</td><td>Generated PI session files can be produced if parent chains and required PI headers are valid.</td><td>Partially validated</td><td>PI schema is known; compiler validity tests still needed.</td></tr>
+        <tr><td>A3</td><td>A file-backed store can handle v1 thread sizes and fixture tests.</td><td>Unvalidated</td><td>Performance should be measured with expanded sessions.</td></tr>
+        <tr><td>A4</td><td>Smooth turns are useful as the canonical substrate for chunk summaries.</td><td>Design assumption</td><td>Feature 4 evaluates summary quality.</td></tr>
+        <tr><td>A5</td><td>Model boundary decisions improve chunk quality enough to justify async cost.</td><td>Unvalidated</td><td>Feature 4 evaluates this.</td></tr>
+        <tr><td>A6</td><td>Draft smoothing after PI activity boundaries reduces lag without creating unstable source state.</td><td>Unvalidated</td><td>Needs dogfood validation with multi-response turns.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ─── Relationship to Downstream ─────────────── -->
+  <section class="essay full" id="downstream">
+    <p class="section-eyebrow">xvii. Relationship to Downstream</p>
+    <h2 class="section-title">What this document <em>settles</em>, and what it does not.</h2>
+
+    <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap: 36px; border-top: 1px solid var(--ink); padding-top: 24px;">
+      <div>
+        <h3 style="font-family:var(--mono); font-size:11px; letter-spacing:0.16em; text-transform:uppercase; color:var(--rust); margin:0 0 12px;">This document settles</h3>
+        <p style="font-size:14.5px; line-height:1.6; color:var(--ink-soft); margin:0;">Source/projection ownership · core surfaces · canonical Thread semantics · prompt-bounded turns · generated PI session file strategy · chunk stability · async maintenance posture · PI extension/reload boundary.</p>
+      </div>
+      <div>
+        <h3 style="font-family:var(--mono); font-size:11px; letter-spacing:0.16em; text-transform:uppercase; color:var(--rust); margin:0 0 12px;">Epic specs settle</h3>
+        <p style="font-size:14.5px; line-height:1.6; color:var(--ink-soft); margin:0;">User-facing steward capabilities · line-level acceptance criteria · test conditions · story breakdowns.</p>
+      </div>
+      <div>
+        <h3 style="font-family:var(--mono); font-size:11px; letter-spacing:0.16em; text-transform:uppercase; color:var(--rust); margin:0 0 12px;">Tech designs still decide</h3>
+        <p style="font-size:14.5px; line-height:1.6; color:var(--ink-soft); margin:0;">Exact file schemas · function signatures · command UX · worker implementation · target compiler implementation · model prompts · verification scripts · fixture generation mechanics.</p>
+      </div>
+    </div>
+
+    <style>
+      @media (max-width: 720px) {
+        #downstream > div { grid-template-columns: 1fr !important; }
+      }
+    </style>
+  </section>
+
+  <!-- ─── Footer ──────────────────────────────────── -->
+  <footer class="colophon">
+    <div>
+      <strong style="color:var(--ink)">PI Long Horizon</strong> — Technical Architecture<br>
+      Establishes the technical world downstream tech designs inherit.
+    </div>
+    <div class="companion">
+      Companion: <a href="prd.html">← Product Requirements Document</a>
+    </div>
+  </footer>
+
+</article>
+
+</body>
+</html>

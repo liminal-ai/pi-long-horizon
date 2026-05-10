@@ -1,0 +1,1671 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>PI Long Horizon — Product Requirements Document</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght,SOFT@0,9..144,200..900,0..100;1,9..144,200..900,0..100&family=Newsreader:ital,opsz,wght@0,6..72,200..800;1,6..72,200..800&family=JetBrains+Mono:ital,wght@0,100..800;1,100..800&display=swap" rel="stylesheet" />
+
+<style>
+:root {
+  --paper:        #f4ede3;
+  --paper-deep:   #ebe1cf;
+  --paper-warm:   #ece5d6;
+  --ink:          #1a1816;
+  --ink-soft:     #443e36;
+  --ink-muted:    #8a8378;
+  --rule:         #d6cab5;
+  --rule-soft:    #e3d9c5;
+  --rust:         #b54e2c;
+  --rust-deep:    #8b3a1f;
+  --rust-soft:    rgba(181, 78, 44, 0.08);
+  --rust-glow:    rgba(181, 78, 44, 0.18);
+
+  --serif-display: 'Fraunces', Georgia, 'Times New Roman', serif;
+  --serif-body:    'Newsreader', 'Iowan Old Style', Georgia, serif;
+  --mono:          'JetBrains Mono', 'IBM Plex Mono', ui-monospace, monospace;
+}
+
+* { box-sizing: border-box; }
+
+html { scroll-behavior: smooth; }
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--serif-body);
+  font-size: 17px;
+  line-height: 1.65;
+  font-feature-settings: "kern", "liga", "onum";
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+/* Subtle paper grain overlay */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+  background-image:
+    radial-gradient(circle at 20% 30%, transparent 0, rgba(0,0,0,0.012) 100%),
+    repeating-linear-gradient(0deg,
+      transparent 0,
+      transparent 2px,
+      rgba(0,0,0,0.005) 2px,
+      rgba(0,0,0,0.005) 3px);
+  mix-blend-mode: multiply;
+}
+
+::selection { background: var(--rust); color: var(--paper); }
+
+/* ─── Layout ───────────────────────────────────────────── */
+
+.document {
+  max-width: 1140px;
+  margin: 0 auto;
+  padding: 80px 60px 160px;
+  position: relative;
+  z-index: 2;
+}
+
+@media (max-width: 720px) {
+  .document { padding: 50px 28px 100px; }
+}
+
+/* ─── Frontispiece ─────────────────────────────────────── */
+
+.frontispiece {
+  border-top: 2px solid var(--ink);
+  border-bottom: 1px solid var(--ink);
+  padding: 28px 0 48px;
+  margin-bottom: 100px;
+  position: relative;
+}
+
+.frontispiece::after {
+  content: "";
+  position: absolute;
+  left: 0; right: 0;
+  bottom: -7px;
+  height: 1px;
+  background: var(--ink);
+}
+
+.eyebrow-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  margin-bottom: 56px;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.eyebrow-row .accent { color: var(--rust); }
+
+.title {
+  font-family: var(--serif-display);
+  font-weight: 250;
+  font-size: clamp(48px, 8vw, 92px);
+  line-height: 0.95;
+  letter-spacing: -0.025em;
+  margin: 0 0 28px;
+  font-variation-settings: "SOFT" 30, "opsz" 144;
+}
+
+.title em {
+  font-style: italic;
+  font-weight: 200;
+  color: var(--rust);
+  font-variation-settings: "SOFT" 100, "opsz" 144;
+}
+
+.subtitle {
+  font-family: var(--serif-body);
+  font-size: clamp(17px, 2vw, 21px);
+  font-style: italic;
+  font-weight: 300;
+  line-height: 1.4;
+  color: var(--ink-soft);
+  max-width: 640px;
+  margin: 0;
+}
+
+.frontispiece-meta {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 28px;
+  margin-top: 56px;
+  padding-top: 28px;
+  border-top: 1px solid var(--rule);
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  color: var(--ink-soft);
+}
+
+.frontispiece-meta dt {
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  font-size: 10px;
+  color: var(--ink-muted);
+  margin-bottom: 6px;
+}
+
+.frontispiece-meta dd {
+  margin: 0;
+  color: var(--ink);
+}
+
+/* ─── Table of Contents ──────────────────────────────── */
+
+.contents {
+  margin-bottom: 120px;
+  display: grid;
+  grid-template-columns: 200px 1fr;
+  gap: 60px;
+}
+
+.contents h2 {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--rust);
+  font-weight: 600;
+  margin: 0;
+}
+
+.contents ol {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  counter-reset: toc;
+  columns: 2;
+  column-gap: 48px;
+}
+
+.contents li {
+  counter-increment: toc;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--rule-soft);
+  break-inside: avoid;
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+}
+
+.contents li::before {
+  content: counter(toc, decimal-leading-zero);
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--rust);
+  font-weight: 500;
+}
+
+.contents a {
+  color: var(--ink);
+  text-decoration: none;
+  font-family: var(--serif-display);
+  font-weight: 400;
+  font-size: 16px;
+  letter-spacing: -0.005em;
+  flex: 1;
+  transition: color 0.2s ease;
+}
+
+.contents a:hover { color: var(--rust); }
+
+@media (max-width: 720px) {
+  .contents { grid-template-columns: 1fr; gap: 16px; }
+  .contents ol { columns: 1; }
+}
+
+/* ─── Section structure ──────────────────────────────── */
+
+section.essay {
+  display: grid;
+  grid-template-columns: 1fr 220px;
+  gap: 60px;
+  margin-bottom: 100px;
+  scroll-margin-top: 40px;
+}
+
+section.essay.full {
+  display: block;
+  max-width: 720px;
+}
+
+@media (max-width: 920px) {
+  section.essay { grid-template-columns: 1fr; gap: 28px; }
+}
+
+.section-eyebrow {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--rust);
+  margin: 0 0 18px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.section-eyebrow::before {
+  content: "";
+  width: 32px;
+  height: 1px;
+  background: var(--rust);
+}
+
+h2.section-title {
+  font-family: var(--serif-display);
+  font-weight: 350;
+  font-size: clamp(32px, 4vw, 46px);
+  line-height: 1.05;
+  letter-spacing: -0.018em;
+  margin: 0 0 32px;
+  font-variation-settings: "SOFT" 30;
+}
+
+h2.section-title em {
+  font-style: italic;
+  font-weight: 300;
+}
+
+.prose p {
+  margin: 0 0 1.4em;
+}
+
+.prose p:first-of-type::first-letter {
+  font-family: var(--serif-display);
+  font-weight: 300;
+  font-size: 5.4em;
+  line-height: 0.85;
+  float: left;
+  padding: 0.08em 0.10em 0 0;
+  margin: 0.06em 0.05em -0.12em 0;
+  color: var(--rust);
+  font-variation-settings: "SOFT" 50, "opsz" 144;
+}
+
+.prose .no-dropcap::first-letter {
+  font-family: inherit;
+  font-weight: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  float: none;
+  padding: 0;
+  margin: 0;
+  color: inherit;
+}
+
+aside.marginalia {
+  font-family: var(--serif-body);
+  font-size: 13.5px;
+  line-height: 1.55;
+  font-style: italic;
+  color: var(--ink-soft);
+  border-top: 1px solid var(--rust);
+  padding-top: 12px;
+  margin-top: 8px;
+}
+
+aside.marginalia .label {
+  display: block;
+  font-family: var(--mono);
+  font-style: normal;
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--rust);
+  margin-bottom: 8px;
+}
+
+aside.marginalia + aside.marginalia { margin-top: 28px; }
+
+/* ─── Pull quote ─────────────────────────────────────── */
+
+.pullquote {
+  margin: 56px 0;
+  padding: 0 0 0 32px;
+  border-left: 2px solid var(--rust);
+  font-family: var(--serif-display);
+  font-style: italic;
+  font-weight: 300;
+  font-size: clamp(22px, 2.4vw, 30px);
+  line-height: 1.3;
+  color: var(--ink);
+  letter-spacing: -0.01em;
+}
+
+.pullquote::before {
+  content: "“";
+  display: block;
+  font-size: 64px;
+  line-height: 0.4;
+  color: var(--rust);
+  margin-left: -8px;
+  margin-bottom: 14px;
+}
+
+/* ─── Definition list (terminology) ─────────────────── */
+
+.glossary {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 56px;
+  margin: 0;
+  padding: 36px 0 8px;
+  border-top: 1px solid var(--ink);
+}
+
+.glossary > .entry {
+  display: grid;
+  grid-template-columns: 180px 1fr;
+  gap: 24px;
+  padding: 22px 0;
+  border-bottom: 1px solid var(--rule-soft);
+  break-inside: avoid;
+}
+
+.glossary dt {
+  font-family: var(--serif-display);
+  font-weight: 450;
+  font-size: 17px;
+  letter-spacing: -0.005em;
+  color: var(--rust);
+  font-variation-settings: "SOFT" 30;
+}
+
+.glossary dd {
+  margin: 0;
+  font-size: 15.5px;
+  line-height: 1.55;
+  color: var(--ink-soft);
+}
+
+@media (max-width: 920px) {
+  .glossary { grid-template-columns: 1fr; gap: 0; }
+}
+
+@media (max-width: 560px) {
+  .glossary > .entry { grid-template-columns: 1fr; gap: 6px; }
+}
+
+/* ─── Numbered manifesto list (principles) ──────────── */
+
+.manifesto {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  counter-reset: principle;
+  display: grid;
+  gap: 4px;
+  border-top: 1px solid var(--ink);
+}
+
+.manifesto li {
+  counter-increment: principle;
+  display: grid;
+  grid-template-columns: 60px 1fr;
+  gap: 24px;
+  padding: 24px 0;
+  border-bottom: 1px solid var(--rule-soft);
+  align-items: baseline;
+}
+
+.manifesto li::before {
+  content: counter(principle, decimal-leading-zero);
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  color: var(--rust);
+  font-weight: 600;
+  padding-top: 4px;
+}
+
+.manifesto strong {
+  font-family: var(--serif-display);
+  font-weight: 500;
+  font-size: 19px;
+  letter-spacing: -0.005em;
+  display: block;
+  margin-bottom: 6px;
+  color: var(--ink);
+}
+
+.manifesto p {
+  margin: 0;
+  font-size: 15.5px;
+  line-height: 1.55;
+  color: var(--ink-soft);
+}
+
+/* ─── Scope two-column ───────────────────────────────── */
+
+.scope-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 56px;
+  margin-top: 8px;
+}
+
+@media (max-width: 720px) {
+  .scope-grid { grid-template-columns: 1fr; gap: 36px; }
+}
+
+.scope-grid h3 {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--rust);
+  font-weight: 600;
+  margin: 0 0 18px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--rust);
+}
+
+.scope-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.scope-list li {
+  padding: 11px 0 11px 22px;
+  border-bottom: 1px solid var(--rule-soft);
+  font-size: 15.5px;
+  line-height: 1.5;
+  position: relative;
+  color: var(--ink-soft);
+}
+
+.scope-list li::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 22px;
+  width: 8px;
+  height: 1px;
+  background: var(--rust);
+}
+
+.scope-list .destination {
+  display: block;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--ink-muted);
+  margin-top: 4px;
+  text-transform: uppercase;
+}
+
+/* ─── Tables ─────────────────────────────────────────── */
+
+table.editorial {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 24px 0 12px;
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+table.editorial thead th {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--rust);
+  font-weight: 600;
+  padding: 10px 12px;
+  text-align: left;
+  border-top: 1px solid var(--ink);
+  border-bottom: 1px solid var(--ink);
+  vertical-align: bottom;
+}
+
+table.editorial tbody td {
+  padding: 16px 12px;
+  border-bottom: 1px solid var(--rule-soft);
+  color: var(--ink-soft);
+  vertical-align: top;
+}
+
+table.editorial tbody td:first-child {
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  color: var(--ink);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+table.editorial tbody tr:last-child td { border-bottom: 1px solid var(--ink); }
+
+table.editorial code {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  background: var(--rust-soft);
+  padding: 1px 5px;
+  border-radius: 2px;
+  color: var(--rust-deep);
+}
+
+/* ─── Milestone strip ────────────────────────────────── */
+
+.milestones {
+  border-top: 2px solid var(--ink);
+  border-bottom: 1px solid var(--ink);
+  padding: 32px 0;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 32px;
+  position: relative;
+  margin: 24px 0;
+}
+
+.milestones::after {
+  content: "";
+  position: absolute;
+  left: 0; right: 0;
+  bottom: -7px;
+  height: 1px;
+  background: var(--ink);
+}
+
+@media (max-width: 920px) {
+  .milestones { grid-template-columns: 1fr 1fr; }
+}
+
+@media (max-width: 560px) {
+  .milestones { grid-template-columns: 1fr; }
+}
+
+.milestone {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  position: relative;
+}
+
+.milestone::before {
+  content: "";
+  position: absolute;
+  top: -32px;
+  left: 0;
+  width: 12px;
+  height: 12px;
+  background: var(--rust);
+  border-radius: 50%;
+  transform: translateY(-3px);
+}
+
+.milestone-id {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--rust);
+  font-weight: 600;
+}
+
+.milestone-title {
+  font-family: var(--serif-display);
+  font-size: 18px;
+  font-weight: 450;
+  line-height: 1.25;
+  color: var(--ink);
+  margin: 0;
+  letter-spacing: -0.005em;
+}
+
+.milestone-feedback {
+  font-size: 13.5px;
+  line-height: 1.5;
+  font-style: italic;
+  color: var(--ink-soft);
+  margin: 0;
+}
+
+/* ─── Feature blocks ─────────────────────────────────── */
+
+.feature {
+  margin-bottom: 120px;
+  scroll-margin-top: 40px;
+}
+
+.feature-header {
+  display: grid;
+  grid-template-columns: 60px 1fr;
+  gap: 28px;
+  align-items: baseline;
+  border-top: 2px solid var(--ink);
+  border-bottom: 1px solid var(--ink);
+  padding: 36px 0 28px;
+  position: relative;
+  margin-bottom: 56px;
+}
+
+.feature-header::after {
+  content: "";
+  position: absolute;
+  left: 0; right: 0;
+  bottom: -7px;
+  height: 1px;
+  background: var(--ink);
+}
+
+.feature-number {
+  font-family: var(--serif-display);
+  font-size: 56px;
+  line-height: 0.85;
+  font-weight: 200;
+  color: var(--rust);
+  letter-spacing: -0.04em;
+  font-variation-settings: "SOFT" 80, "opsz" 144;
+}
+
+.feature-title {
+  margin: 0;
+  font-family: var(--serif-display);
+  font-weight: 350;
+  font-size: clamp(28px, 3.6vw, 40px);
+  line-height: 1.05;
+  letter-spacing: -0.018em;
+  color: var(--ink);
+}
+
+.feature-overview {
+  font-size: 17.5px;
+  line-height: 1.6;
+  color: var(--ink-soft);
+  margin: 0 0 56px;
+  max-width: 640px;
+}
+
+.feature-overview::first-letter {
+  font-family: var(--serif-display);
+  font-weight: 300;
+  font-size: 4em;
+  line-height: 0.85;
+  float: left;
+  padding: 0.08em 0.10em 0 0;
+  margin: 0.04em 0.05em -0.05em 0;
+  color: var(--rust);
+}
+
+.scenario {
+  margin-bottom: 48px;
+  display: grid;
+  grid-template-columns: 1fr 220px;
+  gap: 60px;
+  scroll-margin-top: 40px;
+}
+
+@media (max-width: 920px) {
+  .scenario { grid-template-columns: 1fr; gap: 28px; }
+}
+
+.scenario-eyebrow {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--rust);
+  margin: 0 0 8px;
+}
+
+.scenario-title {
+  font-family: var(--serif-display);
+  font-weight: 450;
+  font-size: 22px;
+  line-height: 1.2;
+  letter-spacing: -0.005em;
+  margin: 0 0 14px;
+  color: var(--ink);
+}
+
+.scenario-prose {
+  font-style: italic;
+  font-size: 16px;
+  line-height: 1.55;
+  color: var(--ink-soft);
+  margin: 0 0 22px;
+  padding-left: 16px;
+  border-left: 1px solid var(--rust);
+}
+
+.acs {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 18px;
+}
+
+.acs li {
+  display: grid;
+  grid-template-columns: 56px 1fr;
+  gap: 16px;
+  padding: 14px 0 14px 0;
+  border-bottom: 1px solid var(--rule-soft);
+  align-items: baseline;
+}
+
+.acs li:last-child { border-bottom: none; }
+
+.acs li .ac-id {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  font-weight: 600;
+  color: var(--rust);
+  text-transform: uppercase;
+  padding-top: 3px;
+}
+
+.acs li .ac-body {
+  font-size: 15.5px;
+  line-height: 1.55;
+  color: var(--ink);
+}
+
+/* ─── Cross-cutting decisions ────────────────────────── */
+
+.decisions-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 56px;
+  border-top: 1px solid var(--ink);
+}
+
+@media (max-width: 720px) { .decisions-grid { grid-template-columns: 1fr; } }
+
+.decision {
+  padding: 24px 0;
+  border-bottom: 1px solid var(--rule-soft);
+}
+
+.decision-name {
+  font-family: var(--serif-display);
+  font-weight: 450;
+  font-size: 17px;
+  margin: 0 0 8px;
+  color: var(--rust);
+}
+
+.decision p {
+  margin: 0;
+  font-size: 14.5px;
+  line-height: 1.55;
+  color: var(--ink-soft);
+}
+
+/* ─── Sequencing diagram ─────────────────────────────── */
+
+.sequencing {
+  margin: 32px 0;
+  padding: 56px 28px;
+  border: 1px solid var(--rule);
+  background:
+    radial-gradient(ellipse at center, var(--paper-warm) 0%, var(--paper) 70%);
+  position: relative;
+}
+
+.sequencing::before, .sequencing::after {
+  content: "";
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  background: var(--rust);
+  border-radius: 50%;
+}
+
+.sequencing::before { top: -8px; left: 50%; transform: translateX(-50%); }
+
+.sequencing::after { bottom: -8px; left: 50%; transform: translateX(-50%); }
+
+.sequencing-flow {
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  gap: 0;
+  flex-wrap: wrap;
+}
+
+.seq-stage {
+  flex: 1 1 180px;
+  min-width: 180px;
+  max-width: 240px;
+  text-align: center;
+  padding: 0 16px;
+  position: relative;
+}
+
+.seq-stage:not(:last-child)::after {
+  content: "→";
+  position: absolute;
+  right: -8px;
+  top: 28%;
+  color: var(--rust);
+  font-size: 24px;
+  font-family: var(--mono);
+}
+
+@media (max-width: 720px) {
+  .seq-stage:not(:last-child)::after {
+    content: "↓";
+    right: 50%;
+    top: auto;
+    bottom: -22px;
+    transform: translateX(50%);
+  }
+  .seq-stage { padding: 0 0 32px; }
+}
+
+.seq-stage .num {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  color: var(--rust);
+  text-transform: uppercase;
+  font-weight: 600;
+  display: block;
+  margin-bottom: 10px;
+}
+
+.seq-stage .name {
+  font-family: var(--serif-display);
+  font-size: 18px;
+  font-weight: 500;
+  color: var(--ink);
+  display: block;
+  margin-bottom: 8px;
+  letter-spacing: -0.005em;
+  line-height: 1.2;
+}
+
+.seq-stage .delivers {
+  font-size: 13px;
+  line-height: 1.45;
+  font-style: italic;
+  color: var(--ink-soft);
+}
+
+/* ─── Future directions list ─────────────────────────── */
+
+.future-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--ink-soft);
+  columns: 2;
+  column-gap: 56px;
+}
+
+.future-list li {
+  padding: 8px 0 8px 22px;
+  position: relative;
+  break-inside: avoid;
+}
+
+.future-list li::before {
+  content: "→";
+  position: absolute;
+  left: 0;
+  color: var(--rust);
+  font-family: var(--mono);
+}
+
+@media (max-width: 720px) { .future-list { columns: 1; } }
+
+/* ─── Footer ─────────────────────────────────────────── */
+
+footer.colophon {
+  margin-top: 120px;
+  padding-top: 36px;
+  border-top: 2px solid var(--ink);
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 56px;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+footer.colophon .companion {
+  text-align: right;
+}
+
+footer.colophon a {
+  color: var(--rust);
+  text-decoration: none;
+  font-weight: 600;
+}
+
+footer.colophon a:hover { color: var(--rust-deep); text-decoration: underline; }
+
+@media (max-width: 560px) {
+  footer.colophon { grid-template-columns: 1fr; gap: 16px; }
+  footer.colophon .companion { text-align: left; }
+}
+
+/* ─── Inline elements ────────────────────────────────── */
+
+code {
+  font-family: var(--mono);
+  font-size: 0.88em;
+  color: var(--rust-deep);
+  background: var(--rust-soft);
+  padding: 1px 5px;
+  border-radius: 2px;
+}
+
+a {
+  color: var(--rust);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-thickness: 1px;
+  text-decoration-color: var(--rust-glow);
+}
+
+a:hover { text-decoration-color: var(--rust); }
+
+/* small print intro */
+.section-intro {
+  font-family: var(--serif-body);
+  font-size: 16px;
+  line-height: 1.55;
+  font-style: italic;
+  color: var(--ink-soft);
+  margin: 0 0 32px;
+  max-width: 640px;
+}
+</style>
+</head>
+<body>
+
+<article class="document">
+
+  <!-- ─── Frontispiece ─────────────────────────────────── -->
+  <header class="frontispiece">
+    <div class="eyebrow-row">
+      <span><span class="accent">No. I</span> &nbsp;·&nbsp; PI Long Horizon &nbsp;·&nbsp; Volume 0.1</span>
+      <span>Product Requirements</span>
+    </div>
+
+    <h1 class="title">A managed memory<br>surface for <em>long</em><br>coding sessions.</h1>
+
+    <p class="subtitle">PI Long Horizon is a long-horizon agent CLI built on PI. It runs a scoped set of Codex models through ChatGPT OAuth and gives the agent a managed memory surface for coding sessions that outgrow a raw transcript.</p>
+
+    <dl class="frontispiece-meta">
+      <div><dt>Companion</dt><dd><a href="technical-architecture.html">Technical Architecture →</a></dd></div>
+      <div><dt>Primary user</dt><dd>Context Steward</dd></div>
+      <div><dt>Features</dt><dd>Four (sequenced)</dd></div>
+      <div><dt>Status</dt><dd>Ready for epic expansion</dd></div>
+    </dl>
+  </header>
+
+  <!-- ─── Table of Contents ───────────────────────────── -->
+  <nav class="contents" aria-label="Contents">
+    <h2>Contents</h2>
+    <ol>
+      <li><a href="#vision">Product Vision</a></li>
+      <li><a href="#terminology">Terminology</a></li>
+      <li><a href="#user-profile">User Profile</a></li>
+      <li><a href="#problem">Problem Statement</a></li>
+      <li><a href="#principles">Product Principles</a></li>
+      <li><a href="#scope">Scope &amp; Assumptions</a></li>
+      <li><a href="#nfr">Non-Functional Requirements</a></li>
+      <li><a href="#architecture">Architecture Summary</a></li>
+      <li><a href="#milestones">Milestones</a></li>
+      <li><a href="#feature-1">Feature I — Session Context Store</a></li>
+      <li><a href="#feature-2">Feature II — Context Navigator Surface</a></li>
+      <li><a href="#feature-3">Feature III — Band, Chunk &amp; Projection Mechanics</a></li>
+      <li><a href="#feature-4">Feature IV — Summarization Policies</a></li>
+      <li><a href="#decisions">Cross-Cutting Decisions</a></li>
+      <li><a href="#future">Future Directions</a></li>
+      <li><a href="#sequencing">Recommended Epic Sequencing</a></li>
+    </ol>
+  </nav>
+
+  <!-- ─── Vision ──────────────────────────────────────── -->
+  <section class="essay" id="vision">
+    <div class="prose">
+      <p class="section-eyebrow">i. Vision</p>
+      <h2 class="section-title">A working <em>memory</em> for the agent that does not collapse under its own weight.</h2>
+      <p>PI Long Horizon is a long-horizon agent CLI built on PI. It runs a scoped set of Codex models through ChatGPT OAuth and gives the agent a managed memory surface for coding sessions that outgrow a raw transcript.</p>
+      <p class="no-dropcap">The v1 product manages PI's working context so coding sessions remain coherent past a single context window. It gives operators visible maintenance state and a manual smart compact path for dogfooding the core loop.</p>
+    </div>
+    <aside class="marginalia">
+      <span class="label">A note on framing</span>
+      Through most of this document the <em>Context Steward</em> — a programmatic actor — is treated as the primary user. The visible product still serves a human operator, but v1 capabilities are largely internal context-maintenance capabilities. Framing the steward as the user keeps the flows functional without pretending the human is manually creating turns, chunks, and projections.
+    </aside>
+  </section>
+
+  <!-- ─── Terminology ─────────────────────────────────── -->
+  <section class="essay full" id="terminology">
+    <p class="section-eyebrow">ii. Terminology</p>
+    <h2 class="section-title">A small <em>vocabulary</em> the rest of this document inherits.</h2>
+    <p class="section-intro">These terms appear throughout. The reader who has them in hand on the way in will spend less time in translation.</p>
+
+    <dl class="glossary">
+      <div class="entry"><dt>PI</dt><dd>The interactive agent runtime used by this project. V1 extends PI instead of forking it.</dd></div>
+      <div class="entry"><dt>Long-horizon agent CLI</dt><dd>A command-line agent experience intended to stay coherent across larger coding sessions than a raw model context can hold.</dd></div>
+      <div class="entry"><dt>Context Steward</dt><dd>The programmatic actor that maintains the stored history, derived memory layers, and generated PI session file.</dd></div>
+      <div class="entry"><dt>Actor</dt><dd>A human, agent, tool, system, or runtime participant that can emit messages into a thread.</dd></div>
+      <div class="entry"><dt>Source thread</dt><dd>The complete stored history for a working line of conversation. It records what happened before any shortening or projection.</dd></div>
+      <div class="entry"><dt>Canonical turn</dt><dd>One prompt addressed to an agent plus the responses, tool activity, reasoning, and runtime notes that follow until the next agent-addressed prompt.</dd></div>
+      <div class="entry"><dt>Open turn</dt><dd>A canonical turn that can still receive more activity for the current prompt.</dd></div>
+      <div class="entry"><dt>Closed turn</dt><dd>A canonical turn whose messages are ready for final smoothing, chunking, and projection decisions.</dd></div>
+      <div class="entry"><dt>Typed part</dt><dd>A structured piece inside a message — text, reasoning, tool call, tool result, runtime note, image, or file reference.</dd></div>
+      <div class="entry"><dt>Band</dt><dd>A fidelity region in the generated context. Newer history uses higher-fidelity bands; older history uses smoother or more compressed bands.</dd></div>
+      <div class="entry"><dt>Smooth turn</dt><dd>A readable single-text version of a canonical turn. It keeps the substance of the turn while reducing noise from raw messages and tool output.</dd></div>
+      <div class="entry"><dt>Chunk</dt><dd>A stable group of smooth turns. Chunks become the source material for detailed and brief summaries.</dd></div>
+      <div class="entry"><dt>Detailed summary</dt><dd>A middle-fidelity summary of a chunk, used for older history that still needs back-and-forth detail.</dd></div>
+      <div class="entry"><dt>Brief summary</dt><dd>A low-fidelity summary of a chunk, used for oldest history that needs project trajectory, decisions, and unresolved threads.</dd></div>
+      <div class="entry"><dt>Job</dt><dd>A visible background work item for smoothing, boundary decisions, summary generation, repair, or projection preparation.</dd></div>
+      <div class="entry"><dt>Smart compact</dt><dd>The operation that rebuilds the shorter PI session file from raw, smooth, detailed, and brief representations.</dd></div>
+      <div class="entry"><dt>Generated PI session file</dt><dd>The shorter session file PI loads after smart compact. It is output from the stored history, not the stored history itself.</dd></div>
+      <div class="entry"><dt>Projection revision</dt><dd>A recorded smart compact output, including the generated session file, source state, policy, size report, archive path, and reload result.</dd></div>
+      <div class="entry"><dt>Context Navigator</dt><dd>The inspection surface over the source thread, turns, message parts, chunks, jobs, and generated session files.</dd></div>
+    </dl>
+  </section>
+
+  <!-- ─── User Profile ────────────────────────────────── -->
+  <section class="essay" id="user-profile">
+    <div class="prose">
+      <p class="section-eyebrow">iii. User Profile</p>
+      <h2 class="section-title">Who this is <em>for</em>.</h2>
+
+      <table class="editorial">
+        <tbody>
+          <tr><td>Primary user</td><td>Context Steward — the programmatic actor that maintains the long-horizon context substrate.</td></tr>
+          <tr><td>Context</td><td>The steward runs beside the PI CLI during coding sessions. It records finalized runtime activity, tracks prompt-bounded turns, prepares smoothed and summarized history, and regenerates the PI session file when the working context needs to shrink.</td></tr>
+          <tr><td>Mental model</td><td><em>“Keep the source thread complete, prepare lower-fidelity versions as history ages, and project the right fidelity mix back into the agent runtime.”</em></td></tr>
+          <tr><td>Key constraint</td><td>The agent can only reason over a bounded model context, while the useful history of the project and working relationship can grow across many sessions.</td></tr>
+          <tr><td>Secondary users</td><td>The human operator starts and dogfoods the agent, runs inspection and smart compact commands, and reviews context behavior. PI consumes the generated session file.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <aside class="marginalia">
+      <span class="label">On the secondary user</span>
+      The human operator's role is small in this v1 only because most of the work is internal. As the context navigator and degraded-state reporting mature, the human surface widens.
+    </aside>
+  </section>
+
+  <!-- ─── Problem ─────────────────────────────────────── -->
+  <section class="essay full" id="problem">
+    <p class="section-eyebrow">iv. Problem Statement</p>
+    <h2 class="section-title">What goes wrong as a session <em>grows</em>.</h2>
+    <div class="prose">
+      <p>Long coding-agent sessions accumulate user messages, assistant responses, tool calls, tool results, and reasoning traces. Raw history eventually exceeds the model context or crowds out older project knowledge. Standard compaction replaces a large span with one summary and leaves the active session dependent on one runtime-specific transcript format.</p>
+    </div>
+  </section>
+
+  <!-- ─── Principles ──────────────────────────────────── -->
+  <section class="essay full" id="principles">
+    <p class="section-eyebrow">v. Product Principles</p>
+    <h2 class="section-title">Six commitments the system <em>holds</em>.</h2>
+
+    <ol class="manifesto">
+      <li><div><strong>Keep the complete history before shortening it.</strong><p>The system stores the full conversation and tool activity before generating the shorter session file that PI loads.</p></div></li>
+      <li><div><strong>Reduce older history gradually.</strong><p>Recent work stays raw. Older work moves through smoothed turns, detailed summaries, and brief summaries.</p></div></li>
+      <li><div><strong>Prepare compressed history early.</strong><p>The system can smooth turns and summarize chunks before the active context reaches its compact threshold.</p></div></li>
+      <li><div><strong>Keep closed chunks stable.</strong><p>Once a group of turns is closed and summarized, normal aging changes which summary is used rather than reshuffling the group.</p></div></li>
+      <li><div><strong>Treat PI as the first output format.</strong><p>The stored history is not a PI session file. PI receives a generated session file.</p></div></li>
+      <li><div><strong>Make context easy to inspect.</strong><p>Deterministic code, future agents, CLI commands, and future UI use the same navigation concepts.</p></div></li>
+    </ol>
+  </section>
+
+  <!-- ─── Scope ───────────────────────────────────────── -->
+  <section class="essay full" id="scope">
+    <p class="section-eyebrow">vi. Scope</p>
+    <h2 class="section-title">What v1 <em>delivers</em>, and what it does not.</h2>
+    <p class="section-intro">V1 delivers the context-maintenance foundation needed for a long-horizon PI CLI.</p>
+
+    <div class="scope-grid">
+      <div>
+        <h3>In Scope</h3>
+        <ul class="scope-list">
+          <li>Complete stored history for messages, turns, chunks, jobs, and generated session file revisions.</li>
+          <li>PI extension capture of finalized runtime activity.</li>
+          <li>Prompt-bounded turns that can contain multiple agent responses and tool cycles.</li>
+          <li>Context Navigator views over messages, turns, typed parts, smooth state, chunks, jobs, and generated session files.</li>
+          <li>Smooth turn generation.</li>
+          <li>Chunk formation from smooth turns.</li>
+          <li>Model-assisted chunk boundary decisions.</li>
+          <li>Detailed and brief chunk summaries.</li>
+          <li>Manual smart compact that generates a PI-compatible session file and reloads PI.</li>
+          <li>Fixture sessions for threshold and projection testing.</li>
+          <li>Explicit attach/import behavior for PI sessions that started before Context Steward capture.</li>
+          <li>Operator-visible blocked/degraded status when smoothing, chunking, summaries, or smart compact cannot proceed.</li>
+        </ul>
+      </div>
+      <div>
+        <h3>Out of Scope</h3>
+        <ul class="scope-list">
+          <li>Forking PI.<span class="destination">Not planned for v1</span></li>
+          <li>PI-native compaction entries as the main projection architecture.<span class="destination">Rejected v1 architecture</span></li>
+          <li>Convex persistence migration.<span class="destination">Future direction</span></li>
+          <li>Round Table multi-agent product behavior.<span class="destination">Future direction</span></li>
+          <li>Web UI for context editing.<span class="destination">Future direction</span></li>
+          <li>Autonomous high-end agent reworking of closed chunks.<span class="destination">Future direction</span></li>
+          <li>Non-PI projection targets.<span class="destination">Future direction</span></li>
+          <li>Dynamic memory ticket retrieval and injection.<span class="destination">Future direction</span></li>
+          <li>Higher-order chunk merging for multi-month histories.<span class="destination">Future direction</span></li>
+        </ul>
+      </div>
+    </div>
+
+    <h3 style="font-family:var(--mono); font-size:11px; letter-spacing:0.18em; text-transform:uppercase; color:var(--rust); margin-top:64px; margin-bottom:18px; padding-bottom:12px; border-bottom: 1px solid var(--rust);">Assumptions</h3>
+    <table class="editorial">
+      <thead>
+        <tr><th>Id</th><th>Assumption</th><th>Status</th><th>Notes</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>A1</td><td>PI extension events expose finalized messages before PI writes its native session entry.</td><td>Validated from PI source</td><td><code>message_end</code> handlers run before <code>SessionManager.appendMessage</code>.</td></tr>
+        <tr><td>A2</td><td>PI can reload a generated session file from an extension command.</td><td>Validated from PI source</td><td><code>switchSession()</code> opens a session path and replaces the runtime context.</td></tr>
+        <tr><td>A3</td><td>Canonical turns use prompt boundaries, not PI's internal turn event boundaries.</td><td>Validated from PI source</td><td>PI internal turns represent one assistant response plus tool results.</td></tr>
+        <tr><td>A4</td><td>Model-assisted chunk boundary decisions improve summary quality enough to justify async model calls.</td><td>Unvalidated</td><td>Feature 4 evaluates this with fixtures.</td></tr>
+        <tr><td>A5</td><td>File-backed storage is sufficient for v1 thread sizes and can later map to database collections.</td><td>Unvalidated</td><td>Expanded fixtures should test size and traversal cost.</td></tr>
+        <tr><td>A6</td><td>Smoothing can run after local PI activity boundaries and be refreshed when a prompt-bounded turn receives more activity.</td><td>Unvalidated</td><td>Feature 3 validates draft/final smooth behavior during dogfooding.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ─── NFR ─────────────────────────────────────────── -->
+  <section class="essay full" id="nfr">
+    <p class="section-eyebrow">vii. Non-Functional Requirements</p>
+    <h2 class="section-title">Cross-cutting <em>constraints</em>.</h2>
+
+    <ol class="manifesto">
+      <li><div><strong>Capture latency.</strong><p>Runtime capture writes do not create visible delay in the PI TUI.</p></div></li>
+      <li><div><strong>Projection safety.</strong><p>Smart compact writes the generated PI session file atomically before PI reloads it.</p></div></li>
+      <li><div><strong>Repairability.</strong><p>Missing turns, missing smooth text, and incomplete derived state are detectable and repairable.</p></div></li>
+      <li><div><strong>Observability.</strong><p>Capture, smoothing, chunking, summarization, and smart compact report status, blocked work, and output sizes.</p></div></li>
+      <li><div><strong>Portability.</strong><p>Stored history records avoid PI session schema fields. PI-specific data appears in target metadata and generated PI session output.</p></div></li>
+      <li><div><strong>Cost control.</strong><p>Model work for smoothing, boundary decisions, and summaries runs as visible async jobs unless a command explicitly waits for it.</p></div></li>
+      <li><div><strong>Schema evolution.</strong><p>Stored thread data includes version information so future schema changes can be detected and migrated.</p></div></li>
+    </ol>
+  </section>
+
+  <!-- ─── Architecture Summary ────────────────────────── -->
+  <section class="essay" id="architecture">
+    <div class="prose">
+      <p class="section-eyebrow">viii. Architecture Summary</p>
+      <h2 class="section-title">The technical world this PRD <em>inherits</em>.</h2>
+
+      <p>V1 is a local TypeScript/Node system that runs as a PI extension plus supporting local commands and workers. The first target runtime is PI with ChatGPT OAuth-backed Codex models. The v1 store is file-backed under a Context Steward thread directory, with a store interface so later database storage can preserve the same ordering and active-record semantics.</p>
+
+      <p class="no-dropcap">The system has five top-tier surfaces. Context Steward Core stores the source thread. Context Navigator exposes readable thread, turn, chunk, job, and generated-session state. Background Maintenance runs smoothing, boundary, and summary jobs. Projection Compiler builds the shorter PI session file. PI Runtime Integration captures PI events and reloads PI after smart compact.</p>
+
+      <p class="no-dropcap">V1 is single-user and single-machine. It extends PI through extension events, commands, and <code>switchSession</code>; it does not fork PI.</p>
+    </div>
+    <aside class="marginalia">
+      <span class="label">See also</span>
+      Full system shape, ownership tables, and cross-cutting decisions appear in the <a href="technical-architecture.html">Technical Architecture</a>.
+    </aside>
+  </section>
+
+  <!-- ─── Milestones ──────────────────────────────────── -->
+  <section class="essay full" id="milestones">
+    <p class="section-eyebrow">ix. Milestones</p>
+    <h2 class="section-title">Feedback-gated <em>delivery</em>.</h2>
+
+    <div class="milestones">
+      <div class="milestone">
+        <span class="milestone-id">M1 · After Feature i</span>
+        <p class="milestone-title">Live capture into stored messages and prompt-bounded turns.</p>
+        <p class="milestone-feedback">Dogfood live capture and inspect stored thread state.</p>
+      </div>
+      <div class="milestone">
+        <span class="milestone-id">M2 · After Feature ii</span>
+        <p class="milestone-title">Navigator traverses thread, turn, message, part, chunk, job, and generated-session state.</p>
+        <p class="milestone-feedback">Inspect real and fixture threads through Navigator output.</p>
+      </div>
+      <div class="milestone">
+        <span class="milestone-id">M3 · After Feature iii</span>
+        <p class="milestone-title">Smart compact produces a generated PI session file.</p>
+        <p class="milestone-feedback">Run smart compact, reload PI, and compare source thread to generated session.</p>
+      </div>
+      <div class="milestone">
+        <span class="milestone-id">M4 · After Feature iv</span>
+        <p class="milestone-title">Model-calibrated detailed and brief memory layers.</p>
+        <p class="milestone-feedback">Evaluate compression quality and context coherence across threshold fixtures.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─── Feature 1 ───────────────────────────────────── -->
+  <section class="feature" id="feature-1">
+    <header class="feature-header">
+      <span class="feature-number">i</span>
+      <div>
+        <p class="section-eyebrow">Feature 1</p>
+        <h2 class="feature-title">Session Context Store</h2>
+      </div>
+    </header>
+
+    <p class="feature-overview">This feature gives the Context Steward a source thread for a live PI session. After it ships, PI runtime activity is captured as stored messages and prompt-bounded turns, and the generated PI session file is tracked as output from that stored history.</p>
+
+    <div class="scope-grid" style="margin-bottom:56px;">
+      <div>
+        <h3>In Scope</h3>
+        <ul class="scope-list">
+          <li>Thread directory for stored history.</li>
+          <li>Actor identity fields on stored messages.</li>
+          <li>Messages with ordered typed parts.</li>
+          <li>Prompt-bounded turns with open and closed states.</li>
+          <li>PI extension capture for finalized runtime messages and relevant runtime events.</li>
+          <li>Target metadata for the generated PI session file.</li>
+          <li>Repair path that reconstructs turns from stored messages.</li>
+          <li>Attach/import path for a PI session that already contains activity before Context Steward capture starts.</li>
+          <li>Basic fixture creation from real PI sessions.</li>
+        </ul>
+      </div>
+      <div>
+        <h3>Out of Scope</h3>
+        <ul class="scope-list">
+          <li>Full Context Navigator query surface.<span class="destination">Feature 2</span></li>
+          <li>Chunking and band allocation.<span class="destination">Feature 3</span></li>
+          <li>Smart compact projection.<span class="destination">Feature 3</span></li>
+          <li>Summary generation.<span class="destination">Feature 4</span></li>
+          <li>Database storage.<span class="destination">Future direction</span></li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="scenario">
+      <div class="prose">
+        <p class="scenario-eyebrow">Scenario 1</p>
+        <h3 class="scenario-title">Capturing live PI activity</h3>
+        <p class="scenario-prose">The operator uses the PI CLI. The Context Steward records each finalized prompt, response, tool result, reasoning part, and runtime note into the source thread.</p>
+        <ul class="acs">
+          <li><span class="ac-id">AC&nbsp;1</span><span class="ac-body">The steward records finalized PI messages during PI extension events. Stored messages preserve actor identity, message kind, ordered typed parts, timestamps, and target-runtime metadata.</span></li>
+          <li><span class="ac-id">AC&nbsp;2</span><span class="ac-body">An agent-addressed prompt starts a canonical turn. Agent responses, tool activity, runtime notes, and intermediate outputs remain in that turn until the next agent-addressed prompt starts a new turn.</span></li>
+          <li><span class="ac-id">AC&nbsp;3</span><span class="ac-body">A canonical turn can contain multiple assistant responses and tool cycles. PI activity events that occur before the next initiating prompt remain inside the current canonical turn.</span></li>
+        </ul>
+      </div>
+      <aside class="marginalia">
+        <span class="label">Note on canonical turns</span>
+        PI's internal turn means one assistant response plus tool results. The canonical turn is larger: prompt-bounded.
+      </aside>
+    </div>
+
+    <div class="scenario">
+      <div class="prose">
+        <p class="scenario-eyebrow">Scenario 2</p>
+        <h3 class="scenario-title">Tracking the generated PI session</h3>
+        <p class="scenario-prose">The steward stores source history and records which PI session file receives generated output.</p>
+        <ul class="acs">
+          <li><span class="ac-id">AC&nbsp;4</span><span class="ac-body">The source thread records the current generated PI session file path. PI loads that generated file after smart compact.</span></li>
+          <li><span class="ac-id">AC&nbsp;5</span><span class="ac-body">The steward can run an explicit repair or import operation from a PI-native session file. New activity after repair/import is captured through extension events.</span></li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="scenario">
+      <div class="prose">
+        <p class="scenario-eyebrow">Scenario 3</p>
+        <h3 class="scenario-title">Attaching to an existing PI session</h3>
+        <p class="scenario-prose">The operator may start PI before Context Steward capture is active.</p>
+        <ul class="acs">
+          <li><span class="ac-id">AC&nbsp;6</span><span class="ac-body">The steward can attach to an existing PI session and import prior PI messages into a new source thread. Imported records are marked as imported at the thread/import level.</span></li>
+          <li><span class="ac-id">AC&nbsp;7</span><span class="ac-body">After attach completes, the next finalized PI activity is recorded through the same extension-capture path and associated with the imported source thread.</span></li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="scenario">
+      <div class="prose">
+        <p class="scenario-eyebrow">Scenario 4</p>
+        <h3 class="scenario-title">Repairing turn state</h3>
+        <p class="scenario-prose">A thread may have messages whose turn state is missing or incomplete.</p>
+        <ul class="acs">
+          <li><span class="ac-id">AC&nbsp;8</span><span class="ac-body">The steward can reconstruct turn membership from stored messages using agent-addressed prompt boundaries. Repair preserves message order and raw message content.</span></li>
+          <li><span class="ac-id">AC&nbsp;9</span><span class="ac-body">The steward reports missing or incomplete turn state before smoothing, chunking, or smart compact uses the affected turns.</span></li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─── Feature 2 ───────────────────────────────────── -->
+  <section class="feature" id="feature-2">
+    <header class="feature-header">
+      <span class="feature-number">ii</span>
+      <div>
+        <p class="section-eyebrow">Feature 2</p>
+        <h2 class="feature-title">Context Navigator Surface</h2>
+      </div>
+    </header>
+
+    <p class="feature-overview">This feature gives the Context Steward and operator a readable surface over the source thread. After it ships, consumers can inspect thread health, follow the turn timeline, inspect typed message parts, and identify missing derived work.</p>
+
+    <div class="scope-grid" style="margin-bottom:56px;">
+      <div>
+        <h3>In Scope</h3>
+        <ul class="scope-list">
+          <li>Open and inspect a source thread.</li>
+          <li>List messages, turns, typed parts, chunks, jobs, and generated session files.</li>
+          <li>Show flattened views for tool calls, tool results, reasoning parts, runtime notes, and text.</li>
+          <li>Report missing smooth turns, missing summaries, open chunks, failed jobs, and stale generated session files.</li>
+          <li>Report blocked smart compact prerequisites and degraded context-maintenance state.</li>
+          <li>Read fixture threads and expanded threshold sessions.</li>
+          <li>Provide concepts usable by deterministic code, CLI commands, future agents, and future UI.</li>
+        </ul>
+      </div>
+      <div>
+        <h3>Out of Scope</h3>
+        <ul class="scope-list">
+          <li>Model summarization.<span class="destination">Feature 4</span></li>
+          <li>Chunk boundary adjudication.<span class="destination">Feature 3 &amp; 4</span></li>
+          <li>Projection compilation.<span class="destination">Feature 3</span></li>
+          <li>Web UI.<span class="destination">Future direction</span></li>
+          <li>Final method signatures.<span class="destination">Tech design</span></li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="scenario">
+      <div class="prose">
+        <p class="scenario-eyebrow">Scenario 1</p>
+        <h3 class="scenario-title">Inspecting thread state</h3>
+        <p class="scenario-prose">The operator or future context agent opens a thread and reviews its current structure.</p>
+        <ul class="acs">
+          <li><span class="ac-id">AC&nbsp;1</span><span class="ac-body">The Navigator shows whether a thread is usable for maintenance by reporting its target runtime, active turn state, derived-state health, and generated-session status.</span></li>
+          <li><span class="ac-id">AC&nbsp;2</span><span class="ac-body">The Navigator presents the turn timeline in order, with enough context to understand the initiating prompt, responding actors, tool activity, derived-state readiness, and chunk placement.</span></li>
+          <li><span class="ac-id">AC&nbsp;3</span><span class="ac-body">The Navigator supports part-level inspection so consumers can trace text, tool activity, reasoning, and runtime notes back to stored messages.</span></li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="scenario">
+      <div class="prose">
+        <p class="scenario-eyebrow">Scenario 2</p>
+        <h3 class="scenario-title">Finding work that needs repair or generation</h3>
+        <p class="scenario-prose">The steward checks whether a thread is ready for smoothing, chunking, summarization, or smart compact.</p>
+        <ul class="acs">
+          <li><span class="ac-id">AC&nbsp;4</span><span class="ac-body">The Navigator identifies missing derived work that blocks maintenance, including closed turns without smooth output, chunks awaiting boundary decisions, chunks without required summaries, failed jobs, and stale generated session files.</span></li>
+          <li><span class="ac-id">AC&nbsp;5</span><span class="ac-body">The Navigator reports smart compact blockers in operator terms: missing smooth turns, pending boundary decisions, missing summaries, invalid generated-session candidates, and model/job failures.</span></li>
+          <li><span class="ac-id">AC&nbsp;6</span><span class="ac-body">The Navigator shows whether a record is source history or derived state before repair operations run.</span></li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─── Feature 3 ───────────────────────────────────── -->
+  <section class="feature" id="feature-3">
+    <header class="feature-header">
+      <span class="feature-number">iii</span>
+      <div>
+        <p class="section-eyebrow">Feature 3</p>
+        <h2 class="feature-title">Band, Chunk &amp; Projection Mechanics</h2>
+      </div>
+    </header>
+
+    <p class="feature-overview">This feature gives the Context Steward its first complete maintenance loop. It has two connected seams: chunk preparation and smart compact. Chunk preparation creates smooth turns and stable chunks. Smart compact selects raw, smooth, detailed, and brief representations and generates the PI session file loaded by the CLI.</p>
+
+    <div class="scope-grid" style="margin-bottom:56px;">
+      <div>
+        <h3>In Scope — Chunk Preparation</h3>
+        <ul class="scope-list">
+          <li>Smooth turn jobs triggered by PI activity boundaries and canonical turn closure.</li>
+          <li>One open chunk per thread.</li>
+          <li>Chunk membership from smooth turn text.</li>
+          <li>Chunk boundary decision state.</li>
+          <li>Chunk status <code>open</code> or <code>closed</code>, with active state for replacement/rework.</li>
+        </ul>
+
+        <h3 style="margin-top:36px;">In Scope — Smart Compact</h3>
+        <ul class="scope-list">
+          <li>Ramped upper and lower smart compact bounds.</li>
+          <li>Budget-based projection allocation from newest/highest fidelity backward.</li>
+          <li>Generated PI session file using raw, smooth, detailed chunk, and brief chunk representations.</li>
+          <li>Manual smart compact command that writes the generated session file atomically and reloads PI.</li>
+          <li>Smart compact prerequisite check that waits for selected jobs or stops with a blocked report.</li>
+        </ul>
+      </div>
+      <div>
+        <h3>Out of Scope</h3>
+        <ul class="scope-list">
+          <li>Final smoothing and summary prompts.<span class="destination">Feature 4</span></li>
+          <li>Automatic smart compact trigger.<span class="destination">Future direction</span></li>
+          <li>Expensive chunk rework.<span class="destination">Future direction</span></li>
+          <li>Non-PI target compilers.<span class="destination">Future direction</span></li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="scenario">
+      <div class="prose">
+        <p class="scenario-eyebrow">Scenario 1</p>
+        <h3 class="scenario-title">Preparing smooth turns</h3>
+        <p class="scenario-prose">A turn receives a smoothed representation before smart compact needs it.</p>
+        <ul class="acs">
+          <li><span class="ac-id">AC&nbsp;1</span><span class="ac-body">The steward can create draft smooth text after PI reports no more local runtime activity for the current prompt. If the canonical turn receives more activity before the next initiating prompt, the smooth text is refreshed.</span></li>
+          <li><span class="ac-id">AC&nbsp;2</span><span class="ac-body">The steward finalizes smooth text when the canonical turn closes. Smooth state records readiness, failure, and generation metadata while preserving stored messages and typed parts.</span></li>
+          <li><span class="ac-id">AC&nbsp;3</span><span class="ac-body">When chunking needs a turn whose smooth text is missing, the steward repairs the turn or regenerates smooth text before assigning the turn. If repair or generation cannot complete, chunking reports blocked state.</span></li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="scenario">
+      <div class="prose">
+        <p class="scenario-eyebrow">Scenario 2</p>
+        <h3 class="scenario-title">Building chunks from smooth turns</h3>
+        <p class="scenario-prose">Eligible smooth turns are appended to the current open chunk as they leave full fidelity.</p>
+        <ul class="acs">
+          <li><span class="ac-id">AC&nbsp;4</span><span class="ac-body">A turn becomes chunk-eligible when projection policy moves it out of full fidelity and into the smooth band. The steward appends eligible smooth turns to the open chunk in order.</span></li>
+          <li><span class="ac-id">AC&nbsp;5</span><span class="ac-body">When the open chunk reaches the boundary decision range, the steward requests a model boundary decision using the current chunk and nearby smooth turns. If no valid decision is available, chunking remains pending.</span></li>
+          <li><span class="ac-id">AC&nbsp;6</span><span class="ac-body">Closing a chunk prevents new turns from being added to it. Future rework creates replacement chunk state and marks prior chunks inactive.</span></li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="scenario">
+      <div class="prose">
+        <p class="scenario-eyebrow">Scenario 3</p>
+        <h3 class="scenario-title">Running manual smart compact</h3>
+        <p class="scenario-prose">The operator runs smart compact after the active context crosses the current upper bound.</p>
+        <ul class="acs">
+          <li><span class="ac-id">AC&nbsp;7</span><span class="ac-body">Smart compact uses a configured range schedule with upper trigger bounds and lower target bounds. Early compacts use smaller ranges, and later compacts move toward the mature operating range.</span></li>
+          <li><span class="ac-id">AC&nbsp;8</span><span class="ac-body">Projection allocation starts with newest/highest-fidelity history and works backward. Full fidelity is selected by token budget.</span></li>
+          <li><span class="ac-id">AC&nbsp;9</span><span class="ac-body">The generated PI session uses raw messages for full-fidelity history, one synthetic smooth-turn message for smooth history, detailed chunk summaries for middle compressed history, and brief chunk summaries for oldest compressed history.</span></li>
+          <li><span class="ac-id">AC&nbsp;10</span><span class="ac-body">Before writing the generated PI session file, smart compact verifies that required smooth turns, chunk boundaries, and summaries are ready. If prerequisites are missing, it waits for selected jobs or stops with a report that names the blocked work.</span></li>
+          <li><span class="ac-id">AC&nbsp;11</span><span class="ac-body">Smart compact writes the generated PI session file atomically, archives the previous generated session file at regeneration boundaries, and reloads PI through the extension command path.</span></li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─── Feature 4 ───────────────────────────────────── -->
+  <section class="feature" id="feature-4">
+    <header class="feature-header">
+      <span class="feature-number">iv</span>
+      <div>
+        <p class="section-eyebrow">Feature 4</p>
+        <h2 class="feature-title">Summarization Policies &amp; Model-Calibrated Bands</h2>
+      </div>
+    </header>
+
+    <p class="feature-overview">This feature calibrates the model-generated representations used by smart compact. After it ships, smooth turns, chunk boundary decisions, detailed summaries, and brief summaries have prompts, output formats, evaluation fixtures, and quality reports.</p>
+
+    <div class="scope-grid" style="margin-bottom:56px;">
+      <div>
+        <h3>In Scope</h3>
+        <ul class="scope-list">
+          <li>Smooth turn prompt and output format.</li>
+          <li>Chunk boundary adjudication prompt and output format.</li>
+          <li>Detailed chunk summary prompt and target compression range.</li>
+          <li>Brief chunk summary prompt and target compression range.</li>
+          <li>Fixture-based evaluation for quality and structured output reliability.</li>
+          <li>Model selection for smoothing, boundary decisions, and summaries.</li>
+          <li>Reports comparing source tokens, smooth tokens, summary tokens, and generated session size.</li>
+          <li>Cost and latency reports for smoothing, boundary, and summary jobs.</li>
+        </ul>
+      </div>
+      <div>
+        <h3>Out of Scope</h3>
+        <ul class="scope-list">
+          <li>Higher-order chunk merging.<span class="destination">Future direction</span></li>
+          <li>High-end bespoke agent context rework.<span class="destination">Future direction</span></li>
+          <li>Dynamic memory retrieval tickets.<span class="destination">Future direction</span></li>
+          <li>Automatic prompt optimization.<span class="destination">Future direction</span></li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="scenario">
+      <div class="prose">
+        <p class="scenario-eyebrow">Scenario 1</p>
+        <h3 class="scenario-title">Generating smooth turns</h3>
+        <p class="scenario-prose">The steward converts a closed turn into a single readable text representation.</p>
+        <ul class="acs">
+          <li><span class="ac-id">AC&nbsp;1</span><span class="ac-body">Smooth output uses clear speaker and tool markers, normalizes whitespace/casing/grammar according to the smoothing policy, and preserves a coherent account of the turn. Stored messages and typed parts remain the reference record for repair and regeneration.</span></li>
+          <li><span class="ac-id">AC&nbsp;2</span><span class="ac-body">Smooth generation can summarize, truncate, or omit tool details according to policy while preserving the information needed for later chunk summaries.</span></li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="scenario">
+      <div class="prose">
+        <p class="scenario-eyebrow">Scenario 2</p>
+        <h3 class="scenario-title">Choosing chunk boundaries</h3>
+        <p class="scenario-prose">The steward asks a model whether the current chunk should close.</p>
+        <ul class="acs">
+          <li><span class="ac-id">AC&nbsp;3</span><span class="ac-body">Boundary adjudication returns a structured close or continue decision with a short rationale. Invalid or unavailable results leave chunking pending.</span></li>
+          <li><span class="ac-id">AC&nbsp;4</span><span class="ac-body">Boundary evaluation uses fixture threads with topic changes, long tool-heavy turns, and ongoing work that should not be split prematurely.</span></li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="scenario">
+      <div class="prose">
+        <p class="scenario-eyebrow">Scenario 3</p>
+        <h3 class="scenario-title">Producing chunk summaries</h3>
+        <p class="scenario-prose">Closed chunks receive detailed and brief summaries for projection bands.</p>
+        <ul class="acs">
+          <li><span class="ac-id">AC&nbsp;5</span><span class="ac-body">Detailed summaries preserve the compressed back-and-forth between user and agent at the configured middle-fidelity target. Tool calls and reasoning traces appear as prose only when they help explain the work.</span></li>
+          <li><span class="ac-id">AC&nbsp;6</span><span class="ac-body">Brief summaries preserve project trajectory, decisions, unresolved threads, and stable context needed for oldest-history projection.</span></li>
+          <li><span class="ac-id">AC&nbsp;7</span><span class="ac-body">Summary evaluation reports whether generated summaries hit the configured compression range and structured output format.</span></li>
+          <li><span class="ac-id">AC&nbsp;8</span><span class="ac-body">Summary evaluation reports whether generated summaries cover the source chunk without unsupported additions.</span></li>
+          <li><span class="ac-id">AC&nbsp;9</span><span class="ac-body">Summary evaluation reports whether generated summaries remain useful inside the generated PI session.</span></li>
+          <li><span class="ac-id">AC&nbsp;10</span><span class="ac-body">Summary and smoothing reports include model used, input size, output size, latency, and estimated cost where available.</span></li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─── Cross-Cutting Decisions ─────────────────────── -->
+  <section class="essay full" id="decisions">
+    <p class="section-eyebrow">x. Cross-Cutting Decisions</p>
+    <h2 class="section-title">Product-level commitments that <em>persist</em> across features.</h2>
+    <p class="section-intro">Technical cross-cutting decisions live in the <a href="technical-architecture.html">Technical Architecture</a>. These are the product-level choices.</p>
+
+    <div class="decisions-grid">
+      <div class="decision"><p class="decision-name">Context Steward as requirements user</p><p>Most feature scenarios are written from the steward's perspective because v1 capabilities are context-maintenance capabilities. The human operator remains the visible product user for commands, inspection, and review.</p></div>
+      <div class="decision"><p class="decision-name">Stored history over PI session file</p><p>The stored source thread records what happened. The PI session file is generated output.</p></div>
+      <div class="decision"><p class="decision-name">Background preparation before projection pressure</p><p>Smooth turns, chunks, and summaries may be prepared before smart compact uses them.</p></div>
+      <div class="decision"><p class="decision-name">Observable maintenance</p><p>Capture, repair, smoothing, chunking, summarization, and smart compact expose status instead of silently mutating context.</p></div>
+      <div class="decision"><p class="decision-name">Operator-visible degraded state</p><p>When smoothing, chunking, summarization, or smart compact cannot proceed, the system reports blocked work instead of silently producing lower-quality output.</p></div>
+      <div class="decision"><p class="decision-name">Manual smart compact in v1</p><p>The operator triggers smart compact with a command. Automatic triggers are future scope.</p></div>
+      <div class="decision"><p class="decision-name">Closed chunks stay stable</p><p>Normal aging changes which summary is used. Reworking closed chunks is an explicit future operation.</p></div>
+      <div class="decision"><p class="decision-name">Fixture-backed validation</p><p>Real and expanded fixture threads are maintained for threshold, projection, and summarization tests. The Navigator reads fixtures as normal threads.</p></div>
+    </div>
+  </section>
+
+  <!-- ─── Future Directions ───────────────────────────── -->
+  <section class="essay full" id="future">
+    <p class="section-eyebrow">xi. Future Directions</p>
+    <h2 class="section-title">Beyond <em>v1</em>.</h2>
+    <p class="section-intro">Not v1 scope. Listed so they inform architectural decisions without gating the initial feature set.</p>
+
+    <ul class="future-list">
+      <li>Convex-backed thread, chunk, job, and generated-session storage.</li>
+      <li>Round Table multi-agent conversations with shared history and target-specific projection.</li>
+      <li>High-end agent-led context rework over closed chunks.</li>
+      <li>Dynamic memory tickets and retrieval injection.</li>
+      <li>Non-PI projection targets such as Codex, Claude Code, or OpenCode.</li>
+      <li>Higher-order chunk merging for histories beyond the initial v1 horizon.</li>
+      <li>Automatic smart compact triggers.</li>
+      <li>Web UI for context editing.</li>
+    </ul>
+  </section>
+
+  <!-- ─── Sequencing ──────────────────────────────────── -->
+  <section class="essay full" id="sequencing">
+    <p class="section-eyebrow">xii. Recommended Epic Sequencing</p>
+    <h2 class="section-title">A simple linear <em>order</em>.</h2>
+
+    <div class="sequencing">
+      <div class="sequencing-flow">
+        <div class="seq-stage">
+          <span class="num">Feature i</span>
+          <span class="name">Session Context Store</span>
+          <span class="delivers">Source capture from PI events; canonical turns; thread store.</span>
+        </div>
+        <div class="seq-stage">
+          <span class="num">Feature ii</span>
+          <span class="name">Context Navigator Surface</span>
+          <span class="delivers">Readable views; health reports; blocker reporting.</span>
+        </div>
+        <div class="seq-stage">
+          <span class="num">Feature iii</span>
+          <span class="name">Band, Chunk &amp; Projection</span>
+          <span class="delivers">Smooth turns; chunks; manual smart compact.</span>
+        </div>
+        <div class="seq-stage">
+          <span class="num">Feature iv</span>
+          <span class="name">Summarization Policies</span>
+          <span class="delivers">Calibrated detailed and brief layers; evaluation.</span>
+        </div>
+      </div>
+    </div>
+
+    <p style="margin-top:32px; font-style:italic; color:var(--ink-soft); max-width:640px;">The sequence establishes source capture before navigation, navigation before projection mechanics, and mechanics before model-calibrated summarization. Feature 4 can tune model behavior because Features 1–3 provide source records, chunk state, projection compilation, and fixtures.</p>
+
+    <h3 style="font-family:var(--mono); font-size:11px; letter-spacing:0.18em; text-transform:uppercase; color:var(--rust); margin-top:64px; margin-bottom:18px; padding-bottom:12px; border-bottom: 1px solid var(--rust);">Non-Binding Story Notes</h3>
+    <table class="editorial">
+      <thead><tr><th>Feature</th><th>Story Notes</th></tr></thead>
+      <tbody>
+        <tr><td>Feature 1</td><td>Thread store foundation; actor/message capture; prompt-bounded turn creation; generated PI session metadata; attach/import; turn repair; real-session fixtures.</td></tr>
+        <tr><td>Feature 2</td><td>Navigator foundation; thread and turn status; typed-part traversal; derived-state health; smart compact blockers; fixture navigation; CLI status command.</td></tr>
+        <tr><td>Feature 3</td><td>Compact range foundation; smooth turn jobs; chunk membership; boundary pending state; band allocation; prerequisite checks; PI session generation; manual smart compact; projection archive/status.</td></tr>
+        <tr><td>Feature 4</td><td>Evaluation fixture foundation; smooth prompt; boundary prompt; detailed summary prompt; brief summary prompt; model/cost reporting; end-to-end calibrated smart compact evaluation.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ─── Footer ──────────────────────────────────────── -->
+  <footer class="colophon">
+    <div>
+      <strong style="color:var(--ink)">PI Long Horizon</strong> — Product Requirements Document<br>
+      Sequenced for downstream epic expansion.
+    </div>
+    <div class="companion">
+      Companion: <a href="technical-architecture.html">Technical Architecture →</a>
+    </div>
+  </footer>
+
+</article>
+
+</body>
+</html>
