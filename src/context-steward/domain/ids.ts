@@ -68,7 +68,17 @@ function createDigest(namespace: string, value: unknown): string {
 }
 
 function normalizeSessionFilePath(sessionFilePath: string): string {
-  return realpathSync(resolve(sessionFilePath));
+  const resolvedPath = resolve(sessionFilePath);
+
+  try {
+    return realpathSync(resolvedPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return resolvedPath;
+    }
+
+    throw error;
+  }
 }
 
 function toKeySegment(value: string | undefined): string | undefined {

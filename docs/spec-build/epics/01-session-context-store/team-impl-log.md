@@ -3,7 +3,7 @@
 ## Run Overview
 - State: STORY_ACTIVE
 - Spec Pack Root: /Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/01-session-context-store
-- Current Story: 06-turn-health-and-repair
+- Current Story: 07-real-session-fixtures
 - Current Phase: accept
 
 ## Run Configuration
@@ -167,10 +167,26 @@
 - Baseline Before: 546
 - Baseline After: 547
 
+### 07-real-session-fixtures
+- Story Title: Story 7: Real-Session Fixtures
+- Implementor Evidence: artifacts/07-real-session-fixtures/003-implementor.json
+- Verifier Evidence:
+  - artifacts/07-real-session-fixtures/004-verify.json
+  - artifacts/07-real-session-fixtures/006-verify.json (final: pass)
+- Story Continue: artifacts/07-real-session-fixtures/005-continue.json
+- Story Gate: `npm run verify` — pass (typecheck clean, 104 tests pass — exceeds 91 plan target)
+- Epic Gate: `npm run verify-all` — pass
+- Dispositions:
+  - All verifier findings: fixed via story-continue
+- Open Risks:
+  - none
+- Baseline Before: 547
+- Baseline After: 549
+
 ## Cumulative Baselines
-- Baseline Before Current Story: 546
-- Expected After Current Story: 547
-- Latest Actual Total: 547
+- Baseline Before Current Story: 547
+- Expected After Current Story: 549
+- Latest Actual Total: 549
 
 ## Epic Closeout
 - Current Epic Review Artifact: none

@@ -273,7 +273,7 @@ export async function previewPiSessionImport(
 export async function attachExistingPiSession(
   input: AttachPiSessionInput,
 ): Promise<StewardResult<AttachPiSessionResult>> {
-  const target: ThreadRecord["target"] = {
+  const targetRef: ThreadRecord["target"] = {
     runtime: "pi",
     sessionId: input.target.sessionId,
     sessionFilePath: input.target.sessionFilePath ?? input.sessionFilePath,
@@ -282,21 +282,21 @@ export async function attachExistingPiSession(
   };
 
   const existing = await input.store.findThreadByTarget({
-    runtime: target.runtime,
-    sessionId: target.sessionId,
-    sessionFilePath: target.sessionFilePath,
+    runtime: targetRef.runtime,
+    sessionId: targetRef.sessionId,
+    sessionFilePath: targetRef.sessionFilePath,
   });
   if (!existing.ok) {
     return existing;
   }
 
   if (existing.value) {
-    return fail(importConflictIssue(target, existing.value.threadId));
+    return fail(importConflictIssue(targetRef, existing.value.threadId));
   }
 
   const importPlan = await readPiActivePath({
     sessionFilePath: input.sessionFilePath,
-    sessionId: target.sessionId,
+    sessionId: targetRef.sessionId,
     activeLeafId: input.activeLeafId,
     sessionManager: input.sessionManager,
   });
@@ -304,6 +304,15 @@ export async function attachExistingPiSession(
     return importPlan;
   }
 
+  const target: ThreadRecord["target"] = {
+    ...targetRef,
+    sessionId: targetRef.sessionId ?? importPlan.value.sessionId,
+    cwd: targetRef.cwd ?? importPlan.value.cwd,
+  };
+  const runtimeInput: AttachPiSessionInput = {
+    ...input,
+    target,
+  };
   const createdAt = nowIso(input.now);
   const threadId = createThreadId();
 
@@ -327,7 +336,7 @@ export async function attachExistingPiSession(
     const importedMessages: MessageRecord[] = [];
     const structuralIssues = cloneIssues(importPlan.value.issues);
     const collectedIssues: StewardIssue[] = [];
-    const runtimeContext = importRuntimeContext(input, importPlan.value.sessionId);
+    const runtimeContext = importRuntimeContext(runtimeInput, importPlan.value.sessionId);
 
     for (const entry of importPlan.value.entries) {
       const mapped = mapPiMessageEnd({

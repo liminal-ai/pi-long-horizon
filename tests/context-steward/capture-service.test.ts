@@ -738,6 +738,45 @@ test("registers production PI handlers that capture live message_end prompt, res
   });
 });
 
+test("production PI handlers resolve a fresh managed thread when the PI session target changes", async () => {
+  await withTempThreadStore(async ({ storeRootDir, projectDir, resolveProjectPath }) => {
+    const targetOne = makeThreadTarget({
+      sessionId: "session-production-cache-a",
+      sessionFilePath: resolveProjectPath("pi", "session-production-cache-a.jsonl"),
+      cwd: projectDir,
+    });
+    const targetTwo = makeThreadTarget({
+      sessionId: "session-production-cache-b",
+      sessionFilePath: resolveProjectPath("pi", "session-production-cache-b.jsonl"),
+      cwd: projectDir,
+    });
+    await ensureTargetSessionFile(targetOne);
+    await ensureTargetSessionFile(targetTwo);
+    const store = new FileThreadStore(storeRootDir);
+    const ctxOne = makePiExtensionContext(targetOne);
+    const ctxTwo = makePiExtensionContext(targetTwo);
+    const pi = new FakeExtensionApi();
+
+    registerContextStewardExtension(pi as unknown as ExtensionAPI, {
+      createStore: () => store,
+    });
+    await pi.emit("message_end", { type: "message_end", message: makePiUserMessage({ content: "Session A prompt" }) }, ctxOne);
+    await pi.emit("message_end", { type: "message_end", message: makePiUserMessage({ content: "Session B prompt" }) }, ctxTwo);
+
+    const threadOne = expectOk(await store.findManagedThread(targetOne));
+    const threadTwo = expectOk(await store.findManagedThread(targetTwo));
+    assert.ok(threadOne);
+    assert.ok(threadTwo);
+    assert.notEqual(threadOne.threadId, threadTwo.threadId);
+
+    const messagesOne = expectOk(await store.readMessages(threadOne.threadId));
+    const messagesTwo = expectOk(await store.readMessages(threadTwo.threadId));
+
+    assert.deepEqual(messagesOne.map((message) => message.targetMetadata?.sessionId), ["session-production-cache-a"]);
+    assert.deepEqual(messagesTwo.map((message) => message.targetMetadata?.sessionId), ["session-production-cache-b"]);
+  });
+});
+
 test("production PI handlers suppress duplicate live message_end events without appending another source record", async () => {
   await withTempThreadStore(async ({ storeRootDir, projectDir, resolveProjectPath }) => {
     const target = makeThreadTarget({

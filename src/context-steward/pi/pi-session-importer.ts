@@ -25,6 +25,7 @@ export interface PiSessionImportInput {
 export interface PiActivePathReadResult {
   sessionId?: string;
   sessionFilePath: string;
+  cwd?: string;
   activePathReference?: string;
   entries: PiImportEntry[];
   issues: StewardIssue[];
@@ -32,6 +33,7 @@ export interface PiActivePathReadResult {
 
 export interface PiImportSessionManager {
   getBranch(fromId?: string): SessionEntry[];
+  getCwd?(): string;
   getEntries(): SessionEntry[];
   getLeafId(): string | null;
   getSessionFile(): string | undefined;
@@ -223,6 +225,7 @@ export async function readPiActivePath(
   return ok({
     sessionId,
     sessionFilePath: input.sessionFilePath,
+    cwd: manager.value.getCwd?.(),
     activePathReference,
     entries,
     issues: cloneIssues(issues),
