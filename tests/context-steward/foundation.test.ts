@@ -145,6 +145,34 @@ test("deriveTargetSessionKeys collapses alias and symlink session file paths to 
   });
 });
 
+test("deriveTargetSessionKeys keeps pending session file keys stable under symlinked parents", async () => {
+  await withTempThreadStore(async ({ resolveProjectPath }) => {
+    const sessionsDir = resolveProjectPath("pi-sessions");
+    const aliasSessionsDir = resolveProjectPath("sessions-link");
+    const pendingSessionFilePath = join(aliasSessionsDir, "pending-session.jsonl");
+
+    await mkdir(sessionsDir, { recursive: true });
+    await symlink(sessionsDir, aliasSessionsDir);
+
+    const expectedFileKey = `pi:session-file:${join(realpathSync(sessionsDir), "pending-session.jsonl")}`;
+    const beforeFileExists = deriveTargetSessionKeys(
+      makeThreadTarget({ sessionId: undefined, sessionFilePath: pendingSessionFilePath }),
+    );
+
+    await writeFile(pendingSessionFilePath, '{"type":"session"}\n');
+
+    const afterFileExists = deriveTargetSessionKeys(
+      makeThreadTarget({ sessionId: undefined, sessionFilePath: pendingSessionFilePath }),
+    );
+
+    assert.deepEqual(beforeFileExists, {
+      canonicalKey: expectedFileKey,
+      aliasKeys: [],
+    });
+    assert.deepEqual(afterFileExists, beforeFileExists);
+  });
+});
+
 test("schema-version constants match thread initialization", () => {
   const target = makeThreadTarget({
     currentGeneratedFilePath: "/tmp/generated/session-123.jsonl",

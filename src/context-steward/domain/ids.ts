@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
-import { resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
 import type { SourceRange } from "./records.js";
 
@@ -74,7 +74,13 @@ function normalizeSessionFilePath(sessionFilePath: string): string {
     return realpathSync(resolvedPath);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      return resolvedPath;
+      // File doesn't exist yet; resolve symlinks on the parent directory
+      // so the key is stable once the file is created.
+      try {
+        return join(realpathSync(dirname(resolvedPath)), basename(resolvedPath));
+      } catch {
+        return resolvedPath;
+      }
     }
 
     throw error;
