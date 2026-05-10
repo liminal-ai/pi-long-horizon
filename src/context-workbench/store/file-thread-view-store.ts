@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 
-import type { ThreadRecord } from "../../context-steward/domain/records.js";
 import type { ThreadStore } from "../../context-steward/store/thread-store.js";
 import { FileThreadStore } from "../../context-steward/store/file-thread-store.js";
 import {
@@ -74,10 +73,6 @@ function normalizeEmittedMessages(
       threadViewId,
     })),
   );
-}
-
-function cloneThreadRecord(record: ThreadRecord): ThreadRecord {
-  return structuredClone(record);
 }
 
 export class FileThreadViewStore implements ThreadViewStore {
@@ -399,11 +394,6 @@ export class FileThreadViewStore implements ThreadViewStore {
         return failWorkbenchResult(...threadCheck.issues);
       }
 
-      const threadSnapshot = await this.threadStore.openThread(input.threadId);
-      if (!threadSnapshot.ok) {
-        return failWorkbenchResult(...threadSnapshot.issues);
-      }
-
       const views = sortThreadViews(await this.readThreadViews(input.threadId));
       const draftView = views.find((view) => view.threadViewId === input.draftThreadViewId);
       if (!draftView) {
@@ -459,10 +449,6 @@ export class FileThreadViewStore implements ThreadViewStore {
         state: "archived",
         updatedAt: activatedAt,
       });
-      const nextThread = cloneThreadRecord(threadSnapshot.value.thread);
-      nextThread.activeThreadViewId = nextActiveView.threadViewId;
-      nextThread.updatedAt = activatedAt;
-
       try {
         await this.writeJsonAtomic(
           this.resolveThreadViewPath(input.threadId, nextActiveView.threadViewId),
@@ -472,7 +458,16 @@ export class FileThreadViewStore implements ThreadViewStore {
           this.resolveThreadViewPath(input.threadId, nextArchivedView.threadViewId),
           nextArchivedView,
         );
-        await this.writeJsonAtomic(this.resolveThreadPath(input.threadId), nextThread);
+        const updatedThread = await this.threadStore.updateThreadMetadata({
+          threadId: input.threadId,
+          patch: {
+            activeThreadViewId: nextActiveView.threadViewId,
+            updatedAt: activatedAt,
+          },
+        });
+        if (!updatedThread.ok) {
+          return failWorkbenchResult(...updatedThread.issues);
+        }
       } catch (error) {
         const cause = error instanceof Error ? error.message : String(error);
         return failWorkbenchResult(
@@ -524,10 +519,6 @@ export class FileThreadViewStore implements ThreadViewStore {
 
   private resolveThreadViewsDir(threadId: string): string {
     return join(this.rootDir, "threads", threadId, "thread-views");
-  }
-
-  private resolveThreadPath(threadId: string): string {
-    return join(this.rootDir, "threads", threadId, "thread.json");
   }
 
   private resolveThreadViewPath(threadId: string, threadViewId: string): string {

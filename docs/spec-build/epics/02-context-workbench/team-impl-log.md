@@ -2,11 +2,11 @@
 
 ## Run State
 
-- **State:** STORY_CYCLE
+- **State:** PRE_EPIC_VERIFY
 - **Spec-Pack Root:** `/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/02-context-workbench`
 - **Started:** 2026-05-10
-- **Current Story:** 06-view-comparison-and-activation
-- **Current Phase:** Story Cycle (Stage 3)
+- **Current Story:** all accepted
+- **Current Phase:** Epic Closeout (Stage 5)
 
 ## Spec Pack Shape
 
@@ -23,7 +23,7 @@
 | 4 | 03-draft-thread-view-lifecycle | Story 3: Draft Thread View Lifecycle | accepted |
 | 5 | 04-upper-band-composition | Story 4: Upper-Band Composition | accepted |
 | 6 | 05-lower-band-awareness | Story 5: Lower-Band Awareness | accepted |
-| 7 | 06-view-comparison-and-activation | Story 6: View Comparison And Activation | pending |
+| 7 | 06-view-comparison-and-activation | Story 6: View Comparison And Activation | accepted |
 
 ## Provider & Harness Availability
 
@@ -151,3 +151,14 @@ Self-review passes: 3
   - No spec deviations
 - **Commit:** b36b963 — Story 5: Lower-band awareness
 - **Baseline after:** 182 unit tests (was 174 after Story 4, +8 new)
+
+### Story 6: View Comparison And Activation — ACCEPTED
+
+- **Validate:** ready (2026-05-10T21:16:40Z). Baseline seed: 556 test files.
+- **story-orchestrate run:** needs-ruling (same green-verify guard pattern)
+- **Impl-lead acceptance:**
+  - verify-all: pass (192 unit, 4 integration, 24 e2e)
+  - Targeted Story 6 tests: 10/10 pass (8 TCs + 2 non-TC decided)
+  - No spec deviations
+- **Commit:** 62fd5ba — Story 6: View comparison and activation
+- **Baseline after:** 192 unit tests (was 182 after Story 5, +10 new)
