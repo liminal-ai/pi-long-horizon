@@ -223,7 +223,7 @@
 - Verification gates: red-verify (typecheck only), verify (typecheck+test), green-verify (verify + guard:no-test-changes), verify-all (verify + integration)
 
 ### Friction Log
-- Preflight attempt 1 blocked: `claude --version` timed out on first probe. Succeeded on retry.
+- Preflight attempt 1 blocked: `claude --version` timed out on first probe. Succeeded on retry. Likely related to the `CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST` env var issue documented below. Testing showed `claude --version` takes 0.24s with the var (43% CPU, suggesting IO wait on an auth handshake) vs 0.04s without (92% CPU, pure local work). Neither timed out during testing, but the 6x latency and IO wait pattern is consistent with intermittent timeouts under load when the SDK host is slow to respond. Stripping the env var from the child env should resolve both this and the epic-reviewer-2 auth failure.
 - Preflight attempt 2 needs-user-decision: gate policy ambiguous because Story 0 hasn't added verify scripts yet. Resolved by passing gates explicitly via CLI flags.
 - Story 1 story-orchestrate interrupted at planner turn 10: Codex gpt-5.5 returned malformed JSON (`inputs.artifactRefs` undefined). Recovery: resume from last valid artifact (quick-fix 006), fresh child provider session. All prior durable artifacts intact.
 - Story 3 story-orchestrate interrupted: same Codex planner invalid output pattern after first verify (revise). Recovery: resume.
