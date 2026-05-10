@@ -1,0 +1,11 @@
+{"timestamp":"2026-05-10T21:57:41.813Z","command":"epic-reverify","phase":"epic-reverify","event":"command-started","summary":"epic-reverify started."}
+{"timestamp":"2026-05-10T21:57:41.825Z","command":"epic-reverify","phase":"epic-reverify","event":"provider-spawned","summary":"Provider spawned with pid 107.","metadata":{"pid":107}}
+{"timestamp":"2026-05-10T21:57:41.888Z","command":"epic-reverify","phase":"epic-reverify","event":"first-output-received","summary":"First provider stderr output received.","metadata":{"stream":"stderr"}}
+{"timestamp":"2026-05-10T21:58:12.723Z","command":"epic-reverify","phase":"epic-reverify","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-10T21:58:47.257Z","command":"epic-reverify","phase":"epic-reverify","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-10T21:59:17.278Z","command":"epic-reverify","phase":"epic-reverify","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-10T22:00:01.063Z","command":"epic-reverify","phase":"epic-reverify","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-10T22:00:32.767Z","command":"epic-reverify","phase":"epic-reverify","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-10T22:01:24.833Z","command":"epic-reverify","phase":"epic-reverify","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-10T22:01:52.844Z","command":"epic-reverify","phase":"epic-reverify","event":"provider-exit","summary":"Provider exited with code 0.","metadata":{"exitCode":0,"signal":null,"elapsedMs":251019,"configuredTimeoutMs":3600000}}
+{"timestamp":"2026-05-10T22:01:52.850Z","command":"epic-reverify","phase":"finalizing","event":"completed","summary":"epic-reverify completed with outcome blocked.","metadata":{"outcome":"blocked"}}

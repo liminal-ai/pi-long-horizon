@@ -2,11 +2,12 @@
 
 ## Run State
 
-- **State:** PRE_EPIC_VERIFY
+- **State:** COMPLETE
 - **Spec-Pack Root:** `/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/02-context-workbench`
 - **Started:** 2026-05-10
+- **Completed:** 2026-05-10
 - **Current Story:** all accepted
-- **Current Phase:** Epic Closeout (Stage 5)
+- **Current Phase:** Complete
 
 ## Spec Pack Shape
 
@@ -162,3 +163,34 @@ Self-review passes: 3
   - No spec deviations
 - **Commit:** 62fd5ba — Story 6: View comparison and activation
 - **Baseline after:** 192 unit tests (was 182 after Story 5, +10 new)
+
+## Epic Closeout
+
+### Epic Review
+
+- **Outcome:** block (3 blocking findings)
+- **cw-epic-001** (critical): Lower-band paths test-shimmed — **accepted-risk** (by-design for Feature 2; production chunk reader is Feature 3 scope)
+- **cw-epic-002** (critical): Activation bypasses canonical ThreadStore mutation queue — **fixed** in epic-fix
+- **cw-epic-003** (major): Missing workbench integration/E2E suites — **fixed** in epic-fix
+
+### Epic Fix
+
+- **Commit:** 0d5d45e — Epic 2 fix: activation mutation queue + workbench integration/E2E suites
+- Routed activation through `threadStore.updateThreadMetadata`
+- Added 4 integration tests + 9 E2E tests per test plan
+
+### Epic Reverify
+
+- cw-epic-002: confirmed resolved
+- cw-epic-003: confirmed resolved
+- cw-epic-001: reverifier still blocking — overridden by impl-lead + user ruling (Feature 2 scope is deliberately shallow lower-band awareness; production chunk reader is Feature 3)
+
+### Final Epic Gate
+
+- **Command:** `npm run verify-all`
+- **Result:** pass (192 unit + 8 integration + 33 e2e = 233 tests, 0 failures)
+- **Date:** 2026-05-10
+
+### Accepted Risks
+
+- cw-epic-001: Lower-band read/composition paths use test shims (EMPTY_CHUNK_READER, pass-through clone, carry-forward materialization). This is by-design for Feature 2. Feature 3 will deliver the production chunk reader and real lower-band materialization.
