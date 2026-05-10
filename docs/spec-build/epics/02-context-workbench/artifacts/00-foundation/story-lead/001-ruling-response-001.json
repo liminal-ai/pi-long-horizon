@@ -1,0 +1,6 @@
+{
+  "rulingRequestId": "00-foundation-story-run-001-ruling-017",
+  "decision": "stage-required-test-and-rerun-gate",
+  "rationale": "Impl-lead staged the new foundation test file and all Story 0 implementation files. npm run green-verify now passes (116 tests, guard clean). The guard failure was expected because Story 0 creates the test file. No gate policy change needed.",
+  "source": "impl-lead"
+}

@@ -16,6 +16,16 @@ export const STEWARD_ERROR_CODES = [
   "TURN_REPAIR_WRITE_FAILED",
   "FIXTURE_CREATE_FAILED",
   "STALE_SOURCE_REVISION",
+  "THREAD_VIEW_NOT_FOUND",
+  "THREAD_VIEW_DUPLICATE",
+  "THREAD_VIEW_STATE_CONFLICT",
+  "THREAD_VIEW_ACTIVE_INVARIANT_VIOLATION",
+  "THREAD_VIEW_MATERIALIZATION_REQUIRED",
+  "WORKBENCH_SEARCH_UNSUPPORTED_SCOPE",
+  "WORKBENCH_INVALID_FILTER",
+  "WORKBENCH_SOURCE_UNIT_NOT_FOUND",
+  "WORKBENCH_ARTIFACT_MISSING",
+  "WORKBENCH_CHUNK_INELIGIBLE",
 ] as const;
 
 export type StewardErrorCode = (typeof STEWARD_ERROR_CODES)[number];
@@ -65,4 +75,3 @@ export function fail<T = never>(...issues: readonly StewardIssue[]): StewardResu
 export function mergeIssues(...issueSets: ReadonlyArray<readonly StewardIssue[] | undefined>): StewardIssue[] {
   return issueSets.flatMap((issueSet) => (issueSet ?? []).map((issue) => createStewardIssue(issue)));
 }
-

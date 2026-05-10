@@ -54,6 +54,7 @@ export interface ThreadRecord {
   updatedAt: string;
   sourceRevision: number;
   messageHighWatermark: number;
+  activeThreadViewId?: string;
   target: ThreadTargetMetadata;
   importSummary: {
     count: number;
@@ -149,6 +150,7 @@ export interface ImportRecord {
 export interface ProjectionRevisionRecord {
   revisionId: string;
   threadId: string;
+  threadViewId?: string;
   targetRuntime: TargetRuntime;
   generatedFilePath: string;
   createdAt: string;
