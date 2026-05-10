@@ -14,6 +14,7 @@ coverage/
 
 # Local PI runtime state and credentials
 .pi/agent/
+.context-steward/
 
 # Reference repositories: keep docs/files in repo-ref if needed, but ignore cloned subdirs.
 repo-ref/*/

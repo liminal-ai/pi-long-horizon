@@ -29,11 +29,15 @@ function listFiles(rootDir) {
 }
 
 function matchesMode(filePath) {
+  if (mode === "e2e") {
+    return filePath.endsWith(".e2e.test.ts");
+  }
+
   if (mode === "integration") {
     return filePath.endsWith(".integration.test.ts");
   }
 
-  return filePath.endsWith(".test.ts") && !filePath.endsWith(".integration.test.ts");
+  return filePath.endsWith(".test.ts") && !filePath.endsWith(".integration.test.ts") && !filePath.endsWith(".e2e.test.ts");
 }
 
 const testFiles = existsSync(testsRoot) ? listFiles(testsRoot).filter(matchesMode) : [];

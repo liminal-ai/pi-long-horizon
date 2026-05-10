@@ -13,8 +13,9 @@
     "red-verify": "npm run typecheck",
     "verify": "npm run typecheck && npm run test",
     "green-verify": "npm run verify && npm run guard:no-test-changes",
-    "verify-all": "npm run verify && npm run test:integration",
+    "verify-all": "npm run verify && npm run test:integration && npm run test:e2e",
     "test:integration": "node scripts/run-node-tests.mjs integration",
+    "test:e2e": "node scripts/run-node-tests.mjs e2e",
     "guard:no-test-changes": "git diff --name-only --exit-code -- 'tests/**/*.test.ts' 'tests/**/*.integration.test.ts'"
   },
   "dependencies": {
