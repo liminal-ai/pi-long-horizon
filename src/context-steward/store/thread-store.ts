@@ -28,6 +28,11 @@ export interface ThreadSnapshot {
   projections: ProjectionRevisionRecord[];
 }
 
+export interface FixtureSnapshot {
+  fixture: FixtureRecord;
+  snapshot: ThreadSnapshot;
+}
+
 export interface AppendMessageInput {
   threadId: string;
   actor: ActorRecord;
@@ -40,7 +45,9 @@ export interface AppendMessageInput {
 export interface UpdateThreadMetadataInput {
   threadId: string;
   expectedSourceRevision?: number;
-  patch: Partial<Pick<ThreadRecord, "target" | "status" | "importSummary" | "projectionSummary" | "updatedAt">>;
+  patch: Partial<Pick<ThreadRecord, "target" | "status" | "importSummary" | "projectionSummary" | "updatedAt">> & {
+    activeThreadViewId?: string | null;
+  };
 }
 
 export interface WriteTurnsInput {
@@ -59,6 +66,7 @@ export interface CreateFixtureInput {
 export interface ThreadStore {
   createThread(input: CreateThreadInput): Promise<StewardResult<ThreadRecord>>;
   openThread(threadId: string): Promise<StewardResult<ThreadSnapshot>>;
+  openFixture(fixtureId: string): Promise<StewardResult<FixtureSnapshot>>;
   findThreadByTarget(target: ThreadTargetRef): Promise<StewardResult<ThreadRecord | undefined>>;
   findManagedThread(target: ThreadTargetMetadata): Promise<StewardResult<ThreadRecord | undefined>>;
   assertCanMutate(threadId: string): Promise<StewardResult<ThreadRecord>>;

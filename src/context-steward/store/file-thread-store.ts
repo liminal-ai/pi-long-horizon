@@ -152,29 +152,24 @@ export class FileThreadStore implements ThreadStore {
   async openThread(threadId: string): Promise<StewardResult<ThreadSnapshot>> {
     try {
       await this.ensureStoreReady();
-
-      const paths = this.getThreadPaths(threadId);
-      const [thread, actors, messages, turns, imports, projections] = await Promise.all([
-        this.readThreadRecord(threadId),
-        this.readJsonFile<ActorRecord[]>(paths.actors, []),
-        this.readMessagesFile(paths.messages),
-        this.readJsonFile<TurnRecord[]>(paths.turns, []),
-        this.readJsonFile<ImportRecord[]>(paths.imports, []),
-        this.readJsonFile<ProjectionRevisionRecord[]>(paths.projections, []),
-      ]);
-
-      const hydratedThread = this.hydrateThreadRecord(thread, messages, imports, projections);
-
-      return ok({
-        thread: hydratedThread,
-        actors: structuredClone(actors),
-        messages,
-        turns: structuredClone(turns),
-        imports: structuredClone(imports),
-        projections: structuredClone(projections),
-      });
+      return ok(await this.readSnapshotFromPaths(this.getThreadPaths(threadId)));
     } catch (error) {
       return fail(storeUnavailableIssue(error, "openThread", threadId));
+    }
+  }
+
+  async openFixture(fixtureId: string): Promise<StewardResult<{ fixture: FixtureRecord; snapshot: ThreadSnapshot }>> {
+    try {
+      await this.ensureStoreReady();
+      const paths = this.getFixturePaths(fixtureId);
+      const fixture = await this.readJsonFile<FixtureRecord>(paths.fixture);
+
+      return ok({
+        fixture: structuredClone(fixture),
+        snapshot: await this.readSnapshotFromPaths(paths),
+      });
+    } catch (error) {
+      return fail(storeUnavailableIssue(error, "openFixture", fixtureId));
     }
   }
 
@@ -409,6 +404,14 @@ export class FileThreadStore implements ThreadStore {
           ...nextThread.projectionSummary,
           ...structuredClone(input.patch.projectionSummary),
         };
+      }
+
+      if (Object.prototype.hasOwnProperty.call(input.patch, "activeThreadViewId")) {
+        if (input.patch.activeThreadViewId) {
+          nextThread.activeThreadViewId = input.patch.activeThreadViewId;
+        } else {
+          delete nextThread.activeThreadViewId;
+        }
       }
 
       nextThread.updatedAt = input.patch.updatedAt ?? new Date().toISOString();
@@ -709,6 +712,28 @@ export class FileThreadStore implements ThreadStore {
     );
 
     return this.hydrateThreadRecord(thread, messages, imports, projections);
+  }
+
+  private async readSnapshotFromPaths(
+    paths: Pick<ThreadFilePaths, "thread" | "actors" | "messages" | "turns" | "imports" | "projections">,
+  ): Promise<ThreadSnapshot> {
+    const [thread, actors, messages, turns, imports, projections] = await Promise.all([
+      this.readJsonFile<ThreadRecord>(paths.thread),
+      this.readJsonFile<ActorRecord[]>(paths.actors, []),
+      this.readMessagesFile(paths.messages),
+      this.readJsonFile<TurnRecord[]>(paths.turns, []),
+      this.readJsonFile<ImportRecord[]>(paths.imports, []),
+      this.readJsonFile<ProjectionRevisionRecord[]>(paths.projections, []),
+    ]);
+
+    return {
+      thread: this.hydrateThreadRecord(thread, messages, imports, projections),
+      actors: structuredClone(actors),
+      messages,
+      turns: structuredClone(turns),
+      imports: structuredClone(imports),
+      projections: structuredClone(projections),
+    };
   }
 
   private hydrateThreadRecord(

@@ -5,7 +5,7 @@
 - **State:** STORY_CYCLE
 - **Spec-Pack Root:** `/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/02-context-workbench`
 - **Started:** 2026-05-10
-- **Current Story:** 00-foundation
+- **Current Story:** 01-thread-and-thread-view-inspection
 - **Current Phase:** Story Cycle (Stage 3)
 
 ## Spec Pack Shape
@@ -17,7 +17,7 @@
 
 | Order | ID | Title | Status |
 |-------|-----|-------|--------|
-| 1 | 00-foundation | Story 0: Foundation | pending |
+| 1 | 00-foundation | Story 0: Foundation | accepted |
 | 2 | 01-thread-and-thread-view-inspection | Story 1: Thread And Thread View Inspection | pending |
 | 3 | 02-search-skim-and-full-detail | Story 2: Search, Skim, And Full Detail | pending |
 | 4 | 03-draft-thread-view-lifecycle | Story 3: Draft Thread View Lifecycle | pending |
@@ -78,7 +78,23 @@ Self-review passes: 3
 
 ## Story Work Log
 
-### Story 0: Foundation
+### Story 0: Foundation — ACCEPTED
 
 - **Validate:** ready (2026-05-10T19:25:22Z). Baseline seed: 550 test files.
+- **story-orchestrate run:** needs-ruling (ruling-017: guard:no-test-changes failed on untracked foundation.test.ts)
+- **Ruling 017:** stage-required-test-and-rerun-gate. Impl-lead staged files, green-verify passed.
+- **story-orchestrate resume:** needs-ruling (ruling-037: guard detects staged test changes, expected for new story test files)
+- **Ruling 037:** Impl-lead took over acceptance. green-verify gate is a post-baseline guard; Story 0 creates the test file so staged detection is expected.
+- **Impl-lead acceptance:**
+  - verify-all: pass (116 unit, 4 integration, 24 e2e)
+  - All foundation tests pass (deterministic IDs, band-order, fixtures)
+  - No spec deviations
+  - No unresolved findings (S0-F002 resolved by staging + commit)
+- **Commit:** f8bc164 — Story 0: Context Workbench foundation
+- **Baseline after:** 116 unit tests (was 113 before Story 0, +3 new foundation tests)
+- **Friction:** guard:no-test-changes gate conflicts with stories that create new test files. Two ruling loops needed. Consider adjusting gate policy for foundation stories in future epics.
+
+### Story 1: Thread And Thread View Inspection
+
+- **Validate:** ready (2026-05-10T20:06:16Z). Baseline seed: 551 test files.
 - **Phase:** implement
