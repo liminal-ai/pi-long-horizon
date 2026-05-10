@@ -15,6 +15,7 @@ import {
   makeMessageRecord,
   makePartRecord,
   makeThreadTarget,
+  makeTurnRecord,
 } from "../../src/context-steward/test/fixtures.js";
 import { WorkbenchQueryService } from "../../src/context-workbench/services/workbench-query-service.js";
 import { FileThreadViewStore } from "../../src/context-workbench/store/file-thread-view-store.js";
@@ -22,6 +23,7 @@ import type { ThreadViewStore } from "../../src/context-workbench/store/thread-v
 import {
   makeBandRecord,
   makeThreadView,
+  makeThreadViewMessage,
 } from "../../src/context-workbench/test/fixtures.js";
 import { withTempWorkbenchStore } from "../../src/context-workbench/test/temp-workbench-store.js";
 
@@ -84,6 +86,259 @@ async function createQueryHarness(storeRootDir: string) {
   const queryService = new WorkbenchQueryService(threadStore, threadViewStore);
 
   return { threadStore, threadViewStore, queryService };
+}
+
+async function appendThreadMessage(input: {
+  store: FileThreadStore;
+  threadId: string;
+  actorId: string;
+  actorType: "human" | "agent";
+  displayName: string;
+  messageId: string;
+  messageKind: MessageRecord["messageKind"];
+  parts: ReturnType<typeof makePartRecord>[];
+}): Promise<MessageRecord> {
+  return expectOk(
+    await appendSourceMessage({
+      store: input.store,
+      threadId: input.threadId,
+      actor: makeActorRecord({
+        actorId: input.actorId,
+        actorType: input.actorType,
+        displayName: input.displayName,
+      }),
+      message: makePendingMessage({
+        threadId: input.threadId,
+        messageId: input.messageId,
+        actorId: input.actorId,
+        actorType: input.actorType,
+        messageKind: input.messageKind,
+        parts: input.parts,
+      }),
+    }),
+  );
+}
+
+async function writeThreadTurns(store: FileThreadStore, threadId: string, turns: ReturnType<typeof makeTurnRecord>[]) {
+  const snapshot = expectOk(await store.openThread(threadId));
+  return expectOk(
+    await store.writeTurns({
+      threadId,
+      expectedSourceRevision: snapshot.thread.sourceRevision,
+      expectedMessageHighWatermark: snapshot.thread.messageHighWatermark,
+      turns,
+      turnState: "ready",
+    }),
+  );
+}
+
+async function seedDetailFixture(storeRootDir: string) {
+  const { threadStore, threadViewStore, queryService } = await createQueryHarness(storeRootDir);
+  const thread = expectOk(
+    await openOrCreateManagedThread(
+      {
+        target: makeThreadTarget({
+          sessionId: "session-detail-pivots",
+          sessionFilePath: undefined,
+        }),
+      },
+      threadStore,
+    ),
+  );
+
+  const promptOne = await appendThreadMessage({
+    store: threadStore,
+    threadId: thread.threadId,
+    actorId: "actor-human-detail",
+    actorType: "human",
+    displayName: "Steward",
+    messageId: "message-detail-001",
+    messageKind: "prompt",
+    parts: [
+      makePartRecord({
+        partId: "part-detail-001",
+        partOrder: 1,
+        partType: "text",
+        content: "Please pull the alpha architecture notes.",
+      }),
+    ],
+  });
+  const responseOne = await appendThreadMessage({
+    store: threadStore,
+    threadId: thread.threadId,
+    actorId: "actor-agent-detail",
+    actorType: "agent",
+    displayName: "Pair Agent",
+    messageId: "message-detail-002",
+    messageKind: "response",
+    parts: [
+      makePartRecord({
+        partId: "part-detail-002",
+        partOrder: 1,
+        partType: "reasoning",
+        content: "Thinking through the alpha architecture references.",
+      }),
+      makePartRecord({
+        partId: "part-detail-003",
+        partOrder: 2,
+        partType: "text",
+        content: "Alpha architecture notes point to the runtime bridge and capture seam.",
+      }),
+      makePartRecord({
+        partId: "part-detail-004",
+        partOrder: 3,
+        partType: "tool_result",
+        content: {
+          summary: "alpha tool output",
+          files: ["src/runtime-bridge.ts"],
+        },
+      }),
+    ],
+  });
+  const promptTwo = await appendThreadMessage({
+    store: threadStore,
+    threadId: thread.threadId,
+    actorId: "actor-human-detail",
+    actorType: "human",
+    displayName: "Steward",
+    messageId: "message-detail-003",
+    messageKind: "prompt",
+    parts: [
+      makePartRecord({
+        partId: "part-detail-005",
+        partOrder: 1,
+        partType: "text",
+        content: "Now compare the beta migration plan.",
+      }),
+    ],
+  });
+  const responseTwo = await appendThreadMessage({
+    store: threadStore,
+    threadId: thread.threadId,
+    actorId: "actor-agent-detail",
+    actorType: "agent",
+    displayName: "Pair Agent",
+    messageId: "message-detail-004",
+    messageKind: "response",
+    parts: [
+      makePartRecord({
+        partId: "part-detail-006",
+        partOrder: 1,
+        partType: "text",
+        content: "Beta migration keeps the active view small and stages the rest in a draft.",
+      }),
+    ],
+  });
+
+  const turns = await writeThreadTurns(threadStore, thread.threadId, [
+    makeTurnRecord({
+      threadId: thread.threadId,
+      turnId: "turn-detail-001",
+      turnOrder: 1,
+      lifecycleStatus: "closed",
+      repairStatus: "ready",
+      initiatingMessageId: promptOne.messageId,
+      messageIds: [promptOne.messageId, responseOne.messageId],
+      sourceRange: { fromSourceOrder: promptOne.sourceOrder, toSourceOrder: responseOne.sourceOrder },
+      sourceRevision: responseTwo.sourceRevision,
+      openedAt: promptOne.capturedAt,
+      closedAt: responseOne.capturedAt,
+    }),
+    makeTurnRecord({
+      threadId: thread.threadId,
+      turnId: "turn-detail-002",
+      turnOrder: 2,
+      lifecycleStatus: "open",
+      repairStatus: "ready",
+      initiatingMessageId: promptTwo.messageId,
+      messageIds: [promptTwo.messageId, responseTwo.messageId],
+      sourceRange: { fromSourceOrder: promptTwo.sourceOrder, toSourceOrder: responseTwo.sourceOrder },
+      sourceRevision: responseTwo.sourceRevision,
+      openedAt: promptTwo.capturedAt,
+    }),
+  ]);
+
+  const activeView = makeThreadView({
+    threadId: thread.threadId,
+    state: "active",
+    name: "Active Alpha View",
+    purpose: "Keep alpha runtime context active.",
+    fullFidelityBand: makeBandRecord({
+      bandType: "full_fidelity",
+      selectedIds: [turns[0].turnId],
+      renderedStatus: "ready",
+    }),
+    smoothBand: makeBandRecord({
+      bandType: "smooth",
+      selectedIds: [turns[1].turnId],
+      renderedStatus: "ready",
+    }),
+    detailedBand: makeBandRecord({
+      bandType: "detailed",
+      selectedIds: ["chunk-detail-001"],
+      renderedStatus: "ready",
+    }),
+    briefBand: makeBandRecord({
+      bandType: "brief",
+      selectedIds: ["chunk-detail-002"],
+      renderedStatus: "ready",
+    }),
+    emittedMessages: [
+      makeThreadViewMessage({
+        threadViewId: "thread-view-temp",
+        bandType: "full_fidelity",
+        messageOrder: 1,
+        sourceReference: turns[0].turnId,
+        content: "Full fidelity alpha context",
+      }),
+      makeThreadViewMessage({
+        threadViewId: "thread-view-temp",
+        bandType: "smooth",
+        messageOrder: 2,
+        sourceReference: turns[1].turnId,
+        content: "Smooth beta context",
+      }),
+    ],
+    status: "ready",
+  });
+  const draftView = makeThreadView({
+    threadId: thread.threadId,
+    state: "draft",
+    name: "Draft Beta View",
+    purpose: "Stage beta comparison before activation.",
+    fullFidelityBand: makeBandRecord({
+      bandType: "full_fidelity",
+      selectedIds: [turns[1].turnId],
+      renderedStatus: "ready",
+    }),
+    detailedBand: makeBandRecord({
+      bandType: "detailed",
+      selectedIds: ["chunk-detail-003"],
+      renderedStatus: "unknown",
+    }),
+    status: "incomplete",
+  });
+  expectOk(await threadViewStore.createThreadView({ view: activeView }));
+  expectOk(await threadViewStore.createThreadView({ view: draftView }));
+
+  return {
+    queryService,
+    thread,
+    messages: {
+      promptOne,
+      responseOne,
+      promptTwo,
+      responseTwo,
+    },
+    turns: {
+      first: turns[0],
+      second: turns[1],
+    },
+    views: {
+      active: activeView,
+      draft: draftView,
+    },
+  };
 }
 
 class CountingThreadViewStore implements ThreadViewStore {
@@ -470,5 +725,197 @@ test("opening a Thread with many archived views keeps active-view lookup cheap",
     assert.equal(openedThread.activeThreadView?.threadViewId, activeView.threadViewId);
     assert.equal(countingThreadViewStore.listCount, 1);
     assert.equal(countingThreadViewStore.openCount, 0);
+  });
+});
+
+test("opens full message detail and preserves all ordered parts", async () => {
+  await withTempWorkbenchStore(async ({ storeRootDir }) => {
+    const { queryService, thread, messages } = await seedDetailFixture(storeRootDir);
+
+    const detail = expectOk(
+      await queryService.openMessageDetail({
+        threadId: thread.threadId,
+        messageId: messages.responseOne.messageId,
+      }),
+    );
+
+    assert.deepEqual(
+      detail.message.parts.map((part) => ({ partOrder: part.partOrder, partType: part.partType })),
+      [
+        { partOrder: 1, partType: "reasoning" },
+        { partOrder: 2, partType: "text" },
+        { partOrder: 3, partType: "tool_result" },
+      ],
+    );
+  });
+});
+
+test("message detail includes source metadata needed to place the Message in Thread context", async () => {
+  await withTempWorkbenchStore(async ({ storeRootDir }) => {
+    const { queryService, thread, messages } = await seedDetailFixture(storeRootDir);
+
+    const detail = expectOk(
+      await queryService.openMessageDetail({
+        threadId: thread.threadId,
+        messageId: messages.responseOne.messageId,
+      }),
+    );
+
+    assert.equal(detail.message.sourceOrder, messages.responseOne.sourceOrder);
+    assert.equal(detail.message.actorType, "agent");
+    assert.equal(detail.message.messageKind, "response");
+  });
+});
+
+test("opens full Turn detail with member Messages in source order", async () => {
+  await withTempWorkbenchStore(async ({ storeRootDir }) => {
+    const { queryService, thread, messages, turns } = await seedDetailFixture(storeRootDir);
+
+    const detail = expectOk(
+      await queryService.openTurnDetail({
+        threadId: thread.threadId,
+        turnId: turns.first.turnId,
+      }),
+    );
+
+    assert.equal(detail.turn.turnId, turns.first.turnId);
+    assert.deepEqual(
+      detail.messages.map((message) => message.messageId),
+      [messages.promptOne.messageId, messages.responseOne.messageId],
+    );
+  });
+});
+
+test("Turn detail includes current Thread View relationships", async () => {
+  await withTempWorkbenchStore(async ({ storeRootDir }) => {
+    const { queryService, thread, turns, views } = await seedDetailFixture(storeRootDir);
+
+    const detail = expectOk(
+      await queryService.openTurnDetail({
+        threadId: thread.threadId,
+        turnId: turns.second.turnId,
+      }),
+    );
+
+    assert.deepEqual(detail.threadViewPlacements, [
+      {
+        threadViewId: views.active.threadViewId,
+        state: "active",
+        bandType: "smooth",
+      },
+      {
+        threadViewId: views.draft.threadViewId,
+        state: "draft",
+        bandType: "full_fidelity",
+      },
+    ]);
+  });
+});
+
+test("Thread View detail shows all band regions in order", async () => {
+  await withTempWorkbenchStore(async ({ storeRootDir }) => {
+    const { queryService, thread, views } = await seedDetailFixture(storeRootDir);
+
+    const detail = expectOk(
+      await queryService.openThreadViewDetail({
+        threadId: thread.threadId,
+        threadViewId: views.active.threadViewId,
+      }),
+    );
+
+    assert.deepEqual(
+      [
+        detail.view.fullFidelityBand.bandType,
+        detail.view.smoothBand.bandType,
+        detail.view.detailedBand.bandType,
+        detail.view.briefBand.bandType,
+      ],
+      ["full_fidelity", "smooth", "detailed", "brief"],
+    );
+  });
+});
+
+test("Thread View detail includes the emitted context result", async () => {
+  await withTempWorkbenchStore(async ({ storeRootDir }) => {
+    const { queryService, thread, views } = await seedDetailFixture(storeRootDir);
+
+    const detail = expectOk(
+      await queryService.openThreadViewDetail({
+        threadId: thread.threadId,
+        threadViewId: views.active.threadViewId,
+      }),
+    );
+
+    assert.deepEqual(
+      detail.view.emittedMessages.map((message) => message.content),
+      ["Full fidelity alpha context", "Smooth beta context"],
+    );
+  });
+});
+
+test("message detail provides a pivot back to the owning Turn", async () => {
+  await withTempWorkbenchStore(async ({ storeRootDir }) => {
+    const { queryService, thread, messages, turns } = await seedDetailFixture(storeRootDir);
+
+    const detail = expectOk(
+      await queryService.openMessageDetail({
+        threadId: thread.threadId,
+        messageId: messages.responseOne.messageId,
+      }),
+    );
+
+    assert.equal(detail.owningTurnId, turns.first.turnId);
+  });
+});
+
+test("Turn detail provides pivots to relevant Thread View placements", async () => {
+  await withTempWorkbenchStore(async ({ storeRootDir }) => {
+    const { queryService, thread, turns, views } = await seedDetailFixture(storeRootDir);
+
+    const detail = expectOk(
+      await queryService.openTurnDetail({
+        threadId: thread.threadId,
+        turnId: turns.second.turnId,
+      }),
+    );
+
+    assert.equal(detail.threadViewPlacements[0]?.threadViewId, views.active.threadViewId);
+    assert.equal(detail.threadViewPlacements[1]?.threadViewId, views.draft.threadViewId);
+  });
+});
+
+test("Thread View detail provides pivots from band selections back to source detail", async () => {
+  await withTempWorkbenchStore(async ({ storeRootDir }) => {
+    const { queryService, thread, turns, views } = await seedDetailFixture(storeRootDir);
+
+    const detail = expectOk(
+      await queryService.openThreadViewDetail({
+        threadId: thread.threadId,
+        threadViewId: views.active.threadViewId,
+      }),
+    );
+
+    assert.deepEqual(detail.sourcePivots, [
+      {
+        bandType: "full_fidelity",
+        sourceUnitId: turns.first.turnId,
+        sourceUnitType: "turn",
+      },
+      {
+        bandType: "smooth",
+        sourceUnitId: turns.second.turnId,
+        sourceUnitType: "turn",
+      },
+      {
+        bandType: "detailed",
+        sourceUnitId: "chunk-detail-001",
+        sourceUnitType: "chunk",
+      },
+      {
+        bandType: "brief",
+        sourceUnitId: "chunk-detail-002",
+        sourceUnitType: "chunk",
+      },
+    ]);
   });
 });

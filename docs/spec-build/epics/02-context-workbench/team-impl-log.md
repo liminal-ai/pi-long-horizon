@@ -5,7 +5,7 @@
 - **State:** STORY_CYCLE
 - **Spec-Pack Root:** `/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/02-context-workbench`
 - **Started:** 2026-05-10
-- **Current Story:** 01-thread-and-thread-view-inspection
+- **Current Story:** 02-search-skim-and-full-detail
 - **Current Phase:** Story Cycle (Stage 3)
 
 ## Spec Pack Shape
@@ -18,7 +18,7 @@
 | Order | ID | Title | Status |
 |-------|-----|-------|--------|
 | 1 | 00-foundation | Story 0: Foundation | accepted |
-| 2 | 01-thread-and-thread-view-inspection | Story 1: Thread And Thread View Inspection | pending |
+| 2 | 01-thread-and-thread-view-inspection | Story 1: Thread And Thread View Inspection | accepted |
 | 3 | 02-search-skim-and-full-detail | Story 2: Search, Skim, And Full Detail | pending |
 | 4 | 03-draft-thread-view-lifecycle | Story 3: Draft Thread View Lifecycle | pending |
 | 5 | 04-upper-band-composition | Story 4: Upper-Band Composition | pending |
@@ -94,7 +94,15 @@ Self-review passes: 3
 - **Baseline after:** 116 unit tests (was 113 before Story 0, +3 new foundation tests)
 - **Friction:** guard:no-test-changes gate conflicts with stories that create new test files. Two ruling loops needed. Consider adjusting gate policy for foundation stories in future epics.
 
-### Story 1: Thread And Thread View Inspection
+### Story 1: Thread And Thread View Inspection — ACCEPTED
 
 - **Validate:** ready (2026-05-10T20:06:16Z). Baseline seed: 551 test files.
-- **Phase:** implement
+- **story-orchestrate run:** needs-ruling (ruling-008: green-verify guard rejects new test files)
+- **Ruling 008:** Impl-lead took over acceptance. Verifier not run in story-lead loop, but all tests pass.
+- **Impl-lead acceptance:**
+  - verify-all: pass (128 unit, 4 integration, 24 e2e)
+  - Targeted Story 1 tests: 12/12 pass (9 TCs + 3 non-TC)
+  - No spec deviations
+- **Commit:** 6b7b492 — Story 1: Thread and Thread View inspection
+- **Baseline after:** 128 unit tests (was 116 after Story 0, +12 new)
+- **Note:** Verifier did not run — story-lead escalated gate-policy ruling before dispatching verification. Tests all pass via impl-lead verify-all. Accepted-risk: no independent verifier evidence for this story.
