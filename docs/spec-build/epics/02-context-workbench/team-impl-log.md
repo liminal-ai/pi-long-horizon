@@ -5,7 +5,7 @@
 - **State:** STORY_CYCLE
 - **Spec-Pack Root:** `/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/02-context-workbench`
 - **Started:** 2026-05-10
-- **Current Story:** 03-draft-thread-view-lifecycle
+- **Current Story:** 04-upper-band-composition
 - **Current Phase:** Story Cycle (Stage 3)
 
 ## Spec Pack Shape
@@ -20,7 +20,7 @@
 | 1 | 00-foundation | Story 0: Foundation | accepted |
 | 2 | 01-thread-and-thread-view-inspection | Story 1: Thread And Thread View Inspection | accepted |
 | 3 | 02-search-skim-and-full-detail | Story 2: Search, Skim, And Full Detail | accepted |
-| 4 | 03-draft-thread-view-lifecycle | Story 3: Draft Thread View Lifecycle | pending |
+| 4 | 03-draft-thread-view-lifecycle | Story 3: Draft Thread View Lifecycle | accepted |
 | 5 | 04-upper-band-composition | Story 4: Upper-Band Composition | pending |
 | 6 | 05-lower-band-awareness | Story 5: Lower-Band Awareness | pending |
 | 7 | 06-view-comparison-and-activation | Story 6: View Comparison And Activation | pending |
@@ -118,3 +118,14 @@ Self-review passes: 3
 - **Commit:** 15daa36 — Story 2: Search, skim, and full detail
 - **Baseline after:** 150 unit tests (was 128 after Story 1, +22 new)
 - **Note:** Same green-verify guard pattern. Verifier not run. Accepted-risk: no independent verifier evidence.
+
+### Story 3: Draft Thread View Lifecycle — ACCEPTED
+
+- **Validate:** ready (2026-05-10T20:37:50Z). Baseline seed: 554 test files.
+- **story-orchestrate run:** needs-ruling (same green-verify guard pattern)
+- **Impl-lead acceptance:**
+  - verify-all: pass (164 unit, 4 integration, 24 e2e)
+  - Targeted Story 3 tests: 14/14 pass (12 TCs + 2 non-TC decided)
+  - No spec deviations
+- **Commit:** 662beb9 — Story 3: Draft Thread View lifecycle
+- **Baseline after:** 164 unit tests (was 150 after Story 2, +14 new)

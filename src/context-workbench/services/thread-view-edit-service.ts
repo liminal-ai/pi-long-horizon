@@ -16,6 +16,7 @@ import {
   type WorkbenchResult,
 } from "../domain/workbench-errors.js";
 import type { ThreadViewStore } from "../store/thread-view-store.js";
+import { ThreadViewMaterializer } from "./thread-view-materializer.js";
 
 export interface CreateDraftThreadViewInput {
   threadId: string;
@@ -37,8 +38,19 @@ export interface ExcludeTurnFromThreadViewInput {
   now?: () => Date;
 }
 
+export interface UpdateThreadViewBandsInput {
+  threadId: string;
+  threadViewId: string;
+  fullFidelityBand?: BandRecord;
+  smoothBand?: BandRecord;
+  detailedBand?: BandRecord;
+  briefBand?: BandRecord;
+  now?: () => Date;
+}
+
 interface ThreadViewEditServiceOptions {
   createThreadViewId?: () => string;
+  materializer?: ThreadViewMaterializer;
 }
 
 function createEmptyBandRecord(bandType: BandType): BandRecord {
@@ -91,6 +103,7 @@ function hasViewContentChanged(left: ThreadViewRecord, right: ThreadViewRecord):
 
 export class ThreadViewEditService {
   private readonly createThreadViewId: () => string;
+  private readonly materializer: ThreadViewMaterializer;
 
   constructor(
     private readonly threadStore: ThreadStore,
@@ -98,6 +111,7 @@ export class ThreadViewEditService {
     options: ThreadViewEditServiceOptions = {},
   ) {
     this.createThreadViewId = options.createThreadViewId ?? (() => createThreadViewId());
+    this.materializer = options.materializer ?? new ThreadViewMaterializer(threadStore);
   }
 
   async createDraftThreadView(input: CreateDraftThreadViewInput): Promise<WorkbenchResult<ThreadViewRecord>> {
@@ -227,5 +241,137 @@ export class ThreadViewEditService {
     }
 
     return okWorkbenchResult(cloneThreadViewRecord(updatedView.value), updatedView.issues);
+  }
+
+  async updateThreadViewBands(
+    input: UpdateThreadViewBandsInput,
+  ): Promise<WorkbenchResult<ThreadViewRecord>> {
+    const threadSnapshot = await this.threadStore.openThread(input.threadId);
+    if (!threadSnapshot.ok) {
+      return failWorkbenchResult(...threadSnapshot.issues);
+    }
+
+    const openedView = await this.threadViewStore.openThreadView(input.threadId, input.threadViewId);
+    if (!openedView.ok) {
+      return failWorkbenchResult(...openedView.issues);
+    }
+
+    if (openedView.value.view.state !== "draft") {
+      return failWorkbenchResult(
+        createWorkbenchIssue({
+          code: "THREAD_VIEW_STATE_CONFLICT",
+          message: `Band updates require draft state, but ${input.threadViewId} is ${openedView.value.view.state}.`,
+          threadId: input.threadId,
+        }),
+      );
+    }
+
+    const turnIds = new Set(threadSnapshot.value.turns.map((turn) => turn.turnId));
+    let fullFidelityBand = cloneBandRecord(openedView.value.view.fullFidelityBand);
+    if (Object.prototype.hasOwnProperty.call(input, "fullFidelityBand")) {
+      const normalizedFullFidelityBand = this.normalizeTurnBandInput(
+        "full_fidelity",
+        input.fullFidelityBand,
+        turnIds,
+        input.threadId,
+      );
+      if (!normalizedFullFidelityBand.ok) {
+        return failWorkbenchResult(...normalizedFullFidelityBand.issues);
+      }
+
+      fullFidelityBand = normalizedFullFidelityBand.value;
+    }
+
+    let smoothBand = cloneBandRecord(openedView.value.view.smoothBand);
+    if (Object.prototype.hasOwnProperty.call(input, "smoothBand")) {
+      const normalizedSmoothBand = this.normalizeTurnBandInput(
+        "smooth",
+        input.smoothBand,
+        turnIds,
+        input.threadId,
+      );
+      if (!normalizedSmoothBand.ok) {
+        return failWorkbenchResult(...normalizedSmoothBand.issues);
+      }
+
+      smoothBand = normalizedSmoothBand.value;
+    }
+
+    const nextView = cloneThreadViewRecord({
+      ...openedView.value.view,
+      fullFidelityBand,
+      smoothBand,
+      detailedBand: input.detailedBand ? cloneBandRecord(input.detailedBand) : openedView.value.view.detailedBand,
+      briefBand: input.briefBand ? cloneBandRecord(input.briefBand) : openedView.value.view.briefBand,
+    });
+    const materialized = await this.materializer.materializeThreadView({
+      threadId: input.threadId,
+      draftView: nextView,
+    });
+    if (!materialized.ok) {
+      return failWorkbenchResult(...materialized.issues);
+    }
+
+    const updatedAt = (input.now ?? (() => new Date()))().toISOString();
+    const emittedMessages = materialized.value.emittedMessages;
+    const updatedView = await this.threadViewStore.updateThreadView({
+      threadId: input.threadId,
+      threadViewId: input.threadViewId,
+      expectedUpdatedAt: openedView.value.view.updatedAt,
+      patch: {
+        fullFidelityBand: materialized.value.fullFidelityBand,
+        smoothBand: materialized.value.smoothBand,
+        detailedBand: input.detailedBand ? cloneBandRecord(input.detailedBand) : undefined,
+        briefBand: input.briefBand ? cloneBandRecord(input.briefBand) : undefined,
+        emittedMessages,
+        sourceStateReference: createSourceStateReference({
+          sourceRevision: threadSnapshot.value.thread.sourceRevision,
+          messageHighWatermark: threadSnapshot.value.thread.messageHighWatermark,
+        }),
+        status:
+          materialized.value.issues.length > 0 || emittedMessages.length === 0
+            ? "incomplete"
+            : "ready",
+        updatedAt,
+      },
+    });
+    if (!updatedView.ok) {
+      return failWorkbenchResult(...updatedView.issues);
+    }
+
+    return okWorkbenchResult(cloneThreadViewRecord(updatedView.value), updatedView.issues);
+  }
+
+  private normalizeTurnBandInput(
+    bandType: BandType,
+    band: BandRecord | undefined,
+    turnIds: ReadonlySet<string>,
+    threadId: string,
+  ): WorkbenchResult<BandRecord> {
+    const candidate = cloneBandRecord(
+      band ??
+        createEmptyBandRecord(bandType),
+    );
+    const selectedIds = [...new Set(candidate.selectedIds)];
+    const exclusions = [...new Set(candidate.exclusions ?? [])];
+    const missingTurnId = [...selectedIds, ...exclusions].find((turnId) => !turnIds.has(turnId));
+    if (missingTurnId) {
+      return failWorkbenchResult(
+        createWorkbenchIssue({
+          code: "WORKBENCH_SOURCE_UNIT_NOT_FOUND",
+          message: `Turn ${missingTurnId} was not found in thread ${threadId}.`,
+          threadId,
+        }),
+      );
+    }
+
+    return okWorkbenchResult({
+      ...candidate,
+      bandType,
+      sourceUnitType: bandTypeToSourceUnitType(bandType),
+      selectedIds,
+      exclusions: exclusions.length > 0 ? exclusions : undefined,
+      renderedStatus: "unknown",
+    });
   }
 }

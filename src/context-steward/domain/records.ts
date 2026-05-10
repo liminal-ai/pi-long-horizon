@@ -123,7 +123,13 @@ export interface TurnRecord {
   openedAt?: string;
   closedAt?: string;
   sourceRevision: number;
+  smooth?: TurnSmoothRecord;
   repairMetadata?: RepairMetadata;
+}
+
+export interface TurnSmoothRecord {
+  text: string;
+  tokenCount?: number;
 }
 
 export interface RepairMetadata {

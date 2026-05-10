@@ -653,3 +653,110 @@ test("archival preserves emitted messages for later readback", async () => {
     );
   });
 });
+
+test("band updates persist upper-band selections and materialized emitted output", async () => {
+  await withTempWorkbenchStore(async ({ storeRootDir }) => {
+    const { editService, queryService, threadStore, thread, turns } = await seedThreadWithTurns(
+      storeRootDir,
+      "session-update-upper-bands",
+    );
+    await writeThreadTurns(threadStore, thread.threadId, [
+      makeTurnRecord({
+        ...turns.first,
+        smooth: {
+          text: "[user]\nPlease summarize the migration risks.\n\n[assistant]\nMigration risks center on stale state and activation timing.",
+          tokenCount: 18,
+        },
+      }),
+      makeTurnRecord({
+        ...turns.second,
+        smooth: {
+          text: "[user]\nNow isolate the rollout fallback.\n\n[assistant]\nThe fallback keeps the active context intact while the draft is revised.",
+          tokenCount: 19,
+        },
+      }),
+    ]);
+
+    const draft = expectOk(await editService.createDraftThreadView({ threadId: thread.threadId }));
+    const updated = expectOk(
+      await editService.updateThreadViewBands({
+        threadId: thread.threadId,
+        threadViewId: draft.threadViewId,
+        fullFidelityBand: makeBandRecord({
+          bandType: "full_fidelity",
+          selectedIds: [turns.first.turnId],
+        }),
+        smoothBand: makeBandRecord({
+          bandType: "smooth",
+          selectedIds: [turns.second.turnId],
+        }),
+        now: () => new Date("2026-05-10T12:15:00.000Z"),
+      }),
+    );
+    const detail = expectOk(
+      await queryService.openThreadViewDetail({
+        threadId: thread.threadId,
+        threadViewId: draft.threadViewId,
+      }),
+    );
+
+    assert.deepEqual(updated.fullFidelityBand.selectedIds, [turns.first.turnId]);
+    assert.deepEqual(updated.smoothBand.selectedIds, [turns.second.turnId]);
+    assert.equal(updated.fullFidelityBand.renderedStatus, "ready");
+    assert.equal(updated.smoothBand.renderedStatus, "ready");
+    assert.equal(updated.status, "ready");
+    assert.deepEqual(
+      updated.emittedMessages.map((message) => ({
+        bandType: message.bandType,
+        sourceReference: message.sourceReference,
+      })),
+      [
+        {
+          bandType: "full_fidelity",
+          sourceReference: `${turns.first.turnId}/message-lifecycle-001`,
+        },
+        {
+          bandType: "full_fidelity",
+          sourceReference: `${turns.first.turnId}/message-lifecycle-002`,
+        },
+        {
+          bandType: "smooth",
+          sourceReference: turns.second.turnId,
+        },
+      ],
+    );
+    assert.equal(detail.view.sourceStateReference, updated.sourceStateReference);
+    assert.deepEqual(
+      detail.view.emittedMessages.map((message) => ({
+        bandType: message.bandType,
+        sourceKind: message.sourceKind,
+        sourceReference: message.sourceReference,
+        messageOrder: message.messageOrder,
+        contentSummary:
+          typeof message.content === "string"
+            ? message.content
+            : {
+                actorType: (message.content as { actorType?: string }).actorType,
+                partTypes: (
+                  message.content as { parts: Array<{ partType: string }> }
+                ).parts.map((part) => part.partType),
+              },
+      })),
+      updated.emittedMessages.map((message) => ({
+        bandType: message.bandType,
+        sourceKind: message.sourceKind,
+        sourceReference: message.sourceReference,
+        messageOrder: message.messageOrder,
+        contentSummary:
+          typeof message.content === "string"
+            ? message.content
+            : {
+                actorType: (message.content as { actorType?: string }).actorType,
+                partTypes: (
+                  message.content as { parts: Array<{ partType: string }> }
+                ).parts.map((part) => part.partType),
+              },
+      })),
+    );
+  });
+});

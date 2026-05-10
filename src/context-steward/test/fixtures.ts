@@ -159,6 +159,11 @@ export function makeTurnRecord(overrides: Partial<TurnRecord> = {}): TurnRecord 
           : undefined,
       }
     : undefined;
+  const smooth = overrides.smooth
+    ? {
+        ...overrides.smooth,
+      }
+    : undefined;
 
   return {
     turnId: "turn-001",
@@ -170,6 +175,7 @@ export function makeTurnRecord(overrides: Partial<TurnRecord> = {}): TurnRecord 
     openedAt: DEFAULT_TEST_TIMESTAMP,
     sourceRevision: 1,
     ...overrides,
+    smooth,
     repairMetadata,
     messageIds: overrides.messageIds ? [...overrides.messageIds] : ["message-001"],
     sourceRange: { ...sourceRange },
