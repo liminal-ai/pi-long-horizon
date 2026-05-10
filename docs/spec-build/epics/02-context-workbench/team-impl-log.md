@@ -5,7 +5,7 @@
 - **State:** STORY_CYCLE
 - **Spec-Pack Root:** `/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/02-context-workbench`
 - **Started:** 2026-05-10
-- **Current Story:** 05-lower-band-awareness
+- **Current Story:** 06-view-comparison-and-activation
 - **Current Phase:** Story Cycle (Stage 3)
 
 ## Spec Pack Shape
@@ -22,7 +22,7 @@
 | 3 | 02-search-skim-and-full-detail | Story 2: Search, Skim, And Full Detail | accepted |
 | 4 | 03-draft-thread-view-lifecycle | Story 3: Draft Thread View Lifecycle | accepted |
 | 5 | 04-upper-band-composition | Story 4: Upper-Band Composition | accepted |
-| 6 | 05-lower-band-awareness | Story 5: Lower-Band Awareness | pending |
+| 6 | 05-lower-band-awareness | Story 5: Lower-Band Awareness | accepted |
 | 7 | 06-view-comparison-and-activation | Story 6: View Comparison And Activation | pending |
 
 ## Provider & Harness Availability
@@ -140,3 +140,14 @@ Self-review passes: 3
   - No spec deviations
 - **Commit:** 5883422 — Story 4: Upper-band composition
 - **Baseline after:** 174 unit tests (was 164 after Story 3, +10 new)
+
+### Story 5: Lower-Band Awareness — ACCEPTED
+
+- **Validate:** ready (2026-05-10T21:06:55Z). Baseline seed: 556 test files.
+- **story-orchestrate run:** needs-ruling (same green-verify guard pattern)
+- **Impl-lead acceptance:**
+  - verify-all: pass (182 unit, 4 integration, 24 e2e)
+  - Story 5 TCs covered in workbench-query-service.test.ts (8 TCs)
+  - No spec deviations
+- **Commit:** b36b963 — Story 5: Lower-band awareness
+- **Baseline after:** 182 unit tests (was 174 after Story 4, +8 new)

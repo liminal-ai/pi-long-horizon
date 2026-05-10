@@ -568,6 +568,10 @@ class CountingThreadViewStore implements ThreadViewStore {
   archiveThreadView(threadId: string, threadViewId: string) {
     return this.delegate.archiveThreadView(threadId, threadViewId);
   }
+
+  activateThreadView(input: Parameters<ThreadViewStore["activateThreadView"]>[0]) {
+    return this.delegate.activateThreadView(input);
+  }
 }
 
 test("shows source Thread and active view separately", async () => {

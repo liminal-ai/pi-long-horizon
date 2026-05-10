@@ -27,10 +27,20 @@ export interface UpdateThreadViewInput {
   };
 }
 
+export interface ActivateThreadViewInput {
+  threadId: string;
+  draftThreadViewId: string;
+  activatedAt?: string;
+}
+
 export interface ThreadViewStore {
   createThreadView(input: CreateThreadViewInput): Promise<WorkbenchResult<ThreadViewRecord>>;
   openThreadView(threadId: string, threadViewId: string): Promise<WorkbenchResult<ThreadViewSnapshot>>;
   listThreadViews(threadId: string): Promise<WorkbenchResult<ThreadViewRecord[]>>;
   updateThreadView(input: UpdateThreadViewInput): Promise<WorkbenchResult<ThreadViewRecord>>;
   archiveThreadView(threadId: string, threadViewId: string): Promise<WorkbenchResult<ThreadViewRecord>>;
+  activateThreadView(input: ActivateThreadViewInput): Promise<WorkbenchResult<{
+    active: ThreadViewRecord;
+    archived: ThreadViewRecord;
+  }>>;
 }

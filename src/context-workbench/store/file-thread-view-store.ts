@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 
+import type { ThreadRecord } from "../../context-steward/domain/records.js";
 import type { ThreadStore } from "../../context-steward/store/thread-store.js";
 import { FileThreadStore } from "../../context-steward/store/file-thread-store.js";
 import {
@@ -20,6 +21,7 @@ import {
   type WorkbenchResult,
 } from "../domain/workbench-errors.js";
 import type {
+  ActivateThreadViewInput,
   CreateThreadViewInput,
   ThreadViewSnapshot,
   ThreadViewStore,
@@ -74,7 +76,13 @@ function normalizeEmittedMessages(
   );
 }
 
+function cloneThreadRecord(record: ThreadRecord): ThreadRecord {
+  return structuredClone(record);
+}
+
 export class FileThreadViewStore implements ThreadViewStore {
+  private static readonly threadMutationQueues = new Map<string, Promise<void>>();
+
   constructor(
     private readonly rootDir: string,
     private readonly threadStore: ThreadStore = new FileThreadStore(rootDir),
@@ -382,6 +390,108 @@ export class FileThreadViewStore implements ThreadViewStore {
     });
   }
 
+  async activateThreadView(
+    input: ActivateThreadViewInput,
+  ): Promise<WorkbenchResult<{ active: ThreadViewRecord; archived: ThreadViewRecord }>> {
+    return this.withThreadMutation(input.threadId, async () => {
+      const threadCheck = await this.threadStore.assertCanMutate(input.threadId);
+      if (!threadCheck.ok) {
+        return failWorkbenchResult(...threadCheck.issues);
+      }
+
+      const threadSnapshot = await this.threadStore.openThread(input.threadId);
+      if (!threadSnapshot.ok) {
+        return failWorkbenchResult(...threadSnapshot.issues);
+      }
+
+      const views = sortThreadViews(await this.readThreadViews(input.threadId));
+      const draftView = views.find((view) => view.threadViewId === input.draftThreadViewId);
+      if (!draftView) {
+        return failWorkbenchResult(
+          createWorkbenchIssue({
+            code: "THREAD_VIEW_NOT_FOUND",
+            message: `Thread View ${input.draftThreadViewId} was not found for thread ${input.threadId}.`,
+            threadId: input.threadId,
+          }),
+        );
+      }
+
+      if (draftView.state !== "draft") {
+        return failWorkbenchResult(
+          createWorkbenchIssue({
+            code: "THREAD_VIEW_STATE_CONFLICT",
+            message: `Thread View ${input.draftThreadViewId} must be in draft state for activation, but is ${draftView.state}.`,
+            threadId: input.threadId,
+          }),
+        );
+      }
+
+      const activeViews = views.filter((view) => view.state === "active");
+      if (activeViews.length > 1) {
+        return failWorkbenchResult(
+          createWorkbenchIssue({
+            code: "THREAD_VIEW_ACTIVE_INVARIANT_VIOLATION",
+            message: `Thread ${input.threadId} has multiple active Thread Views.`,
+            threadId: input.threadId,
+          }),
+        );
+      }
+
+      const priorActiveView = activeViews[0];
+      if (!priorActiveView) {
+        return failWorkbenchResult(
+          createWorkbenchIssue({
+            code: "THREAD_VIEW_ACTIVE_INVARIANT_VIOLATION",
+            message: `Thread ${input.threadId} does not have an active Thread View to archive during activation.`,
+            threadId: input.threadId,
+          }),
+        );
+      }
+
+      const activatedAt = input.activatedAt ?? new Date().toISOString();
+      const nextActiveView = cloneThreadViewRecord({
+        ...draftView,
+        state: "active",
+        updatedAt: activatedAt,
+      });
+      const nextArchivedView = cloneThreadViewRecord({
+        ...priorActiveView,
+        state: "archived",
+        updatedAt: activatedAt,
+      });
+      const nextThread = cloneThreadRecord(threadSnapshot.value.thread);
+      nextThread.activeThreadViewId = nextActiveView.threadViewId;
+      nextThread.updatedAt = activatedAt;
+
+      try {
+        await this.writeJsonAtomic(
+          this.resolveThreadViewPath(input.threadId, nextActiveView.threadViewId),
+          nextActiveView,
+        );
+        await this.writeJsonAtomic(
+          this.resolveThreadViewPath(input.threadId, nextArchivedView.threadViewId),
+          nextArchivedView,
+        );
+        await this.writeJsonAtomic(this.resolveThreadPath(input.threadId), nextThread);
+      } catch (error) {
+        const cause = error instanceof Error ? error.message : String(error);
+        return failWorkbenchResult(
+          {
+            code: "STORE_UNAVAILABLE",
+            message: `Failed to activate Thread View ${input.draftThreadViewId}.`,
+            threadId: input.threadId,
+            cause,
+          },
+        );
+      }
+
+      return okWorkbenchResult({
+        active: nextActiveView,
+        archived: nextArchivedView,
+      });
+    });
+  }
+
   private async readThreadViews(threadId: string): Promise<ThreadViewRecord[]> {
     const threadViewsDir = this.resolveThreadViewsDir(threadId);
     const entries = await readdir(threadViewsDir, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
@@ -416,6 +526,10 @@ export class FileThreadViewStore implements ThreadViewStore {
     return join(this.rootDir, "threads", threadId, "thread-views");
   }
 
+  private resolveThreadPath(threadId: string): string {
+    return join(this.rootDir, "threads", threadId, "thread.json");
+  }
+
   private resolveThreadViewPath(threadId: string, threadViewId: string): string {
     return join(this.resolveThreadViewsDir(threadId), threadViewId, "thread-view.json");
   }
@@ -430,5 +544,37 @@ export class FileThreadViewStore implements ThreadViewStore {
     const tempPath = join(dirname(filePath), `.${basename(filePath)}.${process.pid}.${randomUUID()}.tmp`);
     await writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
     await rename(tempPath, filePath);
+  }
+
+  private async withThreadMutation<T>(
+    threadId: string,
+    run: () => Promise<WorkbenchResult<T>>,
+  ): Promise<WorkbenchResult<T>> {
+    const previous = FileThreadViewStore.threadMutationQueues.get(threadId) ?? Promise.resolve();
+    let releaseQueue!: () => void;
+    const current = new Promise<void>((resolve) => {
+      releaseQueue = resolve;
+    });
+    const chain = previous.catch(() => undefined).then(() => current);
+    FileThreadViewStore.threadMutationQueues.set(threadId, chain);
+
+    await previous.catch(() => undefined);
+
+    try {
+      return await run();
+    } catch (error) {
+      const cause = error instanceof Error ? error.message : String(error);
+      return failWorkbenchResult({
+        code: "STORE_UNAVAILABLE",
+        message: `Thread View mutation failed for thread ${threadId}.`,
+        threadId,
+        cause,
+      });
+    } finally {
+      releaseQueue();
+      if (FileThreadViewStore.threadMutationQueues.get(threadId) === chain) {
+        FileThreadViewStore.threadMutationQueues.delete(threadId);
+      }
+    }
   }
 }
