@@ -5,7 +5,7 @@
 - **State:** STORY_CYCLE
 - **Spec-Pack Root:** `/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/02-context-workbench`
 - **Started:** 2026-05-10
-- **Current Story:** 04-upper-band-composition
+- **Current Story:** 05-lower-band-awareness
 - **Current Phase:** Story Cycle (Stage 3)
 
 ## Spec Pack Shape
@@ -21,7 +21,7 @@
 | 2 | 01-thread-and-thread-view-inspection | Story 1: Thread And Thread View Inspection | accepted |
 | 3 | 02-search-skim-and-full-detail | Story 2: Search, Skim, And Full Detail | accepted |
 | 4 | 03-draft-thread-view-lifecycle | Story 3: Draft Thread View Lifecycle | accepted |
-| 5 | 04-upper-band-composition | Story 4: Upper-Band Composition | pending |
+| 5 | 04-upper-band-composition | Story 4: Upper-Band Composition | accepted |
 | 6 | 05-lower-band-awareness | Story 5: Lower-Band Awareness | pending |
 | 7 | 06-view-comparison-and-activation | Story 6: View Comparison And Activation | pending |
 
@@ -129,3 +129,14 @@ Self-review passes: 3
   - No spec deviations
 - **Commit:** 662beb9 — Story 3: Draft Thread View lifecycle
 - **Baseline after:** 164 unit tests (was 150 after Story 2, +14 new)
+
+### Story 4: Upper-Band Composition — ACCEPTED
+
+- **Validate:** ready (2026-05-10T20:51:10Z). Baseline seed: 555 test files.
+- **story-orchestrate run:** needs-ruling (same green-verify guard pattern)
+- **Impl-lead acceptance:**
+  - verify-all: pass (174 unit, 4 integration, 24 e2e)
+  - Targeted Story 4 tests: 9/9 pass (8 TCs + 1 non-TC decided)
+  - No spec deviations
+- **Commit:** 5883422 — Story 4: Upper-band composition
+- **Baseline after:** 174 unit tests (was 164 after Story 3, +10 new)

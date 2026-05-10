@@ -10,10 +10,13 @@ import type { ThreadSnapshot, ThreadStore } from "../../context-steward/store/th
 import {
   BAND_ORDER,
   compareBandTypeOrder,
+  cloneWorkbenchChunkRead,
   cloneThreadViewRecord,
   type BandType,
+  type LowerBandReadinessEntry,
   type ThreadViewRecord,
   type ThreadViewState,
+  type WorkbenchChunkRead,
 } from "../domain/thread-view-records.js";
 import {
   createWorkbenchIssue,
@@ -59,6 +62,16 @@ export interface OpenThreadViewDetailInput {
   threadViewId: string;
 }
 
+export interface OpenChunkDetailInput {
+  threadId: string;
+  chunkId: string;
+}
+
+export interface InspectLowerBandReadinessInput {
+  threadId: string;
+  threadViewId?: string;
+}
+
 export interface MessageDetailResult {
   message: MessageRecord;
   owningTurnId?: string;
@@ -75,6 +88,19 @@ export interface ThreadViewDetailResult {
   sourcePivots: Array<{ bandType: BandType; sourceUnitId: string; sourceUnitType: "turn" | "chunk" }>;
 }
 
+export interface ChunkDetailResult {
+  chunk: WorkbenchChunkRead;
+}
+
+export interface LowerBandReadinessResult {
+  detailedBand: LowerBandReadinessEntry[];
+  briefBand: LowerBandReadinessEntry[];
+}
+
+export interface WorkbenchChunkReader {
+  listChunks(threadId: string): Promise<WorkbenchResult<WorkbenchChunkRead[]>>;
+}
+
 interface LoadedThreadScope {
   snapshot: ThreadSnapshot;
   threadViews: ThreadViewRecord[];
@@ -84,6 +110,12 @@ const THREAD_VIEW_STATE_ORDER: Record<ThreadViewState, number> = {
   active: 0,
   draft: 1,
   archived: 2,
+};
+
+const EMPTY_CHUNK_READER: WorkbenchChunkReader = {
+  async listChunks() {
+    return okWorkbenchResult([]);
+  },
 };
 
 function cloneThread(thread: ThreadRecord): ThreadRecord {
@@ -96,6 +128,10 @@ function cloneMessage(message: MessageRecord): MessageRecord {
 
 function cloneTurn(turn: TurnRecord): TurnRecord {
   return structuredClone(turn);
+}
+
+function cloneChunk(chunk: WorkbenchChunkRead): WorkbenchChunkRead {
+  return cloneWorkbenchChunkRead(chunk);
 }
 
 function resolveActiveThreadView(
@@ -199,10 +235,48 @@ function buildThreadViewSourcePivots(
   });
 }
 
+function getBand(view: ThreadViewRecord, bandType: BandType) {
+  switch (bandType) {
+    case "full_fidelity":
+      return view.fullFidelityBand;
+    case "smooth":
+      return view.smoothBand;
+    case "detailed":
+      return view.detailedBand;
+    case "brief":
+      return view.briefBand;
+  }
+}
+
+function hasSummaryArtifact(chunk: WorkbenchChunkRead, bandType: "detailed" | "brief"): boolean {
+  const summary = bandType === "detailed" ? chunk.detailedSummary : chunk.briefSummary;
+  return typeof summary === "string" && summary.trim().length > 0;
+}
+
+function buildReadinessEntry(
+  chunkId: string,
+  chunk: WorkbenchChunkRead | undefined,
+  bandType: "detailed" | "brief",
+): LowerBandReadinessEntry {
+  if (!chunk) {
+    return { chunkId, status: "blocked" };
+  }
+
+  if (chunk.lifecycleStatus === "open") {
+    return { chunkId, status: "ineligible_open_chunk" };
+  }
+
+  return {
+    chunkId,
+    status: hasSummaryArtifact(chunk, bandType) ? "eligible" : "missing_artifacts",
+  };
+}
+
 export class WorkbenchQueryService {
   constructor(
     private readonly threadStore: ThreadStore,
     private readonly threadViewStore: ThreadViewStore,
+    private readonly chunkReader: WorkbenchChunkReader = EMPTY_CHUNK_READER,
   ) {}
 
   private async loadThreadScope(
@@ -362,6 +436,71 @@ export class WorkbenchQueryService {
         sourcePivots: buildThreadViewSourcePivots(openedView.value.view),
       },
       openedView.issues,
+    );
+  }
+
+  async openChunkDetail(input: OpenChunkDetailInput): Promise<WorkbenchResult<ChunkDetailResult>> {
+    const listedChunks = await this.chunkReader.listChunks(input.threadId);
+    if (!listedChunks.ok) {
+      return failWorkbenchResult(...listedChunks.issues);
+    }
+
+    const chunk = listedChunks.value.find((candidate) => candidate.chunkId === input.chunkId);
+    if (!chunk) {
+      return failWorkbenchResult(
+        createWorkbenchIssue({
+          code: "WORKBENCH_SOURCE_UNIT_NOT_FOUND",
+          message: `Chunk ${input.chunkId} was not found for thread ${input.threadId}.`,
+          threadId: input.threadId,
+        }),
+      );
+    }
+
+    return okWorkbenchResult(
+      {
+        chunk: cloneChunk(chunk),
+      },
+      listedChunks.issues,
+    );
+  }
+
+  async inspectLowerBandReadiness(
+    input: InspectLowerBandReadinessInput,
+  ): Promise<WorkbenchResult<LowerBandReadinessResult>> {
+    const listedChunks = await this.chunkReader.listChunks(input.threadId);
+    if (!listedChunks.ok) {
+      return failWorkbenchResult(...listedChunks.issues);
+    }
+
+    const chunkById = new Map(
+      listedChunks.value.map((chunk) => [chunk.chunkId, chunk] as const),
+    );
+
+    let detailedChunkIds = listedChunks.value.map((chunk) => chunk.chunkId);
+    let briefChunkIds = detailedChunkIds;
+    const issues = mergeWorkbenchIssues(listedChunks.issues);
+
+    if (input.threadViewId) {
+      const openedView = await this.threadViewStore.openThreadView(input.threadId, input.threadViewId);
+      if (!openedView.ok) {
+        return failWorkbenchResult(...openedView.issues);
+      }
+
+      detailedChunkIds = [...getBand(openedView.value.view, "detailed").selectedIds];
+      briefChunkIds = [...getBand(openedView.value.view, "brief").selectedIds];
+      issues.push(...mergeWorkbenchIssues(openedView.issues));
+    }
+
+    return okWorkbenchResult(
+      {
+        detailedBand: detailedChunkIds.map((chunkId) =>
+          buildReadinessEntry(chunkId, chunkById.get(chunkId), "detailed"),
+        ),
+        briefBand: briefChunkIds.map((chunkId) =>
+          buildReadinessEntry(chunkId, chunkById.get(chunkId), "brief"),
+        ),
+      },
+      issues,
     );
   }
 }

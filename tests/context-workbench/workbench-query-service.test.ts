@@ -22,9 +22,11 @@ import { FileThreadViewStore } from "../../src/context-workbench/store/file-thre
 import type { ThreadViewStore } from "../../src/context-workbench/store/thread-view-store.js";
 import {
   makeBandRecord,
+  makeWorkbenchChunkRead,
   makeThreadView,
   makeThreadViewMessage,
 } from "../../src/context-workbench/test/fixtures.js";
+import type { WorkbenchChunkRead } from "../../src/context-workbench/domain/thread-view-records.js";
 import { withTempWorkbenchStore } from "../../src/context-workbench/test/temp-workbench-store.js";
 
 function expectOk<T>(result: StewardResult<T>): T {
@@ -80,10 +82,29 @@ async function appendPromptWithoutTurn(store: FileThreadStore, threadId: string,
   );
 }
 
-async function createQueryHarness(storeRootDir: string) {
+class InMemoryChunkReader {
+  constructor(private readonly chunksByThreadId: Record<string, readonly WorkbenchChunkRead[]> = {}) {}
+
+  async listChunks(threadId: string): Promise<StewardResult<WorkbenchChunkRead[]>> {
+    return {
+      ok: true,
+      value: (this.chunksByThreadId[threadId] ?? []).map((chunk) => structuredClone(chunk)),
+      issues: [],
+    };
+  }
+}
+
+async function createQueryHarness(
+  storeRootDir: string,
+  options: { chunkReader?: InMemoryChunkReader } = {},
+) {
   const threadStore = new FileThreadStore(storeRootDir);
   const threadViewStore = new FileThreadViewStore(storeRootDir, threadStore);
-  const queryService = new WorkbenchQueryService(threadStore, threadViewStore);
+  const queryService = new WorkbenchQueryService(
+    threadStore,
+    threadViewStore,
+    options.chunkReader,
+  );
 
   return { threadStore, threadViewStore, queryService };
 }
@@ -338,6 +359,185 @@ async function seedDetailFixture(storeRootDir: string) {
       active: activeView,
       draft: draftView,
     },
+  };
+}
+
+async function seedLowerBandFixture(storeRootDir: string) {
+  const threadStore = new FileThreadStore(storeRootDir);
+  const threadViewStore = new FileThreadViewStore(storeRootDir, threadStore);
+  const thread = expectOk(
+    await openOrCreateManagedThread(
+      {
+        target: makeThreadTarget({
+          sessionId: "session-lower-band-awareness",
+          sessionFilePath: undefined,
+        }),
+      },
+      threadStore,
+    ),
+  );
+
+  const promptOne = await appendThreadMessage({
+    store: threadStore,
+    threadId: thread.threadId,
+    actorId: "actor-human-lower-band",
+    actorType: "human",
+    displayName: "Steward",
+    messageId: "message-lower-band-001",
+    messageKind: "prompt",
+    parts: [makePartRecord({ partId: "part-lower-band-001", content: "Keep the implementation seam clear." })],
+  });
+  const responseOne = await appendThreadMessage({
+    store: threadStore,
+    threadId: thread.threadId,
+    actorId: "actor-agent-lower-band",
+    actorType: "agent",
+    displayName: "Pair Agent",
+    messageId: "message-lower-band-002",
+    messageKind: "response",
+    parts: [makePartRecord({ partId: "part-lower-band-002", content: "The seam stays query-only for lower bands." })],
+  });
+  const promptTwo = await appendThreadMessage({
+    store: threadStore,
+    threadId: thread.threadId,
+    actorId: "actor-human-lower-band",
+    actorType: "human",
+    displayName: "Steward",
+    messageId: "message-lower-band-003",
+    messageKind: "prompt",
+    parts: [makePartRecord({ partId: "part-lower-band-003", content: "Keep open work in smooth context." })],
+  });
+  const responseTwo = await appendThreadMessage({
+    store: threadStore,
+    threadId: thread.threadId,
+    actorId: "actor-agent-lower-band",
+    actorType: "agent",
+    displayName: "Pair Agent",
+    messageId: "message-lower-band-004",
+    messageKind: "response",
+    parts: [makePartRecord({ partId: "part-lower-band-004", content: "Open work remains outside chunk summaries." })],
+  });
+
+  const turns = await writeThreadTurns(threadStore, thread.threadId, [
+    makeTurnRecord({
+      threadId: thread.threadId,
+      turnId: "turn-lower-band-001",
+      turnOrder: 1,
+      lifecycleStatus: "closed",
+      repairStatus: "ready",
+      initiatingMessageId: promptOne.messageId,
+      messageIds: [promptOne.messageId, responseOne.messageId],
+      sourceRange: { fromSourceOrder: promptOne.sourceOrder, toSourceOrder: responseOne.sourceOrder },
+      sourceRevision: responseTwo.sourceRevision,
+      openedAt: promptOne.capturedAt,
+      closedAt: responseOne.capturedAt,
+    }),
+    makeTurnRecord({
+      threadId: thread.threadId,
+      turnId: "turn-lower-band-002",
+      turnOrder: 2,
+      lifecycleStatus: "open",
+      repairStatus: "ready",
+      initiatingMessageId: promptTwo.messageId,
+      messageIds: [promptTwo.messageId, responseTwo.messageId],
+      sourceRange: { fromSourceOrder: promptTwo.sourceOrder, toSourceOrder: responseTwo.sourceOrder },
+      sourceRevision: responseTwo.sourceRevision,
+      openedAt: promptTwo.capturedAt,
+    }),
+  ]);
+
+  const activeView = makeThreadView({
+    threadId: thread.threadId,
+    state: "active",
+    name: "Lower Band View",
+    purpose: "Inspect lower-band readiness without maintenance controls.",
+    fullFidelityBand: makeBandRecord({
+      bandType: "full_fidelity",
+      selectedIds: [turns[0].turnId],
+      renderedStatus: "ready",
+    }),
+    smoothBand: makeBandRecord({
+      bandType: "smooth",
+      selectedIds: [turns[1].turnId],
+      renderedStatus: "ready",
+    }),
+    detailedBand: makeBandRecord({
+      bandType: "detailed",
+      selectedIds: ["chunk-lower-detailed-ready", "chunk-lower-open", "chunk-lower-missing"],
+      renderedStatus: "unknown",
+    }),
+    briefBand: makeBandRecord({
+      bandType: "brief",
+      selectedIds: ["chunk-lower-brief-ready", "chunk-lower-open", "chunk-lower-missing"],
+      renderedStatus: "unknown",
+    }),
+    emittedMessages: [
+      makeThreadViewMessage({
+        threadViewId: "thread-view-temp",
+        bandType: "full_fidelity",
+        messageOrder: 1,
+        sourceReference: turns[0].turnId,
+        content: "Full fidelity implementation seam",
+      }),
+      makeThreadViewMessage({
+        threadViewId: "thread-view-temp",
+        bandType: "smooth",
+        messageOrder: 2,
+        sourceReference: turns[1].turnId,
+        content: "Smooth open-work seam",
+      }),
+    ],
+    status: "incomplete",
+  });
+  expectOk(await threadViewStore.createThreadView({ view: activeView }));
+
+  const chunks = {
+    detailedReady: makeWorkbenchChunkRead({
+      chunkId: "chunk-lower-detailed-ready",
+      lifecycleStatus: "closed",
+      sourceTurnIds: [turns[0].turnId],
+      smoothText: "Closed chunk smooth text",
+      detailedSummary: "Detailed summary is ready.",
+      detailedSummaryTokenCount: 42,
+    }),
+    briefReady: makeWorkbenchChunkRead({
+      chunkId: "chunk-lower-brief-ready",
+      lifecycleStatus: "closed",
+      sourceTurnIds: [turns[0].turnId],
+      smoothText: "Closed chunk smooth text",
+      briefSummary: "Brief summary is ready.",
+      briefSummaryTokenCount: 8,
+    }),
+    open: makeWorkbenchChunkRead({
+      chunkId: "chunk-lower-open",
+      lifecycleStatus: "open",
+      sourceTurnIds: [turns[1].turnId],
+      smoothText: "Open chunk smooth text",
+      detailedSummary: "Errant detailed summary should still be ignored.",
+      briefSummary: "Errant brief summary should still be ignored.",
+    }),
+    missing: makeWorkbenchChunkRead({
+      chunkId: "chunk-lower-missing",
+      lifecycleStatus: "closed",
+      sourceTurnIds: [turns[0].turnId],
+      smoothText: "Closed chunk missing lower-band artifacts",
+    }),
+  } as const;
+
+  const chunkReader = new InMemoryChunkReader({
+    [thread.threadId]: Object.values(chunks),
+  });
+  const queryService = new WorkbenchQueryService(threadStore, threadViewStore, chunkReader);
+
+  return {
+    queryService,
+    thread,
+    turns: {
+      closed: turns[0],
+      open: turns[1],
+    },
+    view: activeView,
+    chunks,
   };
 }
 
@@ -925,5 +1125,184 @@ test("Thread View detail provides pivots from band selections back to source det
         sourceUnitType: "chunk",
       },
     ]);
+  });
+});
+
+test("detailed band uses chunk selections", async () => {
+  await withTempWorkbenchStore(async ({ storeRootDir }) => {
+    const { queryService, thread, view } = await seedLowerBandFixture(storeRootDir);
+
+    const detail = expectOk(
+      await queryService.openThreadViewDetail({
+        threadId: thread.threadId,
+        threadViewId: view.threadViewId,
+      }),
+    );
+
+    assert.deepEqual(detail.view.detailedBand.sourceUnitType, "chunk");
+    assert.deepEqual(detail.sourcePivots.filter((pivot) => pivot.bandType === "detailed"), [
+      {
+        bandType: "detailed",
+        sourceUnitId: "chunk-lower-detailed-ready",
+        sourceUnitType: "chunk",
+      },
+      {
+        bandType: "detailed",
+        sourceUnitId: "chunk-lower-open",
+        sourceUnitType: "chunk",
+      },
+      {
+        bandType: "detailed",
+        sourceUnitId: "chunk-lower-missing",
+        sourceUnitType: "chunk",
+      },
+    ]);
+  });
+});
+
+test("brief band uses chunk selections", async () => {
+  await withTempWorkbenchStore(async ({ storeRootDir }) => {
+    const { queryService, thread, view } = await seedLowerBandFixture(storeRootDir);
+
+    const detail = expectOk(
+      await queryService.openThreadViewDetail({
+        threadId: thread.threadId,
+        threadViewId: view.threadViewId,
+      }),
+    );
+
+    assert.deepEqual(detail.view.briefBand.sourceUnitType, "chunk");
+    assert.deepEqual(detail.sourcePivots.filter((pivot) => pivot.bandType === "brief"), [
+      {
+        bandType: "brief",
+        sourceUnitId: "chunk-lower-brief-ready",
+        sourceUnitType: "chunk",
+      },
+      {
+        bandType: "brief",
+        sourceUnitId: "chunk-lower-open",
+        sourceUnitType: "chunk",
+      },
+      {
+        bandType: "brief",
+        sourceUnitId: "chunk-lower-missing",
+        sourceUnitType: "chunk",
+      },
+    ]);
+  });
+});
+
+test("open chunk does not enter detailed-band eligibility", async () => {
+  await withTempWorkbenchStore(async ({ storeRootDir }) => {
+    const { queryService, thread, view } = await seedLowerBandFixture(storeRootDir);
+
+    const readiness = expectOk(
+      await queryService.inspectLowerBandReadiness({
+        threadId: thread.threadId,
+        threadViewId: view.threadViewId,
+      }),
+    );
+
+    assert.equal(
+      readiness.detailedBand.find((entry) => entry.chunkId === "chunk-lower-open")?.status,
+      "ineligible_open_chunk",
+    );
+  });
+});
+
+test("open chunk does not enter brief-band eligibility", async () => {
+  await withTempWorkbenchStore(async ({ storeRootDir }) => {
+    const { queryService, thread, view } = await seedLowerBandFixture(storeRootDir);
+
+    const readiness = expectOk(
+      await queryService.inspectLowerBandReadiness({
+        threadId: thread.threadId,
+        threadViewId: view.threadViewId,
+      }),
+    );
+
+    assert.equal(
+      readiness.briefBand.find((entry) => entry.chunkId === "chunk-lower-open")?.status,
+      "ineligible_open_chunk",
+    );
+  });
+});
+
+test("closed chunk with detailed artifact is shown as eligible for the detailed band", async () => {
+  await withTempWorkbenchStore(async ({ storeRootDir }) => {
+    const { queryService, thread, view } = await seedLowerBandFixture(storeRootDir);
+
+    const readiness = expectOk(
+      await queryService.inspectLowerBandReadiness({
+        threadId: thread.threadId,
+        threadViewId: view.threadViewId,
+      }),
+    );
+
+    assert.equal(
+      readiness.detailedBand.find((entry) => entry.chunkId === "chunk-lower-detailed-ready")?.status,
+      "eligible",
+    );
+  });
+});
+
+test("closed chunk missing a required lower-band artifact is shown as not ready", async () => {
+  await withTempWorkbenchStore(async ({ storeRootDir }) => {
+    const { queryService, thread, view } = await seedLowerBandFixture(storeRootDir);
+
+    const readiness = expectOk(
+      await queryService.inspectLowerBandReadiness({
+        threadId: thread.threadId,
+        threadViewId: view.threadViewId,
+      }),
+    );
+
+    assert.equal(
+      readiness.detailedBand.find((entry) => entry.chunkId === "chunk-lower-missing")?.status,
+      "missing_artifacts",
+    );
+    assert.equal(
+      readiness.briefBand.find((entry) => entry.chunkId === "chunk-lower-missing")?.status,
+      "missing_artifacts",
+    );
+  });
+});
+
+test("chunk detail can be opened without exposing the full chunk-maintenance workflow", async () => {
+  await withTempWorkbenchStore(async ({ storeRootDir }) => {
+    const { queryService, thread } = await seedLowerBandFixture(storeRootDir);
+
+    const detail = expectOk(
+      await queryService.openChunkDetail({
+        threadId: thread.threadId,
+        chunkId: "chunk-lower-detailed-ready",
+      }),
+    );
+
+    assert.equal(detail.chunk.lifecycleStatus, "closed");
+    assert.deepEqual(detail.chunk.sourceTurnIds, ["turn-lower-band-001"]);
+    assert.equal("jobId" in detail.chunk, false);
+    assert.equal("dependencyChain" in detail.chunk, false);
+    assert.equal("retryState" in detail.chunk, false);
+  });
+});
+
+test("missing chunk data does not block upper-band inspection", async () => {
+  await withTempWorkbenchStore(async ({ storeRootDir }) => {
+    const { queryService, thread, turns, view } = await seedLowerBandFixture(storeRootDir);
+
+    const detail = expectOk(
+      await queryService.openThreadViewDetail({
+        threadId: thread.threadId,
+        threadViewId: view.threadViewId,
+      }),
+    );
+
+    assert.deepEqual(detail.view.fullFidelityBand.selectedIds, [turns.closed.turnId]);
+    assert.deepEqual(detail.view.smoothBand.selectedIds, [turns.open.turnId]);
+    assert.deepEqual(
+      detail.view.emittedMessages.map((message) => message.content),
+      ["Full fidelity implementation seam", "Smooth open-work seam"],
+    );
   });
 });
