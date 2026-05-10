@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "command": "story-verify",
+  "status": "completed",
+  "phase": "finalizing",
+  "startedAt": "2026-05-10T03:17:35.588Z",
+  "updatedAt": "2026-05-10T03:24:27.832Z",
+  "lastOutputAt": "2026-05-10T03:24:27.728Z",
+  "providerLiveness": "completed",
+  "provider": "codex",
+  "pid": 72182,
+  "cwd": "/Users/leemoore/code/pi-long-horizon",
+  "timeoutMs": 3600000,
+  "configuredStartupTimeoutMs": 300000,
+  "configuredSilenceTimeoutMs": 360000,
+  "artifactPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/01-session-context-store/artifacts/01-thread-actor-message-part-store/008-verify.json",
+  "streamPaths": {
+    "stdoutPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/01-session-context-store/artifacts/01-thread-actor-message-part-store/streams/008-verify.stdout.log",
+    "stderrPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/01-session-context-store/artifacts/01-thread-actor-message-part-store/streams/008-verify.stderr.log"
+  },
+  "progressPaths": {
+    "statusPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/01-session-context-store/artifacts/01-thread-actor-message-part-store/progress/008-verify.status.json",
+    "progressPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/01-session-context-store/artifacts/01-thread-actor-message-part-store/progress/008-verify.progress.jsonl"
+  },
+  "lastEvent": "completed",
+  "lastEventSummary": "story-verify completed for 01-thread-actor-message-part-store with outcome revise.",
+  "verifiersCompleted": 1,
+  "verifiersPlanned": 1
+}

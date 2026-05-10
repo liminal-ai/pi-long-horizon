@@ -1,0 +1,13 @@
+{"timestamp":"2026-05-10T02:41:12.093Z","command":"story-verify","phase":"verifier-initial","event":"command-started","summary":"story-verify started."}
+{"timestamp":"2026-05-10T02:41:12.103Z","command":"story-verify","phase":"verifier-initial","event":"verifier-started","summary":"Story verifier started for 01-thread-actor-message-part-store."}
+{"timestamp":"2026-05-10T02:41:12.118Z","command":"story-verify","phase":"verifier-initial","event":"provider-spawned","summary":"Provider spawned with pid 41457.","metadata":{"pid":41457}}
+{"timestamp":"2026-05-10T02:41:12.208Z","command":"story-verify","phase":"verifier-initial","event":"first-output-received","summary":"First provider stderr output received.","metadata":{"stream":"stderr"}}
+{"timestamp":"2026-05-10T02:41:44.661Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-10T02:42:19.583Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-10T02:43:03.080Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-10T02:43:52.838Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-10T02:45:27.355Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-10T02:46:42.336Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-10T02:46:42.464Z","command":"story-verify","phase":"verifier-initial","event":"provider-exit","summary":"Provider exited with code 0.","metadata":{"exitCode":0,"signal":null,"elapsedMs":330346,"configuredTimeoutMs":3600000}}
+{"timestamp":"2026-05-10T02:46:42.469Z","command":"story-verify","phase":"verifier-initial","event":"verifier-completed","summary":"Story verifier completed for 01-thread-actor-message-part-store.","metadata":{"outcome":"revise"}}
+{"timestamp":"2026-05-10T02:46:42.487Z","command":"story-verify","phase":"finalizing","event":"completed","summary":"story-verify completed for 01-thread-actor-message-part-store with outcome revise.","metadata":{"outcome":"revise","verifiersCompleted":1}}

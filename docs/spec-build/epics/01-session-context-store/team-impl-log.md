@@ -3,7 +3,7 @@
 ## Run Overview
 - State: STORY_ACTIVE
 - Spec Pack Root: /Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/01-session-context-store
-- Current Story: 00-foundation
+- Current Story: 01-thread-actor-message-part-store
 - Current Phase: accept
 
 ## Run Configuration
@@ -68,10 +68,33 @@
 - Baseline Before: 540
 - Baseline After: 541 (1 new test file: tests/context-steward/foundation.test.ts)
 
+### 01-thread-actor-message-part-store
+- Story Title: Story 1: Thread, Actor, Message, And Part Store
+- Implementor Evidence: artifacts/01-thread-actor-message-part-store/004-implementor.json
+- Verifier Evidence:
+  - artifacts/01-thread-actor-message-part-store/005-verify.json
+  - artifacts/01-thread-actor-message-part-store/006-verify.json
+  - artifacts/01-thread-actor-message-part-store/007-verify.json
+  - artifacts/01-thread-actor-message-part-store/008-verify.json (final: pass after resume)
+- Quick Fix Evidence:
+  - artifacts/quick-fix/003-quick-fix.json
+  - artifacts/quick-fix/004-quick-fix.json
+  - artifacts/quick-fix/005-quick-fix.json
+  - artifacts/quick-fix/006-quick-fix.json
+- Story Gate: `npm run verify` — pass (typecheck clean, 29 tests pass)
+- Epic Gate: `npm run verify-all` — pass
+- Dispositions:
+  - All verifier findings: fixed via quick-fix rounds
+- Open Risks:
+  - none
+- Notes: story-orchestrate interrupted at planner turn 10 (Codex malformed JSON), resumed successfully
+- Baseline Before: 541
+- Baseline After: 542
+
 ## Cumulative Baselines
-- Baseline Before Current Story: 540 (test files in workspace)
-- Expected After Current Story: 541
-- Latest Actual Total: 541
+- Baseline Before Current Story: 541
+- Expected After Current Story: 542
+- Latest Actual Total: 542
 
 ## Epic Closeout
 - Current Epic Review Artifact: none
@@ -109,3 +132,4 @@
 ### Friction Log
 - Preflight attempt 1 blocked: `claude --version` timed out on first probe. Succeeded on retry.
 - Preflight attempt 2 needs-user-decision: gate policy ambiguous because Story 0 hasn't added verify scripts yet. Resolved by passing gates explicitly via CLI flags.
+- Story 1 story-orchestrate interrupted at planner turn 10: Codex gpt-5.5 returned malformed JSON (`inputs.artifactRefs` undefined). Recovery: resume from last valid artifact (quick-fix 006), fresh child provider session. All prior durable artifacts intact.
