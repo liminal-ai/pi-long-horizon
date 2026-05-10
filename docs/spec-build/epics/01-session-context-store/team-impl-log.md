@@ -3,7 +3,7 @@
 ## Run Overview
 - State: STORY_ACTIVE
 - Spec Pack Root: /Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/01-session-context-store
-- Current Story: 04-generated-pi-session-target-metadata
+- Current Story: 05-attach-and-import-existing-pi-sessions
 - Current Phase: accept
 
 ## Run Configuration
@@ -137,10 +137,26 @@
 - Baseline Before: 544
 - Baseline After: 544 (Story 4 TCs tested in existing thread-store.test.ts, no new test file)
 
+### 05-attach-and-import-existing-pi-sessions
+- Story Title: Story 5: Attach And Import Existing PI Sessions
+- Implementor Evidence: artifacts/05-attach-and-import-existing-pi-sessions/003-implementor.json
+- Verifier Evidence:
+  - artifacts/05-attach-and-import-existing-pi-sessions/004-verify.json
+  - artifacts/05-attach-and-import-existing-pi-sessions/006-verify.json (final: pass)
+- Story Continue: artifacts/05-attach-and-import-existing-pi-sessions/005-continue.json
+- Story Gate: `npm run verify` — pass (typecheck clean, 75 tests pass)
+- Epic Gate: `npm run verify-all` — pass
+- Dispositions:
+  - All verifier findings: fixed via story-continue
+- Open Risks:
+  - none
+- Baseline Before: 544
+- Baseline After: 546
+
 ## Cumulative Baselines
-- Baseline Before Current Story: 543
-- Expected After Current Story: 544
-- Latest Actual Total: 544
+- Baseline Before Current Story: 544
+- Expected After Current Story: 546
+- Latest Actual Total: 546
 
 ## Epic Closeout
 - Current Epic Review Artifact: none

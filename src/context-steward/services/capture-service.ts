@@ -181,73 +181,79 @@ async function applyCapturedTurns(
   }, issues);
 }
 
+export async function captureFinalizedActivityInCurrentThreadOperation(
+  input: CaptureActivityInput,
+): Promise<StewardResult<CaptureActivityResult>> {
+  const targetEventKey = input.activity.targetEventKey ?? input.activity.targetMetadata.targetEventKey;
+
+  if (targetEventKey) {
+    const snapshot = await input.store.openThread(input.threadId);
+    if (!snapshot.ok) {
+      return snapshot;
+    }
+
+    const existingMessage = findCapturedMessageByTargetEventKey(snapshot.value, targetEventKey);
+    if (existingMessage) {
+      return ok(
+        {
+          message: structuredClone(existingMessage),
+          turns: cloneTurns(snapshot.value.turns),
+          duplicate: true,
+          turnStateOutcome: "not_applicable",
+        },
+        [duplicateCaptureIssue(targetEventKey, input.threadId)],
+      );
+    }
+  }
+
+  const actor = await declareThreadActor(
+    input.store,
+    input.threadId,
+    structuredClone(input.activity.actor),
+  );
+  if (!actor.ok) {
+    return actor;
+  }
+
+  const targetMetadata = {
+    ...structuredClone(input.activity.targetMetadata),
+    targetEventKey,
+  };
+
+  const appended = await input.store.appendMessage({
+    threadId: input.threadId,
+    actor: actor.value,
+    message: {
+      messageId: createMessageId(),
+      threadId: input.threadId,
+      actorId: input.activity.actor.actorId,
+      actorType: input.activity.actor.actorType,
+      messageKind: input.activity.messageKind,
+      createdAt: input.activity.createdAt,
+      parts: input.activity.parts.map((part) => structuredClone(part)),
+      targetMetadata,
+    },
+    targetEventKey,
+  });
+
+  if (!appended.ok) {
+    if (targetEventKey && appended.issues.some((issue) => issue.code === "CAPTURE_DUPLICATE_EVENT")) {
+      return resolveDuplicateCapture(input.store, input.threadId, targetEventKey);
+    }
+
+    const cause = stringifyIssues(appended.issues);
+    return fail(captureAppendFailedIssue({ threadId: input.threadId, activity: input.activity, cause }), ...appended.issues);
+  }
+
+  return applyCapturedTurns(input, appended.value);
+}
+
 export async function captureFinalizedActivity(
   input: CaptureActivityInput,
 ): Promise<StewardResult<CaptureActivityResult>> {
-  return withSerializedThreadOperation(input.threadId, async () => {
-    const targetEventKey = input.activity.targetEventKey ?? input.activity.targetMetadata.targetEventKey;
-
-    if (targetEventKey) {
-      const snapshot = await input.store.openThread(input.threadId);
-      if (!snapshot.ok) {
-        return snapshot;
-      }
-
-      const existingMessage = findCapturedMessageByTargetEventKey(snapshot.value, targetEventKey);
-      if (existingMessage) {
-        return ok(
-          {
-            message: structuredClone(existingMessage),
-            turns: cloneTurns(snapshot.value.turns),
-            duplicate: true,
-            turnStateOutcome: "not_applicable",
-          },
-          [duplicateCaptureIssue(targetEventKey, input.threadId)],
-        );
-      }
-    }
-
-    const actor = await declareThreadActor(
-      input.store,
-      input.threadId,
-      structuredClone(input.activity.actor),
-    );
-    if (!actor.ok) {
-      return actor;
-    }
-
-    const targetMetadata = {
-      ...structuredClone(input.activity.targetMetadata),
-      targetEventKey,
-    };
-
-    const appended = await input.store.appendMessage({
-      threadId: input.threadId,
-      actor: actor.value,
-      message: {
-        messageId: createMessageId(),
-        threadId: input.threadId,
-        actorId: input.activity.actor.actorId,
-        actorType: input.activity.actor.actorType,
-        messageKind: input.activity.messageKind,
-        createdAt: input.activity.createdAt,
-        parts: input.activity.parts.map((part) => structuredClone(part)),
-        targetMetadata,
-      },
-      targetEventKey,
-    });
-
-    if (!appended.ok) {
-      if (targetEventKey && appended.issues.some((issue) => issue.code === "CAPTURE_DUPLICATE_EVENT")) {
-        return resolveDuplicateCapture(input.store, input.threadId, targetEventKey);
-      }
-
-      const cause = stringifyIssues(appended.issues);
-      return fail(captureAppendFailedIssue({ threadId: input.threadId, activity: input.activity, cause }), ...appended.issues);
-    }
-
-    return applyCapturedTurns(input, appended.value);
-  });
+  return withSerializedThreadOperation(input.threadId, async () =>
+    captureFinalizedActivityInCurrentThreadOperation(input),
+  );
 }
 
 export function getThreadTurnState(thread: ThreadRecord): ThreadRecord["status"]["turnState"] {
