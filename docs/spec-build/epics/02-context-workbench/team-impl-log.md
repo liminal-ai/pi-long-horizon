@@ -5,7 +5,7 @@
 - **State:** STORY_CYCLE
 - **Spec-Pack Root:** `/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/02-context-workbench`
 - **Started:** 2026-05-10
-- **Current Story:** 02-search-skim-and-full-detail
+- **Current Story:** 03-draft-thread-view-lifecycle
 - **Current Phase:** Story Cycle (Stage 3)
 
 ## Spec Pack Shape
@@ -19,7 +19,7 @@
 |-------|-----|-------|--------|
 | 1 | 00-foundation | Story 0: Foundation | accepted |
 | 2 | 01-thread-and-thread-view-inspection | Story 1: Thread And Thread View Inspection | accepted |
-| 3 | 02-search-skim-and-full-detail | Story 2: Search, Skim, And Full Detail | pending |
+| 3 | 02-search-skim-and-full-detail | Story 2: Search, Skim, And Full Detail | accepted |
 | 4 | 03-draft-thread-view-lifecycle | Story 3: Draft Thread View Lifecycle | pending |
 | 5 | 04-upper-band-composition | Story 4: Upper-Band Composition | pending |
 | 6 | 05-lower-band-awareness | Story 5: Lower-Band Awareness | pending |
@@ -106,3 +106,15 @@ Self-review passes: 3
 - **Commit:** 6b7b492 — Story 1: Thread and Thread View inspection
 - **Baseline after:** 128 unit tests (was 116 after Story 0, +12 new)
 - **Note:** Verifier did not run — story-lead escalated gate-policy ruling before dispatching verification. Tests all pass via impl-lead verify-all. Accepted-risk: no independent verifier evidence for this story.
+
+### Story 2: Search, Skim, And Full Detail — ACCEPTED
+
+- **Validate:** ready (2026-05-10T20:22:30Z). Baseline seed: 553 test files.
+- **story-orchestrate run:** needs-ruling (ruling-008: same green-verify guard issue)
+- **Impl-lead acceptance:**
+  - verify-all: pass (150 unit, 4 integration, 24 e2e)
+  - Targeted Story 2 tests: 32/32 pass (20 TCs + non-TC decided)
+  - No spec deviations
+- **Commit:** 15daa36 — Story 2: Search, skim, and full detail
+- **Baseline after:** 150 unit tests (was 128 after Story 1, +22 new)
+- **Note:** Same green-verify guard pattern. Verifier not run. Accepted-risk: no independent verifier evidence.

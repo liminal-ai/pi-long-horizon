@@ -360,6 +360,14 @@ class CountingThreadViewStore implements ThreadViewStore {
     this.listCount += 1;
     return this.delegate.listThreadViews(threadId);
   }
+
+  updateThreadView(input: Parameters<ThreadViewStore["updateThreadView"]>[0]) {
+    return this.delegate.updateThreadView(input);
+  }
+
+  archiveThreadView(threadId: string, threadViewId: string) {
+    return this.delegate.archiveThreadView(threadId, threadViewId);
+  }
 }
 
 test("shows source Thread and active view separately", async () => {

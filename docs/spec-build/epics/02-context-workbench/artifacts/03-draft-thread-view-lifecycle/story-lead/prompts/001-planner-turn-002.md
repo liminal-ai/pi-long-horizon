@@ -1,0 +1,803 @@
+# Story Lead Base Prompt
+
+## Role Charter
+You are the story lead for `03-draft-thread-view-lifecycle` on durable story run `03-draft-thread-view-lifecycle-story-run-001`.
+Select exactly one bounded next action for this `run` turn.
+This is planner turn 2.
+Do not invent tools, bypass the bounded action protocol, or rely on hidden provider session memory.
+
+## Authority Boundary
+Impl-lead stays outside this loop and owns final story acceptance, receipts, commits, cleanup dispatch, and epic progression.
+You may recommend acceptance, request a ruling, or block the story, but you do not accept the story on behalf of impl-lead.
+
+## Requirements Source
+Treat the story file and test plan below as the story-local requirements source for this turn.
+Do not pull in epic, tech design, git status, git diff, or workspace summaries unless they are already present in the durable record below.
+
+### Story Requirements
+### story-file
+Path: /Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/02-context-workbench/stories/03-draft-thread-view-lifecycle.md
+Bytes: 9511
+
+# Story 3: Draft Thread View Lifecycle
+
+### Summary
+<!-- Jira: Summary field -->
+
+Create empty draft Thread Views from source truth, track active/draft/archived states, enforce one-active-view invariants, archive drafts without activation, and support turn-level exclusion as view curation.
+
+### Description
+<!-- Jira: Description field -->
+
+**User Profile**
+
+Primary User: Context Steward. The steward manages long-running PI coding sessions whose useful context is larger than a raw transcript. The steward needs to find relevant source material quickly, understand how that material is currently represented, and build or revise Thread Views without mutating source truth.
+
+**Objective**
+
+Deliver the draft Thread View lifecycle: create an empty draft, track its state, enforce that only one Thread View can be active per Thread, allow archiving a draft without activation, and support excluding turns from a draft as a curation decision that does not mutate source records.
+
+**Scope**
+
+In scope:
+- Create empty draft Thread View for a Thread
+- Draft starts with empty band regions
+- Thread View states: active, draft, archived
+- One-active-view invariant enforcement
+- Archive a draft without activating it
+- Turn-level exclusion from a draft Thread View
+- Source Thread remains unchanged through all draft operations
+
+Out of scope:
+- Band composition and materialization (Story 4+)
+- Comparison and activation (Story 6)
+- Lower-band chunk awareness (Story 5)
+
+**Dependencies**
+
+- Story 1 (ThreadViewStore, workbench query service)
+- Story 0 (record types, error codes)
+
+### Acceptance Criteria
+<!-- Jira: Acceptance Criteria field -->
+
+**AC-4.1:** Using the workbench, the steward can create a new draft Thread View that starts empty.
+
+- **TC-4.1a: Draft view is created with no selected source units**
+  - Given: A Thread exists
+  - When: The steward creates a new draft Thread View
+  - Then: The draft exists with empty band regions
+- **TC-4.1b: Empty draft is explicit**
+  - Given: A draft Thread View has not yet been filled
+  - When: The steward opens the draft
+  - Then: The workbench shows that the draft is empty rather than implying inferred content
+- **TC-4.1c: Empty source thread still permits draft creation**
+  - Given: A Thread exists and has no Turns yet
+  - When: The steward creates a draft Thread View
+  - Then: The draft is created and remains empty
+
+**AC-4.2:** Using the workbench, the steward can create draft Thread Views from source truth without mutating the source Thread.
+
+- **TC-4.2a: Draft creation does not change source Thread**
+  - Given: A Thread contains source Messages and Turns
+  - When: The steward creates a draft Thread View
+  - Then: The source Thread remains unchanged
+- **TC-4.2b: Draft creation does not require copying the active view**
+  - Given: A Thread has an active Thread View
+  - When: The steward creates a new draft
+  - Then: The draft starts as a new empty view associated with the same source Thread
+
+**AC-4.3:** Using the workbench, the steward can distinguish active, draft, and archived Thread View states.
+
+- **TC-4.3a: Draft state is explicit**
+  - Given: A Thread View is not active and not archived
+  - When: The workbench reads its state
+  - Then: The Thread View is shown as draft
+- **TC-4.3b: Archived state is explicit**
+  - Given: A Thread View has been archived
+  - When: The workbench reads its state
+  - Then: The Thread View is shown as archived
+
+**AC-4.4:** Using the workbench, the steward can rely on exactly one active Thread View for a Thread at a time.
+
+- **TC-4.4a: Thread with active view lists one active state**
+  - Given: A Thread has one active Thread View
+  - When: The workbench lists all Thread Views
+  - Then: Exactly one is active
+- **TC-4.4b: Draft creation does not create a second active view**
+  - Given: A Thread already has an active Thread View
+  - When: The steward creates a draft
+  - Then: The existing active view remains the only active view
+
+**AC-4.5:** Using the workbench, the steward can archive a draft Thread View without activating it.
+
+- **TC-4.5a: Draft can be archived as an abandonment path**
+  - Given: A draft Thread View exists and will not be activated
+  - When: The steward archives the draft
+  - Then: The draft becomes archived and remains readable as an abandoned draft view
+
+**AC-5.5:** Using the workbench, the steward can exclude Turns from a Thread View as a curation decision.
+
+- **TC-5.5a: Turn can be excluded from draft Thread View**
+  - Given: A Turn would otherwise be part of a draft Thread View
+  - When: The steward excludes that Turn
+  - Then: The Turn is removed from the draft Thread View composition
+- **TC-5.5b: Exclusion does not mutate source Thread**
+  - Given: A Turn is excluded from a Thread View
+  - When: The source Thread is read
+  - Then: The Turn and its Messages remain unchanged in source truth
+
+### Technical Design
+<!-- Jira: Technical Notes or sub-section of Description -->
+
+#### Architecture Context
+
+This story introduces Thread Views as durable editing objects rather than just things the runtime consumes. The key job here is to make draft lifecycle explicit and safe before any band composition logic arrives in Story 4.
+
+It also owns turn exclusion because exclusion is fundamentally a draft-view curation decision, not a materialization concern.
+
+#### Implementation Targets
+
+| Area | Files / Modules |
+|------|-----------------|
+| Draft lifecycle service | `src/context-workbench/services/thread-view-edit-service.ts` |
+| Thread View store | `src/context-workbench/store/thread-view-store.ts` |
+| File-backed Thread View store | `src/context-workbench/store/file-thread-view-store.ts` |
+| Thread View records | `src/context-workbench/domain/thread-view-records.ts` |
+| Draft lifecycle tests | `tests/context-workbench/thread-view-edit-service.test.ts` |
+
+#### Design References
+
+- [tech-design.md §Record Schemas](/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/02-context-workbench/tech-design.md:205), lines 205-263
+- [tech-design.md §Active View Pointer](/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/02-context-workbench/tech-design.md:301), lines 301-309
+- [tech-design.md §Flow 4: Draft Thread View Lifecycle](/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/02-context-workbench/tech-design.md:459), lines 459-481
+- [tech-design.md §Chunk 3: Draft Thread View Lifecycle and Turn Exclusion](/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/02-context-workbench/tech-design.md:808), lines 808-820
+- [test-plan.md §thread-view-edit-service.test.ts](/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/02-context-workbench/test-plan.md:126), lines 126-143
+
+#### Test Mapping
+
+| TC | Test File / Check | Test Description |
+|----|-------------------|------------------|
+| TC-4.1a | `tests/context-workbench/thread-view-edit-service.test.ts` | creates empty draft with empty bands |
+| TC-4.1b | `tests/context-workbench/thread-view-edit-service.test.ts` | empty draft explicit in readback |
+| TC-4.1c | `tests/context-workbench/thread-view-edit-service.test.ts` | empty source Thread still permits draft creation |
+| TC-4.2a | `tests/context-workbench/thread-view-edit-service.test.ts` | draft creation does not change source Thread |
+| TC-4.2b | `tests/context-workbench/thread-view-edit-service.test.ts` | draft creation does not copy active view |
+| TC-4.3a | `tests/context-workbench/thread-view-edit-service.test.ts` | draft state explicit |
+| TC-4.3b | `tests/context-workbench/thread-view-edit-service.test.ts` | archived state explicit |
+| TC-4.4a | `tests/context-workbench/thread-view-edit-service.test.ts` | one active view invariant preserved in reads |
+| TC-4.4b | `tests/context-workbench/thread-view-edit-service.test.ts` | creating draft does not create second active |
+| TC-4.5a | `tests/context-workbench/thread-view-edit-service.test.ts` | archives draft without activation |
+| TC-5.5a | `tests/context-workbench/thread-view-edit-service.test.ts` | excludes turn from draft view composition |
+| TC-5.5b | `tests/context-workbench/thread-view-edit-service.test.ts` | exclusion does not mutate source Thread |
+
+#### Non-TC Decided Tests
+
+- `thread-view-edit-service.test.ts`: archival preserves emitted messages for later readback
+
+#### Technical Notes
+
+`sourceStateReference` captures `<sourceRevision, messageHighWatermark>` from the canonical Thread at draft creation. Draft deletion remains out of scope. Archival is the only abandonment path in Feature 2.
+
+Exclusions are stored as turn IDs on the view composition rather than as source mutations.
+
+#### Anti-Shim Requirements
+
+- Prove one-active-view invariants through the real store and service transitions, not through a mock repository that never has conflicting state.
+- Prove exclusion against the real source Thread snapshot so the test actually catches accidental source mutation.
+
+#### Verification
+
+- Targeted: `node --import tsx --test tests/context-workbench/thread-view-edit-service.test.ts`
+- Story gate: `npm run verify`
+- Epic gate: `npm run verify-all`
+
+#### Spec Deviations
+
+None.
+
+### Definition of Done
+<!-- Jira: Definition of Done or Acceptance Criteria footer -->
+
+- [ ] All TCs pass (TC-4.1a through TC-4.5a, TC-5.5a through TC-5.5b)
+- [ ] ThreadViewStore createThreadView, archiveThreadView implemented
+- [ ] One-active-view invariant enforced in store
+- [ ] Turn exclusion updates band selections without mutating source
+- [ ] `npm run verify` passes
+- [ ] `npm run green-verify` passes
+
+
+### Test Plan
+### test-plan
+Path: /Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/02-context-workbench/test-plan.md
+Bytes: 21008
+
+# Test Plan: Context Workbench
+
+## Purpose
+
+This test plan maps every Test Condition from Epic 2 to a concrete test file and behavior. It is the authoritative TC-to-test matrix for Context Workbench implementation. The tech design index explains architecture and interfaces; this document tells implementers exactly where confidence comes from.
+
+Feature 2 has 65 epic TCs. This plan maps each TC to one primary test. It also adds 11 non-TC decided tests for design risks that are not captured one-to-one in the epic.
+
+## Test Architecture
+
+Tests follow the service-mock philosophy from Epic 1. Enter through public workbench services, exercise internal modules together, and mock only true external boundaries. The highest-value tests are store-snapshot-driven:
+
+- create a Thread with known Messages, Turns, imports, projection metadata, and chunk artifacts
+- create one or more Thread Views with known band selections
+- invoke the workbench service under test
+- assert on returned summaries, detail payloads, emitted message sequences, or state transitions
+
+The service suite remains the primary confidence layer, but the E2E suite should still cover the real seams introduced by Feature 2. It should stay much smaller than the service suite while still exercising:
+
+- opening a real Thread with a real active Thread View
+- creating an empty draft Thread View through the real entry surface
+- composing upper bands into a real draft
+- comparing draft and active views
+- activating a draft and archiving the prior active view
+- opening fixture Threads through the same workbench surface
+
+It should also include the most meaningful edge cases for those seams:
+
+- Thread with no active Thread View
+- Thread with no Turns when draft creation is attempted
+- activation when emitted output is required but missing
+- lower-band blocker visibility when a selected chunk is open or missing required summary artifacts
+- source-safety after Thread View edits and activation
+
+| Boundary | Test Treatment |
+|---|---|
+| Canonical Thread store | Use real temp directories and real Thread snapshots. This is already-proven infrastructure and remains a core read boundary. |
+| Thread View store | Use real temp directories. Thread View persistence is core behavior for Feature 2. |
+| Internal workbench services | Do not mock. Internal wiring is part of the behavior. |
+| Future command or UI adapters | Fake only the adapter boundary if adapter tests are added later. |
+| Search ranking/truncation policy | Exercise through workbench search service, not through isolated string-only tests. |
+
+Primary test locations:
+
+```text
+tests/context-workbench/
+  foundation.test.ts
+  thread-view-store.test.ts
+  workbench-query-service.test.ts
+  workbench-search-service.test.ts
+  thread-view-edit-service.test.ts
+  thread-view-materializer.test.ts
+  thread-view-compare-service.test.ts
+  thread-view-activation-service.test.ts
+  file-thread-view-store.integration.test.ts
+```
+
+## Mock and Fixture Strategy
+
+Fixtures should live in `src/context-workbench/test/fixtures.ts` for reusable builders and in temp store helpers that can write both canonical Thread state and Thread View state into an isolated `.context-steward` root.
+
+Required builders:
+
+| Builder | Purpose |
+|---|---|
+| `makeThreadView()` | Build active, draft, or archived Thread View records with selected bands. |
+| `makeBandRecord()` | Build full-fidelity, smooth, detailed, or brief band selections. |
+| `makeThreadViewMessage()` | Build materialized emitted Thread View messages. |
+| `makeWorkbenchSearchInput()` | Build search requests with content query and metadata filters. |
+| `makeThreadSnapshot()` | Reuse Epic 1 canonical Thread snapshot builders for source state. |
+| `withTempWorkbenchStore()` | Create isolated source Thread + Thread View temp roots and clean them up. |
+
+## TC Mapping
+
+### `workbench-query-service.test.ts`
+
+This file owns primary confidence for opening Threads, reading active Thread Views, full-detail inspection, lower-band awareness, and record pivots. It carries more TCs than the other files because those concerns all share the same high-leverage query-entry seam over realistic Thread and Thread View state rather than separate mutation paths.
+
+| TC | Test Name | Setup | Action | Assert |
+|---|---|---|---|---|
+| TC-1.1a | shows source Thread and active view separately | Thread with one active view | `openThread` | Result contains distinct thread and active-view identity |
+| TC-1.1b | reads Thread with no active view | Thread without Thread Views | `openThread` | Result still returns source Thread and explicit missing active view |
+| TC-1.2a | reports usable Thread | Thread with no blockers | `openThread` | `usableStatus` is ready |
+| TC-1.2b | reports blocked or degraded Thread | Thread with known blocker state | `openThread` | Blocker surfaced at reader-usable level |
+| TC-1.3a | shows active view band regions | Active Thread View with populated bands | `openThread` | All band regions visible in order |
+| TC-1.3b | shows empty band explicitly | Active Thread View with empty band | `openThread` | Empty band present, not omitted |
+| TC-1.4a | lists active draft archived views | Thread with multiple view states | `openThread` | All views returned with state |
+| TC-1.4b | shows one active view invariant | Thread with one active view | `openThread` | Exactly one active view in result |
+| TC-1.5a | opens fixture Thread through same read surface | Fixture Thread snapshot | `openFixtureThread` | Fixture result matches normal Thread inspection shape |
+| TC-3.1a | opens full message detail | Message with multiple Parts | `openMessageDetail` | All Parts returned in order |
+| TC-3.1b | message detail includes source metadata | Message with source order and actor metadata | `openMessageDetail` | Metadata present |
+| TC-3.2a | opens full Turn detail | Turn with member Messages | `openTurnDetail` | Member Messages returned in source order |
+| TC-3.2b | turn detail includes current view relationship | Turn included in active view | `openTurnDetail` | View placement present |
+| TC-3.3a | Thread View detail shows all bands | Thread View with multiple populated bands | `openThreadViewDetail` | All band regions returned |
+| TC-3.3b | Thread View detail includes emitted result | Thread View with materialized output | `openThreadViewDetail` | Emitted message sequence present |
+| TC-3.4a | pivots from message to turn | Message in a known Turn | `openMessageDetail` | Turn pivot returned |
+| TC-3.4b | pivots from turn to Thread View placement | Turn in active or draft view | `openTurnDetail` | View pivot returned |
+| TC-3.4c | pivots from band selection to source detail | Thread View band with selected turns or chunks | `openThreadViewDetail` | Source pivots returned |
+| TC-6.1a | detailed band uses chunk selections | Thread View with detailed band | `openThreadViewDetail` | Detailed band source units are chunks |
+| TC-6.1b | brief band uses chunk selections | Thread View with brief band | `openThreadViewDetail` | Brief band source units are chunks |
+| TC-6.2a | open chunk not eligible for detailed band | Open chunk in source Thread | `inspectLowerBandReadiness` | Open chunk excluded from detailed-band eligibility |
+| TC-6.2b | open chunk not eligible for brief band | Open chunk in source Thread | `inspectLowerBandReadiness` | Open chunk excluded from brief-band eligibility |
+| TC-6.3a | detailed-ready chunk shown as eligible | Closed chunk with detailed artifact | `inspectLowerBandReadiness` | Chunk marked eligible for detailed band |
+| TC-6.3b | missing lower-band artifact shown as not ready | Closed chunk missing needed artifact | `inspectLowerBandReadiness` | Chunk marked not ready |
+| TC-6.4a | chunk detail remains minimal | Chunk exists with lifecycle + representations | `openChunkDetail` | Minimal chunk state returned without full control-plane data |
+| TC-6.4b | missing chunk data does not block upper-band inspection | Chunk artifacts incomplete, upper-band selections valid | `openThreadViewDetail` | Upper-band inspection still succeeds |
+
+### `workbench-search-service.test.ts`
+
+This file owns search and skim behavior. It proves both content and metadata search, stable result shapes, and skim-oriented summary outputs.
+
+| TC | Test Name | Setup | Action | Assert |
+|---|---|---|---|---|
+| TC-2.1a | searches message content | Thread with searchable message content | `searchMessages` | Matching message summaries returned |
+| TC-2.1b | searches turn content | Thread with searchable turn content | `searchTurns` | Matching turn summaries returned |
+| TC-2.1c | searches Thread View metadata | Thread with multiple Thread Views | `searchThreadViews` | Matching Thread View summaries returned |
+| TC-2.1d | metadata filters narrow results | Records with varied metadata | Search with filters | Result set narrowed correctly |
+| TC-2.2a | message results show leading recognizable content | Long message result set | Search messages | Summary row uses leading recognizable content |
+| TC-2.2b | turn results use compact turn summary | Long turn result set | Search turns | Turn summary row returned instead of raw dump |
+| TC-2.2c | Thread View results show state and purpose | Multiple Thread Views with varied state | Search Thread Views | State and purpose shown |
+| TC-2.3a | message result includes turn relationship hint | Message belongs to Turn | Search messages | Relationship hint points to owning Turn |
+| TC-2.3b | turn result includes view relationship hint | Turn included in active or draft view | Search turns | Relationship hint points to view placement |
+| TC-2.4a | long result set stays in summary form | Large result set | Search any supported scope | Results remain summary-shaped |
+| TC-2.4b | empty search is explicit | No matching records | Search any supported scope | Empty result reported explicitly |
+
+### `thread-view-edit-service.test.ts`
+
+This file owns draft lifecycle, exclusion, and archive-without-activate behavior. It proves that editing is curation over views and not mutation of source truth.
+
+| TC | Test Name | Setup | Action | Assert |
+|---|---|---|---|---|
+| TC-4.1a | creates empty draft with empty bands | Thread exists | `createDraftThreadView` | Draft created with empty band selections |
+| TC-4.1b | empty draft is explicit in readback | Existing empty draft | `openThreadViewDetail` | Empty state visible |
+| TC-4.1c | empty source Thread still permits draft creation | Thread with no Turns | `createDraftThreadView` | Empty draft still created |
+| TC-4.2a | draft creation does not change source Thread | Thread snapshot with source Messages/Turns | `createDraftThreadView` | Source Thread unchanged |
+| TC-4.2b | draft creation does not copy active view | Thread with active Thread View | `createDraftThreadView` | New draft starts empty |
+| TC-4.3a | draft state is explicit | View in non-active non-archived state | Read view | State is draft |
+| TC-4.3b | archived state is explicit | Archived view | Read view | State is archived |
+| TC-4.4a | one active view invariant preserved in store reads | Thread with active view | List views | Exactly one active |
+| TC-4.4b | creating draft does not create second active | Thread already has active view | `createDraftThreadView` | Existing active remains only active |
+| TC-4.5a | archives draft without activation | Existing draft view | `archiveDraftThreadView` | Draft becomes archived and remains readable |
+| TC-5.5a | excludes turn from draft view composition | Draft with included Turn | `excludeTurnFromThreadView` | Turn removed from draft view |
+| TC-5.5b | exclusion does not mutate source Thread | Source Turn excluded from view | Read Thread after exclusion | Source Thread unchanged |
+
+### `thread-view-materializer.test.ts`
+
+This file owns band-to-output behavior. It proves that selected source units become the right emitted message forms for the upper bands and that lower-band rendering respects artifact readiness.
+
+| TC | Test Name | Setup | Action | Assert |
+|---|---|---|---|---|
+| TC-5.1a | full-fidelity selection is turn-based | Draft with selected full-fidelity turns | `materializeThreadView` | Full-fidelity source units treated as turns |
+| TC-5.1b | full-fidelity does not split turns | Turn with multiple Messages | `materializeThreadView` | Turn emits as a whole sequence |
+| TC-5.2a | selected full-fidelity turns emit raw messages | Selected full-fidelity turns | `materializeThreadView` | Raw Messages emitted in source order |
+| TC-5.2b | full-fidelity preserves actor back-and-forth | Multi-actor Turn selected for full fidelity | `materializeThreadView` | Emitted raw sequence preserves original order |
+| TC-5.3a | smooth band uses turn selections | Draft with selected smooth turns | `materializeThreadView` | Smooth band source units treated as turns |
+| TC-5.3b | smooth band follows full-fidelity boundary by default | Draft with full-fidelity boundary and no override | `materializeThreadView` | Smooth selection begins at next older eligible turns |
+| TC-5.4a | selected smooth turn emits one smooth representation | Turn with smooth artifact | `materializeThreadView` | One smooth synthetic message emitted |
+| TC-5.4b | missing smooth artifact is visible | Turn selected for smooth band without smooth artifact | `materializeThreadView` | Band status or issues mark missing smooth artifact |
+
+### `thread-view-compare-service.test.ts`
+
+This file owns on-demand draft-vs-active comparison and materialized-result comparison behavior.
+
+| TC | Test Name | Setup | Action | Assert |
+|---|---|---|---|---|
+| TC-7.1a | compares band-level differences | Active and draft views differ by band composition | `compareThreadViews` | Band differences returned |
+| TC-7.1b | compares selected source-unit differences | Active and draft views differ by selected turns or chunks | `compareThreadViews` | Added/removed selected ids returned |
+| TC-7.2a | draft emitted message sequence inspectable before activation | Draft has materialized output | `compareThreadViews` or draft detail read | Draft emitted sequence available |
+| TC-7.2b | missing materialized output is explicit | Draft lacks emitted output | `compareThreadViews` or draft detail read | Missing output reported explicitly |
+
+### `thread-view-activation-service.test.ts`
+
+This file owns activation, prior-active archival, and source-safety during state transitions.
+
+| TC | Test Name | Setup | Action | Assert |
+|---|---|---|---|---|
+| TC-7.3a | activating draft makes it only active view | Thread with one active and one draft | `activateDraftThreadView` | Draft becomes only active view |
+| TC-7.3b | prior active view archived on activation | Thread with one active and one draft | `activateDraftThreadView` | Prior active becomes archived |
+| TC-7.4a | activation does not mutate source Thread | Source Thread snapshot + draft activation | `activateDraftThreadView` | Source Thread unchanged |
+| TC-7.4b | archived view remains readable after activation | Prior active archived through activation | `openThreadView` | Archived view still readable |
+
+## Non-TC Decided Tests
+
+These tests are required by design risk rather than by a single epic TC.
+
+| ID | Test File | Test Name |
+|---|---|---|
+| NTC-1 | `foundation.test.ts` | Thread View id and emitted-message ordering helpers are deterministic |
+| NTC-2 | `foundation.test.ts` | band-order concatenation helpers preserve `full_fidelity -> smooth -> detailed -> brief` |
+| NTC-3 | `thread-view-store.test.ts` | active Thread View pointer and per-view state remain consistent on startup reconciliation |
+| NTC-4 | `workbench-search-service.test.ts` | stable ordering for equal-score metadata matches |
+| NTC-5 | `workbench-search-service.test.ts` | skim summaries omit full-detail payloads from long result sets |
+| NTC-6 | `thread-view-edit-service.test.ts` | archival preserves emitted messages for later readback |
+| NTC-7 | `thread-view-materializer.test.ts` | materializer preserves band order when one band is empty |
+| NTC-8 | `thread-view-materializer.test.ts` | open chunk never materializes into lower bands even if summary artifacts are erroneously present |
+| NTC-9 | `thread-view-compare-service.test.ts` | comparison ignores archived views unless explicitly requested |
+| NTC-10 | `thread-view-activation-service.test.ts` | activation rejects draft when policy requires materialized output and it is missing |
+| NTC-11 | `file-thread-view-store.integration.test.ts` | Thread Views survive process-style reopen with consistent active-view invariant |
+
+## Chunk Test Counts
+
+| Chunk | Primary TC Tests | Non-TC Tests | Total |
+|---|---:|---:|---:|
+| Chunk 0: Foundation | 0 | 2 | 2 |
+| Chunk 1: Thread And Active View Inspection | 9 | 1 | 10 |
+| Chunk 2: Search, Skim, And Full Detail | 20 | 2 | 22 |
+| Chunk 3: Draft Thread View Lifecycle And Turn Exclusion | 12 | 2 | 14 |
+| Chunk 4: Band Composition And Lower-Band Awareness | 16 | 2 | 18 |
+| Chunk 5: Comparison And Activation | 8 | 2 | 10 |
+| Total | 65 | 11 | 76 |
+
+## Verification Commands
+
+| Gate | Command | Expected Use |
+|---|---|---|
+| `red-verify` | `npm run typecheck` | Run after Red tests are written but expected to fail. |
+| `verify` | `npm run typecheck && npm run test` | Standard development gate. |
+| `green-verify` | `npm run verify && npm run guard:no-test-changes` | Run after implementation passes and Red tests should remain unchanged. |
+| `verify-all` | `npm run verify && npm run test:integration && npm run test:e2e` | Run for story completion and before release. |
+
+Initial integration coverage should focus on Thread View persistence and realistic workbench reads:
+
+| Test File | Test Name | Purpose |
+|---|---|---|
+| `file-thread-view-store.integration.test.ts` | Thread Views survive process-style reopen | Verifies persisted active/draft/archived state and emitted messages reopen correctly |
+| `file-thread-view-store.integration.test.ts` | activation updates active-view invariant atomically | Verifies activation changes active pointer and view states consistently |
+| `file-thread-view-store.integration.test.ts` | workbench query reads mixed Thread + Thread View state | Verifies read services can open realistic Thread + view snapshots from disk |
+| `file-thread-view-store.integration.test.ts` | search remains practical over large realistic thread data | Verifies file-backed content and metadata search remains practical for expected Thread sizes |
+
+Dedicated E2E coverage should focus on real workbench lifecycle seams rather than duplicating the full service suite. For Feature 2, "E2E" means end-to-end through the full workbench service stack against real filesystem-backed Thread and Thread View state. These tests are not expected to drive PI directly. They should pre-seed realistic source Thread and Thread View state, then exercise the real workbench entry surfaces over that state.
+
+| Test File | Test Name | Purpose |
+|---|---|---|
+| `context-workbench.e2e.test.ts` | opens Thread with active Thread View | Verifies the real entry surface can read mixed Thread + active-view state |
+| `context-workbench.e2e.test.ts` | creates empty draft from source truth | Verifies draft lifecycle starts empty through the real surface |
+| `context-workbench.e2e.test.ts` | fills upper bands and materializes emitted output | Verifies real draft composition for full-fidelity and smooth bands |
+| `context-workbench.e2e.test.ts` | compares draft and active views | Verifies the comparison seam over real persisted state |
+| `context-workbench.e2e.test.ts` | activates draft and archives prior active view | Verifies activation seam and one-active invariant through the real surface |
+| `context-workbench.e2e.test.ts` | rejects activation when emitted output is required but missing | Verifies the key activation edge case at end-to-end scope |
+| `context-workbench.e2e.test.ts` | opens fixture Thread through workbench flow | Verifies fixture-read seam through the same workbench path |
+| `context-workbench.e2e.test.ts` | reports lower-band blocker for open or incomplete chunk | Verifies lower-band edge-case visibility through the real surface |
+| `context-workbench.e2e.test.ts` | source Thread remains unchanged after view edits and activation | Verifies source-safety at end-to-end scope |
+
+## Count Reconciliation
+
+The epic contains 65 TCs. This plan maps 65 primary TC tests. Non-TC decided tests add 11 tests. The planned Feature 2 service-layer total is therefore 76 tests.
+
+Deep-gate suites are additive:
+
+- 76 planned service-layer tests
+- 4 integration tests
+- 9 E2E tests
+- 89 tests at the full deep gate when all planned suites exist
+
+Per-file primary TC counts:
+
+| Test File | Primary TC Tests |
+|---|---:|
+| `workbench-query-service.test.ts` | 26 |
+| `workbench-search-service.test.ts` | 11 |
+| `thread-view-edit-service.test.ts` | 12 |
+| `thread-view-materializer.test.ts` | 8 |
+| `thread-view-compare-service.test.ts` | 4 |
+| `thread-view-activation-service.test.ts` | 4 |
+| Total | 65 |
+
+
+## Current Run Index
+- planner_turn_index: 2
+- mode: run
+- current_status: running
+- lifecycle_state: awaiting_story_lead_action
+- current_phase: story-lead-awaiting-action
+- current_child_operation: none
+- current_summary: story-implement completed with outcome needs-human-ruling and status needs-user-decision.
+- latest_response_kind: implementor-result
+- latest_response_path: /Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/02-context-workbench/artifacts/03-draft-thread-view-lifecycle/003-implementor.json
+- older_response_count: 0
+- caller_input_artifact_count: 0
+- prior_self_note_count: 1
+- latest_self_note: "After implementation returns, verify that the response includes targeted test evidence, green-verify outcome, and explicit proof that source Thread snapshots are unchanged by draft creation and turn exclusion."
+
+## Response Trail
+<current_response>
+```yaml
+kind: implementor-result
+path: /Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/02-context-workbench/artifacts/03-draft-thread-view-lifecycle/003-implementor.json
+bytes: 3605
+payload:
+  command: "story-implement"
+  version: 1
+  status: "needs-user-decision"
+  outcome: "needs-human-ruling"
+  result:
+    resultId: "5f1f296e-41db-4ac4-89a2-f2dd8ad53b5e"
+    provider: "codex"
+    model: "gpt-5.4"
+    role: "story_implementor"
+    sessionId: "019e139d-0383-7bf1-ae44-1a9cd98db195"
+    continuation:
+      provider: "codex"
+      sessionId: "019e139d-0383-7bf1-ae44-1a9cd98db195"
+      storyId: "03-draft-thread-view-lifecycle"
+    outcome: "needs-human-ruling"
+    story:
+      id: "03-draft-thread-view-lifecycle"
+      title: "Story 3: Draft Thread View Lifecycle"
+    planSummary: "Implemented Story 3 draft Thread View lifecycle support by adding a real edit service for empty-draft creation, draft archival, and turn exclusion, extending the file-backed Thread View store with update/archive mutations and active-view invariant checks, and adding the full Story 3 test suite over the real filesystem-backed store and services."
+    changedFiles:
+      -
+        path: "src/context-workbench/store/thread-view-store.ts"
+        reason: "Expanded the ThreadViewStore contract with update and archive operations needed for draft lifecycle edits."
+      -
+        path: "src/context-workbench/store/file-thread-view-store.ts"
+        reason: "Implemented persisted Thread View mutation flows for updates and archival while preserving one-active-view enforcement."
+      -
+        path: "src/context-workbench/services/thread-view-edit-service.ts"
+        reason: "Added the Story 3 lifecycle service for empty draft creation, draft archival, and turn-level exclusion with source-state capture and stale materialization invalidation."
+      -
+        path: "tests/context-workbench/thread-view-edit-service.test.ts"
+        reason: "Added the Story 3 test suite covering all mapped draft lifecycle and exclusion cases plus the non-TC archival/duplicate-id protections."
+      -
+        path: "tests/context-workbench/workbench-query-service.test.ts"
+        reason: "Updated the local ThreadViewStore test double to satisfy the expanded store interface."
+    tests:
+      added:
+        - "tests/context-workbench/thread-view-edit-service.test.ts"
+      modified:
+        - "tests/context-workbench/workbench-query-service.test.ts"
+      removed:
+[]
+      totalAfterStory: 51
+      deltaFromPriorBaseline: 14
+    gatesRun:
+      -
+        command: "node --import tsx --test tests/context-workbench/thread-view-edit-service.test.ts"
+        result: "pass"
+      -
+        command: "npm run verify"
+        result: "pass"
+      -
+        command: "npm run green-verify"
+        result: "fail"
+      -
+        command: "npm run verify-all"
+        result: "pass"
+    selfReview:
+      passesRun: 0
+      findingsFixed:
+        - "Invalidated persisted emitted messages and marked the draft incomplete whenever turn exclusion changes upper-band composition, so draft composition cannot silently drift from stored output."
+        - "Fixed the new Story 3 test suite after typecheck surfaced an incorrect ThreadSnapshot import."
+      findingsSurfaced:
+        - "`npm run green-verify` fails because `guard:no-test-changes` rejects the intentional new Story 3 test file and the required existing test-double update."
+    openQuestions:
+      - "Should this story waive `guard:no-test-changes`, or should the new Story 3 tests be landed through a separate red-test workflow before rerunning `npm run green-verify`?"
+    specDeviations:
+[]
+    recommendedNextStep: "Resolve the `guard:no-test-changes` policy for this story’s required test additions, then rerun `npm run green-verify` once the expected workflow is confirmed."
+  errors:
+[]
+  warnings:
+[]
+  artifacts:
+    -
+      kind: "result-envelope"
+      path: "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/02-context-workbench/artifacts/03-draft-thread-view-lifecycle/003-implementor.json"
+  startedAt: "2026-05-10T20:38:37.463Z"
+  finishedAt: "2026-05-10T20:48:59.332Z"
+```
+</current_response>
+
+<history_responses>
+No older response entries are recorded yet.
+</history_responses>
+
+## Current Snapshot
+### current-snapshot
+Path: /Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/02-context-workbench/artifacts/03-draft-thread-view-lifecycle/story-lead/001-current.json
+Bytes: 1798
+
+```yaml
+storyRunId: "03-draft-thread-view-lifecycle-story-run-001"
+storyId: "03-draft-thread-view-lifecycle"
+attempt: 1
+status: "running"
+lifecycleState: "awaiting_story_lead_action"
+currentSummary: "story-implement completed with outcome needs-human-ruling and status needs-user-decision."
+currentPhase: "story-lead-awaiting-action"
+currentChildOperation: null
+latestArtifacts:
+  -
+    kind: "validation-result"
+    path: "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/02-context-workbench/artifacts/03-draft-thread-view-lifecycle/001-story-validate.json"
+    provenance: "prior-run"
+  -
+    kind: "implementor-result"
+    path: "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/02-context-workbench/artifacts/03-draft-thread-view-lifecycle/003-implementor.json"
+    provenance: "current-run"
+latestContinuationHandles:
+  storyImplementor:
+    provider: "codex"
+    sessionId: "019e139d-0383-7bf1-ae44-1a9cd98db195"
+    storyId: "03-draft-thread-view-lifecycle"
+latestEventSequence: 5
+callerInputHistory:
+  reviewRequests:
+[]
+  rulings:
+[]
+nextIntent:
+  actionType: "await-story-lead-action"
+  summary: "No bounded child operation has run yet, and the durable record contains only story-local requirements plus one prior validation artifact to orient from. The smallest safe next step is to start implementation for the draft Thread View lifecycle and required tests."
+  artifactRef: "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/02-context-workbench/artifacts/03-draft-thread-view-lifecycle/003-implementor.json"
+replayBoundary: null
+updatedAt: "2026-05-10T20:48:59.342Z"
+```
+
+## Caller Input Artifacts
+None.
+
+## Prior Self Notes
+Latest note highlight: After implementation returns, verify that the response includes targeted test evidence, green-verify outcome, and explicit proof that source Thread snapshots are unchanged by draft creation and turn exclusion.
+
+All prior runtime self-notes:
+- sequence=4; actionSequence=3; createdAt=2026-05-10T20:38:37.424Z; note="After implementation returns, verify that the response includes targeted test evidence, green-verify outcome, and explicit proof that source Thread snapshots are unchanged by draft creation and turn exclusion."
+
+## Event History
+### event-history
+Path: /Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/02-context-workbench/artifacts/03-draft-thread-view-lifecycle/story-lead/001-events.jsonl
+Bytes: 2292
+
+```yaml
+-
+  storyRunId: "03-draft-thread-view-lifecycle-story-run-001"
+  sequence: 1
+  timestamp: "2026-05-10T20:38:21.999Z"
+  type: "story-run-started"
+  summary: "Story orchestration run started after orienting from 1 existing artifact(s)."
+-
+  storyRunId: "03-draft-thread-view-lifecycle-story-run-001"
+  sequence: 2
+  timestamp: "2026-05-10T20:38:37.402Z"
+  type: "story-lead-provider-started"
+  summary: "Fresh story-lead provider turn executed without planner session resume."
+  data:
+    provider: "codex"
+    model: "gpt-5.5"
+    reasoningEffort: "high"
+    promptArtifactPath: "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/02-context-workbench/artifacts/03-draft-thread-view-lifecycle/story-lead/prompts/001-planner-turn-001.md"
+    sessionId: "019e139c-c707-7371-b14e-c4eefad66eaa"
+-
+  storyRunId: "03-draft-thread-view-lifecycle-story-run-001"
+  sequence: 3
+  timestamp: "2026-05-10T20:38:37.423Z"
+  type: "story-lead-action-selected"
+  summary: "Story-lead selected run-implement."
+  data:
+    actionType: "run-implement"
+    turn: 1
+    selfNote: "After implementation returns, verify that the response includes targeted test evidence, green-verify outcome, and explicit proof that source Thread snapshots are unchanged by draft creation and turn exclusion."
+-
+  storyRunId: "03-draft-thread-view-lifecycle-story-run-001"
+  sequence: 4
+  timestamp: "2026-05-10T20:38:37.424Z"
+  type: "story-lead-self-note-recorded"
+  summary: "Story-lead recorded a durable self-note for a future planner turn."
+  data:
+    note: "After implementation returns, verify that the response includes targeted test evidence, green-verify outcome, and explicit proof that source Thread snapshots are unchanged by draft creation and turn exclusion."
+    actionSequence: 3
+    actionType: "run-implement"
+    turn: 1
+-
+  storyRunId: "03-draft-thread-view-lifecycle-story-run-001"
+  sequence: 5
+  timestamp: "2026-05-10T20:48:59.342Z"
+  type: "child-operation-completed"
+  summary: "story-implement completed with outcome needs-human-ruling and status needs-user-decision."
+  artifact: "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/02-context-workbench/artifacts/03-draft-thread-view-lifecycle/003-implementor.json"
+  data:
+    actionType: "run-implement"
+    command: "story-implement"
+    outcome: "needs-human-ruling"
+    status: "needs-user-decision"
+```
+
+## State Rules
+### state-rules
+Bytes: 2986
+
+Requirements source for story-local acceptance: the story file and test plan below.
+Current lifecycle state: awaiting_story_lead_action
+
+Lifecycle rules:
+State: initialized
+Public status: running
+Allowed actions: none
+Meaning: Runtime scaffolding exists, but no planner turn or child operation has started yet.
+Caller implication: Treat this as startup bookkeeping only; wait for the first planner transition before routing work.
+
+State: awaiting_story_lead_action
+Public status: running
+Allowed actions: run-implement, run-continue, run-self-review, run-verify, run-quick-fix, accept-story, request-ruling, block-story, fail-story
+Meaning: The durable record is ready and the next fresh story-lead turn may choose one bounded action.
+Caller implication: Planner output is the next source of truth; the run is waiting for a valid bounded action selection.
+
+State: running_child_operation
+Public status: running
+Allowed actions: none
+Meaning: The runtime is executing one bounded child operation selected by the story lead.
+Caller implication: Poll runtime artifacts instead of rerouting; the current child operation is still in flight.
+
+State: recording_result
+Public status: running
+Allowed actions: none
+Meaning: The child result or terminal decision is being written to durable artifacts before the next transition.
+Caller implication: Do not treat the run as advanced until evidence and ledger updates are durably recorded.
+
+State: terminal
+Public status: terminal-only
+Allowed actions: none
+Meaning: A terminal public outcome has been recorded separately from lifecycleState and the story-lead loop will not continue automatically.
+Caller implication: Read the public status and final package to decide impl-lead follow-up such as accept, reopen, or ruling.
+
+Terminal outcome rules:
+Outcome: accepted
+Meaning: Story-lead evidence is complete enough to recommend acceptance for impl-lead review.
+Caller implication: Impl-lead still owes receipt completion, verification gates, and the story commit before accepting the story.
+
+Outcome: needs-ruling
+Meaning: The run reached a boundary that requires an explicit caller or maintainer decision.
+Caller implication: Surface the ruling request instead of guessing or downgrading the decision into cleanup debt.
+
+Outcome: blocked
+Meaning: A named blocker prevents safe forward progress with the current inputs or runtime state.
+Caller implication: Resolve the blocker or change the plan before resuming; do not pretend the story is ready to continue.
+
+Outcome: failed
+Meaning: An unrecoverable runtime or planner failure ended the current story-lead attempt.
+Caller implication: Inspect the failure details and durable artifacts before deciding whether to replay or open a new attempt.
+
+Outcome: interrupted
+Meaning: The run stopped before a planned transition finished, usually because the caller or runtime interrupted it.
+Caller implication: Use status or resume against the durable artifacts to continue from the last safe checkpoint.
+
+## Runtime Settings
+### runtime-settings
+Bytes: 221
+
+```yaml
+storyGate: "npm run green-verify"
+epicGate: "npm run verify-all"
+plannerTimeoutMs: 600000
+wholeRunTimeoutMs: 7200000
+providerStartupTimeoutMs: 300000
+providerActiveSilenceTimeoutMs: 600000
+```
+
+## Action Protocol
+Return exactly one JSON object matching `StoryLeadAction`.
+
+Examples:
+{"action":"run-implement","rationale":"...","inputs":{"promptAddendum":"optional"},"selfNote":"optional durable reminder"}
+{"action":"run-continue","rationale":"...","inputs":{"continuationRef":"storyImplementor","promptAddendum":"..."}}
+{"action":"run-self-review","rationale":"...","inputs":{"artifactRefs":["/abs/path.json"],"focus":"optional","continuationRef":"storyImplementor","passes":1}}
+{"action":"run-verify","rationale":"...","inputs":{"artifactRefs":["/abs/path.json"],"focus":"optional","provider":"codex"}}
+{"action":"run-verify","rationale":"...","inputs":{"artifactRefs":["/abs/path.json"],"verifierContinuationRef":"storyVerifier","responseArtifactRef":"/abs/path.json"}}
+{"action":"run-quick-fix","rationale":"...","inputs":{"findingRefs":["finding-001"],"remediationGoal":"...","workingDirectory":"optional"}}
+{"action":"request-ruling","rationale":"...","inputs":{"decisionType":"...","question":"...","defaultRecommendation":"...","evidence":["..."],"allowedResponses":["..."]}}
+{"action":"accept-story","rationale":"...","inputs":{"summary":"...","acceptanceCheckRefs":["..."],"acceptanceChecks":[{"name":"...","status":"pass","evidence":["..."],"reasoning":"..."}],"recommendedImplLeadAction":"accept"},"verification":{"finalVerifierOutcome":"pass","findings":[{"id":"...","status":"fixed","evidence":["..."]}]}}
+{"action":"block-story","rationale":"...","inputs":{"reason":"...","detail":"optional","evidence":["..."]},"verification":{"finalVerifierOutcome":"block","findings":[{"id":"...","status":"unresolved","evidence":["..."]}]}}
+{"action":"fail-story","rationale":"...","inputs":{"reason":"...","detail":"optional","evidence":["..."]}}
+
+Rules:
+- Choose exactly one bounded next action.
+- Use only the durable story-run record in this prompt. Do not assume hidden retained planner memory exists.
+- Treat `<current_response>` as the latest bounded child response and `<history_responses>` as older response history.
+- If the story file and test plan are insufficient for a safe next step, request a ruling instead of asking for epic, tech design, git status, or git diff by default.
+- Include `selfNote` only when you want to leave a durable reminder for a later planner turn.
+
+## Acceptance Rubric
+Choose the smallest safe bounded action that advances the story using the durable evidence already present.
+Prefer continuing from valid child-operation evidence over repeating work, and keep unresolved authority-boundary questions explicit.
+
+## Acceptance Decision Standard
+Choose `accept-story` only when the latest verifier result is `pass`, no open findings remain, required proof is present, and the configured story gate passed.
+If readiness is promising but gate truth is failed, unavailable, or uncertain, do not accept. Choose the smallest safe next action: verify, quick-fix, block, or request a ruling.
+
+## Ruling Boundaries
+Request a ruling when story-local requirements are insufficient, when a blocker needs a caller decision, or when the evidence conflicts in a way that the durable record cannot resolve safely.
