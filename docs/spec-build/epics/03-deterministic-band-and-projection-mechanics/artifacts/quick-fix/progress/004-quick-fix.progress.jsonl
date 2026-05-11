@@ -1,0 +1,11 @@
+{"timestamp":"2026-05-11T04:27:42.269Z","command":"quick-fix","phase":"quick-fix","event":"command-started","summary":"quick-fix started."}
+{"timestamp":"2026-05-11T04:27:42.280Z","command":"quick-fix","phase":"quick-fix","event":"provider-spawned","summary":"Provider spawned with pid 94979.","metadata":{"pid":94979}}
+{"timestamp":"2026-05-11T04:27:42.368Z","command":"quick-fix","phase":"quick-fix","event":"first-output-received","summary":"First provider stderr output received.","metadata":{"stream":"stderr"}}
+{"timestamp":"2026-05-11T04:28:15.782Z","command":"quick-fix","phase":"quick-fix","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-11T04:28:54.471Z","command":"quick-fix","phase":"quick-fix","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-11T04:29:25.506Z","command":"quick-fix","phase":"quick-fix","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-11T04:29:56.119Z","command":"quick-fix","phase":"quick-fix","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-11T04:30:26.358Z","command":"quick-fix","phase":"quick-fix","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-11T04:31:03.124Z","command":"quick-fix","phase":"quick-fix","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-11T04:31:03.286Z","command":"quick-fix","phase":"quick-fix","event":"provider-exit","summary":"Provider exited with code 0.","metadata":{"exitCode":0,"signal":null,"elapsedMs":201007,"configuredTimeoutMs":1800000}}
+{"timestamp":"2026-05-11T04:31:03.311Z","command":"quick-fix","phase":"finalizing","event":"completed","summary":"quick-fix completed and is ready for verification.","metadata":{"outcome":"ready-for-verification"}}

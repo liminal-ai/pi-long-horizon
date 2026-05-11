@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import test from "node:test";
 
@@ -23,6 +23,8 @@ import {
   makeThreadTarget,
 } from "../../src/context-steward/test/fixtures.js";
 import { withTempThreadStore } from "../../src/context-steward/test/temp-store.js";
+import { withTempFeature3Store } from "../../src/thread-view/test/fixtures.js";
+import { seedMissingDetailedPlaceholderThread } from "../thread-view/helpers.js";
 
 interface RegisteredCommand {
   handler: (args: string, ctx: ExtensionCommandContext) => Promise<void>;
@@ -61,6 +63,45 @@ function createCommandContext(
   } as unknown as ExtensionCommandContext;
 
   return { ctx, notifications };
+}
+
+function createSwitchingCommandContext(target: ReturnType<typeof makeThreadTarget>) {
+  const { ctx, notifications } = createCommandContext(target);
+  const replacementNotifications: Array<{ message: string; level: string }> = [];
+  const switchedTo: string[] = [];
+
+  const switchingContext = {
+    ...ctx,
+    switchSession: async (
+      sessionPath: string,
+      options?: {
+        withSession?: (ctx: ExtensionCommandContext) => Promise<void>;
+      },
+    ) => {
+      switchedTo.push(sessionPath);
+      await options?.withSession?.({
+        ...ctx,
+        sessionManager: {
+          ...ctx.sessionManager,
+          getSessionFile: () => sessionPath,
+        },
+        ui: {
+          notify: (message: string, level: string) => {
+            replacementNotifications.push({ message, level });
+          },
+        },
+      } as unknown as ExtensionCommandContext);
+
+      return { cancelled: false };
+    },
+  } as unknown as ExtensionCommandContext;
+
+  return {
+    ctx: switchingContext,
+    notifications,
+    replacementNotifications,
+    switchedTo,
+  };
 }
 
 async function writePiSessionFile(input: {
@@ -576,6 +617,139 @@ test("/lh-repair-turns renders repair success and stale-source failure", async (
     assert.equal(
       failureContext.notifications[0]!.message,
       `Turn repair failed: Thread ${thread.threadId} source revision 3 does not match expected 2. [STALE_SOURCE_REVISION]`,
+    );
+  });
+});
+
+test("/lh-smart-compact accepts explicit inputs through the production command surface and reloads PI", async () => {
+  await withTempFeature3Store(async ({ projectDir }) => {
+    const seeded = await seedMissingDetailedPlaceholderThread(`${projectDir}/.context-steward`);
+    const target = makeThreadTarget({
+      sessionId: "session-thread-view-builder",
+      cwd: projectDir,
+    });
+
+    const { api, commands } = createMockPiApi();
+    registerContextStewardExtension(api, {
+      createStore: () => seeded.threadStore,
+      createThreadViewStore: () => seeded.threadViewStore,
+    });
+
+    const smartCompactCommand = commands.get("lh-smart-compact");
+    assert.ok(smartCompactCommand);
+
+    const { ctx, notifications, replacementNotifications, switchedTo } = createSwitchingCommandContext(target);
+    await smartCompactCommand!.handler(
+      "--lower-bound 120 --full 60 --smooth 40 --detailed 0 --brief 0 --mode strict",
+      ctx,
+    );
+
+    assert.deepEqual(notifications, []);
+    assert.equal(replacementNotifications.length, 1);
+    assert.equal(replacementNotifications[0]!.level, "info");
+    assert.match(
+      replacementNotifications[0]!.message,
+      /^Smart compact: Generated PI session .+ for thread .+ and reloaded PI\.$/,
+    );
+    assert.equal(switchedTo.length, 1);
+
+    const thread = await seeded.threadStore.openThread(seeded.threadId);
+    assert.equal(thread.ok, true);
+    assert.equal(thread.value.thread.target.currentGeneratedFilePath, switchedTo[0]);
+    await access(switchedTo[0]!);
+  });
+});
+
+test("/lh-smart-compact rejects unknown arguments and invalid mode explicitly on the production command surface", async () => {
+  await withTempFeature3Store(async ({ projectDir }) => {
+    const seeded = await seedMissingDetailedPlaceholderThread(`${projectDir}/.context-steward`);
+    const target = makeThreadTarget({
+      sessionId: "session-thread-view-builder",
+      cwd: projectDir,
+    });
+
+    const { api, commands } = createMockPiApi();
+    registerContextStewardExtension(api, {
+      createStore: () => seeded.threadStore,
+      createThreadViewStore: () => seeded.threadViewStore,
+    });
+
+    const smartCompactCommand = commands.get("lh-smart-compact");
+    assert.ok(smartCompactCommand);
+
+    const unknownArgContext = createCommandContext(target);
+    await smartCompactCommand!.handler(
+      "--lower-bound 120 --full 60 --smooth 40 --detailed 0 --brief 0 --bogus 1",
+      unknownArgContext.ctx,
+    );
+
+    assert.deepEqual(unknownArgContext.notifications, [
+      {
+        level: "error",
+        message:
+          "Smart compact failed: Unknown smart compact argument --bogus. Expected --lower-bound, --full, --smooth, --detailed, --brief, and optional --mode. [INVALID_COMMAND_ARGS]",
+      },
+    ]);
+
+    const invalidModeContext = createCommandContext(target);
+    await smartCompactCommand!.handler(
+      "--lower-bound 120 --full 60 --smooth 40 --detailed 0 --brief 0 --mode relaxed",
+      invalidModeContext.ctx,
+    );
+
+    assert.deepEqual(invalidModeContext.notifications, [
+      {
+        level: "error",
+        message:
+          'Smart compact failed: Invalid value for --mode: "relaxed". Expected "strict" or "prepare". [INVALID_COMMAND_ARGS]',
+      },
+    ]);
+  });
+});
+
+test("/lh-smart-compact reloads through the session-switch path even when PI already has the generated file loaded", async () => {
+  await withTempFeature3Store(async ({ projectDir }) => {
+    const seeded = await seedMissingDetailedPlaceholderThread(`${projectDir}/.context-steward`);
+    const target = makeThreadTarget({
+      sessionId: "session-thread-view-builder",
+      cwd: projectDir,
+    });
+
+    const { api, commands } = createMockPiApi();
+    registerContextStewardExtension(api, {
+      createStore: () => seeded.threadStore,
+      createThreadViewStore: () => seeded.threadViewStore,
+    });
+
+    const smartCompactCommand = commands.get("lh-smart-compact");
+    assert.ok(smartCompactCommand);
+
+    const firstRun = createSwitchingCommandContext(target);
+    await smartCompactCommand!.handler(
+      "--lower-bound 120 --full 60 --smooth 40 --detailed 0 --brief 0 --mode strict",
+      firstRun.ctx,
+    );
+    assert.equal(firstRun.switchedTo.length, 1);
+
+    const currentGeneratedPath = firstRun.switchedTo[0]!;
+    const samePathTarget = makeThreadTarget({
+      sessionId: target.sessionId,
+      sessionFilePath: currentGeneratedPath,
+      cwd: projectDir,
+    });
+    const secondRun = createSwitchingCommandContext(samePathTarget);
+    await smartCompactCommand!.handler(
+      "--lower-bound 120 --full 60 --smooth 40 --detailed 0 --brief 0 --mode strict",
+      secondRun.ctx,
+    );
+
+    assert.deepEqual(secondRun.notifications, []);
+    assert.deepEqual(secondRun.switchedTo, [currentGeneratedPath]);
+    assert.equal(secondRun.replacementNotifications.length, 1);
+    assert.equal(secondRun.replacementNotifications[0]!.level, "info");
+    assert.match(
+      secondRun.replacementNotifications[0]!.message,
+      /^Smart compact: Generated PI session .+ for thread .+ and reloaded PI\.$/,
     );
   });
 });

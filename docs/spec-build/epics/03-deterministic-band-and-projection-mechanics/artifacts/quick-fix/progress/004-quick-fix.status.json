@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "command": "quick-fix",
+  "status": "completed",
+  "phase": "finalizing",
+  "startedAt": "2026-05-11T04:27:42.269Z",
+  "updatedAt": "2026-05-11T04:31:03.311Z",
+  "lastOutputAt": "2026-05-11T04:31:03.178Z",
+  "providerLiveness": "completed",
+  "provider": "codex",
+  "pid": 94979,
+  "cwd": "/Users/leemoore/code/pi-long-horizon",
+  "timeoutMs": 1800000,
+  "configuredStartupTimeoutMs": 300000,
+  "configuredSilenceTimeoutMs": 300000,
+  "artifactPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/03-deterministic-band-and-projection-mechanics/artifacts/quick-fix/004-quick-fix.json",
+  "streamPaths": {
+    "stdoutPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/03-deterministic-band-and-projection-mechanics/artifacts/quick-fix/streams/004-quick-fix.stdout.log",
+    "stderrPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/03-deterministic-band-and-projection-mechanics/artifacts/quick-fix/streams/004-quick-fix.stderr.log"
+  },
+  "progressPaths": {
+    "statusPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/03-deterministic-band-and-projection-mechanics/artifacts/quick-fix/progress/004-quick-fix.status.json",
+    "progressPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/03-deterministic-band-and-projection-mechanics/artifacts/quick-fix/progress/004-quick-fix.progress.jsonl"
+  },
+  "lastEvent": "completed",
+  "lastEventSummary": "quick-fix completed and is ready for verification."
+}

@@ -1,0 +1,13 @@
+{"timestamp":"2026-05-11T05:29:09.106Z","command":"quick-fix","phase":"quick-fix","event":"command-started","summary":"quick-fix started."}
+{"timestamp":"2026-05-11T05:29:09.117Z","command":"quick-fix","phase":"quick-fix","event":"provider-spawned","summary":"Provider spawned with pid 76779.","metadata":{"pid":76779}}
+{"timestamp":"2026-05-11T05:29:09.212Z","command":"quick-fix","phase":"quick-fix","event":"first-output-received","summary":"First provider stderr output received.","metadata":{"stream":"stderr"}}
+{"timestamp":"2026-05-11T05:29:45.218Z","command":"quick-fix","phase":"quick-fix","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-11T05:30:16.432Z","command":"quick-fix","phase":"quick-fix","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-11T05:30:48.019Z","command":"quick-fix","phase":"quick-fix","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-11T05:31:48.838Z","command":"quick-fix","phase":"quick-fix","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-11T05:32:36.644Z","command":"quick-fix","phase":"quick-fix","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-11T05:33:16.857Z","command":"quick-fix","phase":"quick-fix","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-11T05:33:48.773Z","command":"quick-fix","phase":"quick-fix","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-11T05:34:22.671Z","command":"quick-fix","phase":"quick-fix","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-11T05:34:43.412Z","command":"quick-fix","phase":"quick-fix","event":"provider-exit","summary":"Provider exited with code 0.","metadata":{"exitCode":0,"signal":null,"elapsedMs":334296,"configuredTimeoutMs":1800000}}
+{"timestamp":"2026-05-11T05:34:43.437Z","command":"quick-fix","phase":"finalizing","event":"completed","summary":"quick-fix completed and is ready for verification.","metadata":{"outcome":"ready-for-verification"}}

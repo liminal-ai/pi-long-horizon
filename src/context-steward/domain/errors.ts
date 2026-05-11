@@ -1,6 +1,7 @@
 import type { SourceRange, TargetRuntime } from "./records.js";
 
 export const STEWARD_ERROR_CODES = [
+  "INVALID_COMMAND_ARGS",
   "UNSUPPORTED_SCHEMA_VERSION",
   "TARGET_ASSOCIATION_CONFLICT",
   "STORE_UNAVAILABLE",

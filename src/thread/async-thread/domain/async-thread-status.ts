@@ -1,4 +1,5 @@
 import { createStewardIssue, type StewardIssue } from "../../domain/errors.js";
+import type { ThreadViewBandPercentages } from "../../../thread-view/domain/pi-thread-view-file.js";
 
 export const ASYNC_THREAD_STATUSES = ["ready", "blocked", "degraded"] as const;
 export const ASYNC_THREAD_BLOCKER_CODES = [
@@ -26,6 +27,12 @@ export interface AsyncThreadStatus {
 export interface PrepareAsyncThreadInput {
   threadId: string;
   mode: "strict" | "prepare";
+  requestedLowerBound?: number;
+  requestedBandPercentages?: ThreadViewBandPercentages;
+  requiredPlaceholderBands?: {
+    detailed: boolean;
+    brief: boolean;
+  };
 }
 
 export interface PrepareAsyncThreadResult {

@@ -1,5 +1,10 @@
 import { createStewardIssue, type StewardIssue, type StewardResult } from "../../thread/domain/errors.js";
-import { estimateDeterministicTokenCount } from "../../thread/async-thread/domain/smooth-turn-state.js";
+import { getPlaceholderArtifactMarker } from "../../thread/async-thread/domain/placeholder-artifact-state.js";
+import { DEFAULT_PLACEHOLDER_BUILD_SETTINGS } from "../../thread/async-thread/domain/settings.js";
+import {
+  estimateDeterministicTokenCount,
+  normalizeDeterministicText,
+} from "../../thread/async-thread/domain/smooth-turn-state.js";
 import type { ChunkState } from "../../thread/async-thread/domain/chunk-state.js";
 import type { MessageRecord, ThreadRecord, TurnRecord } from "../../thread/domain/records.js";
 import type { ThreadStore } from "../../thread/store/thread-store.js";
@@ -314,6 +319,29 @@ function selectLowerBandChunkIds(
     const placeholder = bandType === "detailed"
       ? candidate.chunk.placeholders?.detailed
       : candidate.chunk.placeholders?.brief;
+    const placeholderTokenCount = resolvePlaceholderTokenCount(candidate.chunk, bandType);
+
+    if (selectedChunkIds.length === 0) {
+      if (!placeholder?.text || !placeholder.tokenCount) {
+        blockers.push(
+          createStewardIssue({
+            code: "CHUNK_PLACEHOLDER_MISSING",
+            message: `Chunk ${candidate.chunk.chunkId} is missing the ${bandType} placeholder artifact required for deterministic rebuild.`,
+            threadId: candidate.chunk.threadId,
+          }),
+        );
+        break;
+      }
+
+      consumedCandidateCount += 1;
+      selectedChunkIds.push(candidate.chunk.chunkId);
+      consumedTokenCount += placeholder.tokenCount;
+      continue;
+    }
+
+    if (placeholderTokenCount === undefined || consumedTokenCount + placeholderTokenCount > budget) {
+      break;
+    }
 
     if (!placeholder?.text || !placeholder.tokenCount) {
       blockers.push(
@@ -323,17 +351,6 @@ function selectLowerBandChunkIds(
           threadId: candidate.chunk.threadId,
         }),
       );
-      break;
-    }
-
-    if (selectedChunkIds.length === 0) {
-      consumedCandidateCount += 1;
-      selectedChunkIds.push(candidate.chunk.chunkId);
-      consumedTokenCount += placeholder.tokenCount;
-      continue;
-    }
-
-    if (consumedTokenCount + placeholder.tokenCount > budget) {
       break;
     }
 
@@ -348,6 +365,50 @@ function selectLowerBandChunkIds(
     blockers,
     remainingCandidates: candidates.slice(consumedCandidateCount),
   };
+}
+
+function previewPlaceholderTokenCount(
+  bandType: "detailed" | "brief",
+  smoothText: string,
+): number {
+  const normalizedText = normalizeDeterministicText(smoothText);
+  const smoothTokens = normalizedText.length === 0 ? [] : normalizedText.split(" ");
+  const marker = getPlaceholderArtifactMarker(bandType);
+  const markerTokenCount = estimateDeterministicTokenCount(marker);
+  const ratio =
+    bandType === "detailed"
+      ? DEFAULT_PLACEHOLDER_BUILD_SETTINGS.detailedRatio
+      : DEFAULT_PLACEHOLDER_BUILD_SETTINGS.briefRatio;
+  const targetArtifactTokenCount = Math.max(1, Math.round(smoothTokens.length * ratio));
+  const preservedTokenCount =
+    smoothTokens.length === 0
+      ? 0
+      : Math.min(smoothTokens.length, Math.max(1, targetArtifactTokenCount - markerTokenCount));
+  const preservedText = smoothTokens.slice(0, preservedTokenCount).join(" ");
+  const text = preservedText.length > 0 ? `${preservedText}\n\n${marker}` : marker;
+
+  return estimateDeterministicTokenCount(text);
+}
+
+function resolvePlaceholderTokenCount(
+  chunk: ChunkState,
+  bandType: "detailed" | "brief",
+): number | undefined {
+  const placeholder = bandType === "detailed" ? chunk.placeholders?.detailed : chunk.placeholders?.brief;
+  if (
+    placeholder?.status === "ready" &&
+    typeof placeholder.text === "string" &&
+    typeof placeholder.tokenCount === "number"
+  ) {
+    return placeholder.tokenCount;
+  }
+
+  const smoothText = normalizeDeterministicText(chunk.smoothText ?? "");
+  if (smoothText.length === 0) {
+    return undefined;
+  }
+
+  return previewPlaceholderTokenCount(bandType, smoothText);
 }
 
 function buildBandRecord(

@@ -1,0 +1,6 @@
+{
+  "findingId": "SV-05-001",
+  "ruling": "fix",
+  "rationale": "The verifier is correct. PI's upstream Message contract is UserMessage | AssistantMessage | ToolResultMessage — there is no system role in the message union. The `as unknown` cast bypasses type safety. System-origin content belongs in PI's systemPrompt config surface, not in session message entries. The fix: do not emit system-role messages in the PI session file. If source thread state includes system-origin metadata, exclude it from the PI projection's message entries. This keeps the generated output within the upstream contract and avoids breakage on PI upgrades.",
+  "fixScope": "Remove the system-role message serialization from pi-thread-view-writer.ts. System-origin source records should be excluded from PI session file projection. Do not use `as unknown` casts to force unsupported message shapes into the PI format."
+}

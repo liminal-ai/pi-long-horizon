@@ -1,0 +1,14 @@
+{"timestamp":"2026-05-11T04:44:17.155Z","command":"story-verify","phase":"verifier-initial","event":"command-started","summary":"story-verify started."}
+{"timestamp":"2026-05-11T04:44:17.163Z","command":"story-verify","phase":"verifier-initial","event":"verifier-started","summary":"Story verifier started for 05-manual-smart-compact-and-pi-reload."}
+{"timestamp":"2026-05-11T04:44:17.173Z","command":"story-verify","phase":"verifier-initial","event":"provider-spawned","summary":"Provider spawned with pid 18306.","metadata":{"pid":18306}}
+{"timestamp":"2026-05-11T04:44:17.262Z","command":"story-verify","phase":"verifier-initial","event":"first-output-received","summary":"First provider stderr output received.","metadata":{"stream":"stderr"}}
+{"timestamp":"2026-05-11T04:44:53.675Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-11T04:45:34.903Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-11T04:46:25.025Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-11T04:47:07.139Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-11T04:47:46.867Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-11T04:48:40.000Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-11T04:50:45.788Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-11T04:50:45.916Z","command":"story-verify","phase":"verifier-initial","event":"provider-exit","summary":"Provider exited with code 0.","metadata":{"exitCode":0,"signal":null,"elapsedMs":388743,"configuredTimeoutMs":3600000}}
+{"timestamp":"2026-05-11T04:50:45.923Z","command":"story-verify","phase":"verifier-initial","event":"verifier-completed","summary":"Story verifier completed for 05-manual-smart-compact-and-pi-reload.","metadata":{"outcome":"revise"}}
+{"timestamp":"2026-05-11T04:50:45.943Z","command":"story-verify","phase":"finalizing","event":"completed","summary":"story-verify completed for 05-manual-smart-compact-and-pi-reload with outcome revise.","metadata":{"outcome":"revise","verifiersCompleted":1}}

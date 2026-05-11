@@ -1,3 +1,4 @@
+import type { ThreadViewMessageRecord } from "../../context-workbench/domain/thread-view-records.js";
 import type { StewardIssue } from "../../thread/domain/errors.js";
 
 export interface ThreadViewBandPercentages {
@@ -23,7 +24,7 @@ export interface ThreadViewBuildResult {
 
 export interface PiThreadViewEntry {
   entryType: "message";
-  role: "user" | "assistant" | "toolResult" | "system" | "custom";
+  role: "user" | "assistant" | "toolResult" | "custom";
   content: string | Record<string, unknown>;
   generatedSource:
     | "raw_turn_message"
@@ -36,6 +37,11 @@ export interface PiThreadViewEntry {
 export interface PiThreadViewFile {
   threadId: string;
   threadViewId: string;
+  sessionId: string;
+  cwd: string;
+  parentSessionId?: string;
+  generatedAt: string;
+  placeholderExplicit: boolean;
   fileName: string;
   entries: PiThreadViewEntry[];
   entryCount: number;
@@ -44,7 +50,11 @@ export interface PiThreadViewFile {
 export interface BuildPiThreadViewFileInput {
   threadId: string;
   threadViewId: string;
-  entries: PiThreadViewEntry[];
+  emittedMessages: ThreadViewMessageRecord[];
+  sessionId?: string;
+  cwd?: string;
+  parentSessionId?: string;
+  generatedAt?: string;
   fileName?: string;
 }
 

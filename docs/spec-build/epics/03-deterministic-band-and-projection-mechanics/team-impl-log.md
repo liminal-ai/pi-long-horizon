@@ -3,7 +3,7 @@
 ## Run Overview
 - State: BETWEEN_STORIES
 - Spec Pack Root: /Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/03-deterministic-band-and-projection-mechanics
-- Current Story: 05-manual-smart-compact-and-pi-reload
+- Current Story: 06-blocked-and-degraded-maintenance-state
 - Current Phase: none
 
 ## Run Configuration
@@ -138,10 +138,35 @@
 - Baseline Before: 564 (test files)
 - Baseline After: 565 (test files — 17 new band rebuild tests added, no regressions)
 
+### 05-manual-smart-compact-and-pi-reload
+- Story Title: Story 5: Manual Smart Compact And PI Reload
+- Implementor Evidence: artifacts/05-manual-smart-compact-and-pi-reload/003-implementor.json
+- Verifier Evidence:
+  - artifacts/05-manual-smart-compact-and-pi-reload/005-verify.json (initial — revise, SV-05-001/002)
+  - artifacts/05-manual-smart-compact-and-pi-reload/008-verify.json (revise, SV-05-001 persisted)
+  - artifacts/05-manual-smart-compact-and-pi-reload/009-verify.json (revise, SV-05-001 output path)
+  - artifacts/05-manual-smart-compact-and-pi-reload/010-verify.json (revise, preflight behavior)
+  - artifacts/05-manual-smart-compact-and-pi-reload/012-verify.json (revise, arg handling + reload)
+  - artifacts/05-manual-smart-compact-and-pi-reload/013-verify.json (needs-human-ruling, SV-05-001 system-role)
+- Quick Fix Evidence:
+  - artifacts/quick-fix/004-quick-fix.json through 009-quick-fix.json (six fix rounds)
+- Final Package: artifacts/05-manual-smart-compact-and-pi-reload/story-lead/001-final-package.json
+- Impl-Lead Ruling: SV-05-001 — PI upstream contract has no system role; remove system-role serialization, exclude system-origin records from PI projection
+- Story Gate: `npm run verify` — pass (272 unit tests, 0 failures)
+- Epic Gate: `npm run verify-all` — pass (272 unit + 10 integration + 34 E2E = 316 tests, 0 failures)
+- Dispositions:
+  - SV-05-001: fixed (system-role preservation removed per impl-lead ruling — PI contract doesn't support it)
+  - SV-05-002: fixed (production command surface wiring)
+  - Multiple production-path findings: fixed across six quick-fix rounds (output path, preflight, args, reload, role preservation)
+- Open Risks:
+  - none
+- Baseline Before: 566 (test files)
+- Baseline After: 570 (test files — 30 new smart compact tests + 2 integration + 1 E2E, no regressions)
+
 ## Cumulative Baselines
-- Baseline Before Current Story: 565
+- Baseline Before Current Story: 570
 - Expected After Current Story: TBD
-- Latest Actual Total: 565 (test files); 286 test cases (245 unit + 8 integration + 33 E2E)
+- Latest Actual Total: 570 (test files); 316 test cases (272 unit + 10 integration + 34 E2E)
 
 ## Epic Closeout
 - Current Epic Review Artifact: none

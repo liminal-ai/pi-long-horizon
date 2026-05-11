@@ -95,6 +95,11 @@ export function makePiThreadViewFile(
   return {
     threadId: overrides.threadId,
     threadViewId: overrides.threadViewId,
+    sessionId: overrides.sessionId ?? `${overrides.threadId}-${overrides.threadViewId}`,
+    cwd: overrides.cwd ?? "/tmp/project",
+    parentSessionId: overrides.parentSessionId,
+    generatedAt: overrides.generatedAt ?? DEFAULT_TEST_TIMESTAMP,
+    placeholderExplicit: overrides.placeholderExplicit ?? true,
     fileName: overrides.fileName ?? `${overrides.threadId}-${overrides.threadViewId}.jsonl`,
     entries,
     entryCount: overrides.entryCount ?? entries.length,

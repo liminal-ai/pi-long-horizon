@@ -1,0 +1,9 @@
+{"timestamp":"2026-05-11T05:18:14.574Z","command":"quick-fix","phase":"quick-fix","event":"command-started","summary":"quick-fix started."}
+{"timestamp":"2026-05-11T05:18:14.584Z","command":"quick-fix","phase":"quick-fix","event":"provider-spawned","summary":"Provider spawned with pid 61710.","metadata":{"pid":61710}}
+{"timestamp":"2026-05-11T05:18:14.673Z","command":"quick-fix","phase":"quick-fix","event":"first-output-received","summary":"First provider stderr output received.","metadata":{"stream":"stderr"}}
+{"timestamp":"2026-05-11T05:19:02.965Z","command":"quick-fix","phase":"quick-fix","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-11T05:19:43.228Z","command":"quick-fix","phase":"quick-fix","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-11T05:20:14.922Z","command":"quick-fix","phase":"quick-fix","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-11T05:20:48.819Z","command":"quick-fix","phase":"quick-fix","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-11T05:21:10.142Z","command":"quick-fix","phase":"quick-fix","event":"provider-exit","summary":"Provider exited with code 0.","metadata":{"exitCode":0,"signal":null,"elapsedMs":175558,"configuredTimeoutMs":1800000}}
+{"timestamp":"2026-05-11T05:21:10.162Z","command":"quick-fix","phase":"finalizing","event":"completed","summary":"quick-fix completed and is ready for verification.","metadata":{"outcome":"ready-for-verification"}}
