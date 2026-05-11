@@ -78,7 +78,7 @@ function stringifyPartContent(content: string | Record<string, unknown>): string
   return JSON.stringify(content);
 }
 
-function estimateRawMessageTokenCount(message: MessageRecord): number {
+export function estimateRawMessageTokenCount(message: MessageRecord): number {
   const parts = [...message.parts]
     .sort((left, right) => left.partOrder - right.partOrder)
     .flatMap((part) => [`part:${part.partType}`, stringifyPartContent(part.content)]);
@@ -108,7 +108,7 @@ function isMaterializedRawMessageContent(
   return typeof content !== "string" && Array.isArray(content.parts);
 }
 
-function estimateMaterializedMessageTokenCount(content: string | Record<string, unknown>): number {
+export function estimateMaterializedMessageTokenCount(content: string | Record<string, unknown>): number {
   if (typeof content === "string") {
     return estimateDeterministicTokenCount(content);
   }

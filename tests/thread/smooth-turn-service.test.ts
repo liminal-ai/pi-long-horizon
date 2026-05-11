@@ -544,7 +544,7 @@ test("tool-output handling follows fixed policy", async () => {
       true,
     );
     assert.equal(
-      persisted.smooth?.text?.includes("[tool output truncated by deterministic policy]"),
+      persisted.smooth?.text?.includes("..."),
       true,
     );
     assert.equal(persisted.smooth?.text?.includes("token100"), false);

@@ -1,0 +1,54 @@
+[
+  {
+    "actorId": "actor_e35bb5cfea76320ef4ca",
+    "actorType": "human",
+    "displayName": "PI User",
+    "targetMetadata": {
+      "runtime": "pi",
+      "piRole": "user"
+    }
+  },
+  {
+    "actorId": "actor_193b4ee726b7f0e63ac0",
+    "actorType": "agent",
+    "displayName": "PI Agent",
+    "targetMetadata": {
+      "runtime": "pi",
+      "piRole": "assistant",
+      "provider": "openai-codex",
+      "model": "gpt-5.5",
+      "responseId": "resp_0f18a006266e640a016a0203e12c0c819a91099ba165a2475c"
+    }
+  },
+  {
+    "actorId": "actor_fda6e16c30f1d888d364",
+    "actorType": "tool",
+    "displayName": "read",
+    "targetMetadata": {
+      "runtime": "pi",
+      "piRole": "toolResult",
+      "toolCallId": "call_YLUOhn3g8L7NcTICYGmt7iKj|fc_0f18a006266e640a016a0203e76ec0819a941a49226a5c20c0",
+      "toolName": "read"
+    }
+  },
+  {
+    "actorId": "actor_d5f15d187de7d6cbd109",
+    "actorType": "runtime",
+    "displayName": "PI Runtime",
+    "targetMetadata": {
+      "runtime": "pi",
+      "rawType": "runtime_note"
+    }
+  },
+  {
+    "actorId": "actor_54de0050cc5f088e0bb0",
+    "actorType": "tool",
+    "displayName": "bash",
+    "targetMetadata": {
+      "runtime": "pi",
+      "piRole": "toolResult",
+      "toolCallId": "call_sGKApsdxpUXurCg9HY6LBidL|fc_0f18a006266e640a016a020920b658819ab4114256ebcaeda5",
+      "toolName": "bash"
+    }
+  }
+]

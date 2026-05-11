@@ -13,7 +13,14 @@ import { join } from "node:path";
 
 import { runSmartCompact } from "../../commands/smart-compact.js";
 import { formatCommandResult, type CommandResult } from "../commands/command-results.js";
-import { createStewardIssue, fail, ok, type StewardIssue, type StewardResult } from "../domain/errors.js";
+import {
+  StewardResultError,
+  createStewardIssue,
+  fail,
+  ok,
+  type StewardIssue,
+  type StewardResult,
+} from "../domain/errors.js";
 import type { FixtureRecord, ThreadRecord, ThreadTargetMetadata } from "../domain/records.js";
 import type { CanonicalActivity, CaptureActivityResult } from "../services/capture-service.js";
 import { captureFinalizedActivity, type CaptureActivityInput } from "../services/capture-service.js";
@@ -27,6 +34,8 @@ import type { ThreadStore } from "../store/thread-store.js";
 import type { SmartCompactCommandInput, SmartCompactCommandResult } from "../../thread-view/domain/pi-thread-view-file.js";
 import { FileThreadViewStore } from "../../thread-view/store/file-thread-view-store.js";
 import type { ThreadViewStore } from "../../thread-view/store/thread-view-store.js";
+import { formatCompactionAuditReport } from "../../workbench/services/compaction-report-formatter.js";
+import { buildCompactionAuditReport } from "../../workbench/services/compaction-report-service.js";
 import { createPiRuntimeNoteActivity, mapPiMessageEnd } from "./pi-message-mapper.js";
 import type { PiImportSessionManager } from "./pi-session-importer.js";
 
@@ -349,6 +358,18 @@ function missingCommandIssue(code: StewardIssue["code"], message: string): Stewa
     code,
     message,
   };
+}
+
+function isStewardResultErrorLike(
+  error: unknown,
+): error is StewardResultError | { issues: StewardIssue[] } {
+  return (
+    error instanceof StewardResultError ||
+    (typeof error === "object" &&
+      error !== null &&
+      "issues" in error &&
+      Array.isArray((error as { issues?: unknown }).issues))
+  );
 }
 
 async function resolveManagedThreadForCommand(
@@ -840,10 +861,161 @@ export async function executeSmartCompactCommand(input: {
       result: commandResultFromSmartCompact(thread.value.threadId, result),
     });
   } catch (error) {
+    if (isStewardResultErrorLike(error)) {
+      return fail(...error.issues);
+    }
+
     return fail(
       createStewardIssue({
         code: "STORE_UNAVAILABLE",
         message: `Smart compact failed for thread ${thread.value.threadId}.`,
+        threadId: thread.value.threadId,
+        cause: error instanceof Error ? error.message : String(error),
+      }),
+    );
+  }
+}
+
+function parseCompactReportCommandArgs(args: string): StewardResult<{ threadViewId?: string }> {
+  const tokens = args.trim().length === 0 ? [] : args.trim().split(/\s+/);
+  const values = new Map<string, string>();
+
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (token !== "--thread-view") {
+      return fail(invalidCommandArgsIssue(`Unknown compact report argument ${token}.`));
+    }
+
+    const value = normalizeValue(tokens[index + 1]);
+    index += 1;
+    if (!value) {
+      return fail(invalidCommandArgsIssue("Missing value for --thread-view."));
+    }
+
+    if (values.has(token)) {
+      return fail(invalidCommandArgsIssue("Duplicate compact report argument --thread-view."));
+    }
+
+    values.set(token, value);
+  }
+
+  return ok({
+    threadViewId: values.get("--thread-view"),
+  });
+}
+
+async function resolveMostRecentThreadViewId(input: {
+  threadId: string;
+  threadViewStore: ThreadViewStore;
+}): Promise<StewardResult<string | undefined>> {
+  const listed = await input.threadViewStore.listThreadViews(input.threadId);
+  if (!listed.ok) {
+    return listed;
+  }
+
+  const mostRecent = [...listed.value].sort((left, right) => {
+    const updatedComparison = right.updatedAt.localeCompare(left.updatedAt);
+    if (updatedComparison !== 0) {
+      return updatedComparison;
+    }
+
+    return right.threadViewId.localeCompare(left.threadViewId);
+  })[0];
+
+  return ok(mostRecent?.threadViewId, listed.issues);
+}
+
+export async function executeCompactReportCommand(input: {
+  store: ThreadStore;
+  threadViewStore: ThreadViewStore;
+  ctx: ExtensionCommandContext;
+  args: string;
+  activeThread?: ThreadRecord;
+}): Promise<StewardResult<ContextStewardCommandExecutionResult>> {
+  const thread = await resolveManagedThreadForCommand(input.store, input.ctx, input.activeThread);
+  if (!thread.ok) {
+    return thread;
+  }
+
+  if (!thread.value) {
+    return ok({
+      result: {
+        ok: false,
+        title: "Compact report",
+        summary: "No managed thread exists for the current PI session.",
+        issues: [],
+      },
+    });
+  }
+
+  const parsed = parseCompactReportCommandArgs(input.args);
+  if (!parsed.ok) {
+    return ok({
+      thread: thread.value,
+      result: {
+        ok: false,
+        title: "Compact report",
+        summary: parsed.issues[0]?.message ?? "Invalid compact report arguments.",
+        issues: cloneIssues(parsed.issues),
+        threadId: thread.value.threadId,
+      },
+    });
+  }
+
+  const resolvedThreadViewId = parsed.value.threadViewId
+    ? ok(parsed.value.threadViewId)
+    : await resolveMostRecentThreadViewId({
+        threadId: thread.value.threadId,
+        threadViewStore: input.threadViewStore,
+      });
+  if (!resolvedThreadViewId.ok) {
+    return resolvedThreadViewId;
+  }
+
+  if (!resolvedThreadViewId.value) {
+    return ok({
+      thread: thread.value,
+      result: {
+        ok: false,
+        title: "Compact report",
+        summary: `Thread ${thread.value.threadId} has no thread views to report.`,
+        issues: [],
+        threadId: thread.value.threadId,
+      },
+    });
+  }
+
+  try {
+    const report = await buildCompactionAuditReport(
+      {
+        threadId: thread.value.threadId,
+        threadViewId: resolvedThreadViewId.value,
+      },
+      {
+        threadStore: input.store,
+        threadViewStore: input.threadViewStore,
+      },
+    );
+
+    return ok({
+      thread: thread.value,
+      result: {
+        ok: true,
+        title: "Compact report",
+        summary: formatCompactionAuditReport(report),
+        issues: cloneIssues(report.blockers),
+        threadId: thread.value.threadId,
+      },
+    });
+  } catch (error) {
+    if (isStewardResultErrorLike(error)) {
+      return fail(...error.issues);
+    }
+
+    return fail(
+      createStewardIssue({
+        code: "STORE_UNAVAILABLE",
+        message: `Compact report failed for thread ${thread.value.threadId}.`,
         threadId: thread.value.threadId,
         cause: error instanceof Error ? error.message : String(error),
       }),
@@ -1105,6 +1277,32 @@ export function registerContextStewardExtension(
 
       if (executed.value.result.ok && replacementSessionContext) {
         notifyCommand(replacementSessionContext, executed.value.result);
+        return;
+      }
+
+      notifyCommand(ctx, executed.value.result);
+    },
+  });
+
+  pi.registerCommand("lh-compact-report", {
+    description: "Show a compaction audit report for the most recent thread view or --thread-view <id>.",
+    handler: async (args: string, ctx: ExtensionCommandContext) => {
+      const store = createStore(ctx);
+      const threadViewStore = createThreadViewStore(ctx, store);
+      const executed = await executeCompactReportCommand({
+        store,
+        threadViewStore,
+        ctx,
+        args,
+        activeThread,
+      });
+      if (!executed.ok) {
+        notifyCommand(ctx, {
+          ok: false,
+          title: "Compact report",
+          summary: executed.issues[0]?.message ?? "Compact report failed.",
+          issues: cloneIssues(executed.issues),
+        });
         return;
       }
 

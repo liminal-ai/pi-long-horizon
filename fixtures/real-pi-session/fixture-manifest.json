@@ -1,0 +1,22 @@
+{
+  "name": "real-pi-session-260k",
+  "description": "Real PI session captured during Epic 3 spec review. ~283k estimated tokens, 402 messages, 5 turns (4 closed, 1 open), 0 chunks. Very coarse turn granularity — turns 2 and 3 are ~111k and ~120k tokens respectively. No smooth/chunk/placeholder artifacts exist yet.",
+  "threadId": "thread_b395ab32-44c9-4fc2-92c8-eaae4f634b61",
+  "capturedAt": "2026-05-11T16:58:02.390Z",
+  "sourceStats": {
+    "estimatedTokens": 283434,
+    "messageCount": 402,
+    "turnCount": 5,
+    "closedTurns": 4,
+    "openTurns": 1,
+    "chunks": 0,
+    "turnSizes": {
+      "turn_0e44ed15": { "messages": 28, "estimatedTokens": 17120, "status": "closed" },
+      "turn_c7c07f57": { "messages": 156, "estimatedTokens": 111095, "status": "closed" },
+      "turn_fdbcaf18": { "messages": 157, "estimatedTokens": 120366, "status": "closed" },
+      "turn_359500c2": { "messages": 58, "estimatedTokens": 34066, "status": "closed" },
+      "turn_853142ea": { "messages": 3, "estimatedTokens": 787, "status": "open" }
+    }
+  },
+  "notes": "Turn granularity is very coarse — PI groups all messages in a single user-prompt-to-next-user-prompt cycle as one turn. This means band allocation works with 4 units, not dozens. Compact behavior will be very different from synthetic fixtures."
+}

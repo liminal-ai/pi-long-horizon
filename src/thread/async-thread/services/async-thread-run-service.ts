@@ -536,7 +536,7 @@ function buildReadinessBlockers(input: {
 
   for (const chunk of input.chunks) {
     if (
-      chunk.sourceTurnIds.length === 0 ||
+      (chunk.lifecycleStatus === "closed" && chunk.sourceTurnIds.length === 0) ||
       chunk.sourceTurnIds.some((turnId) => !turnIds.has(turnId))
     ) {
       blockers.push(

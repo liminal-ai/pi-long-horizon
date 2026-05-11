@@ -23,8 +23,15 @@ import {
   makeThreadTarget,
 } from "../../src/context-steward/test/fixtures.js";
 import { withTempThreadStore } from "../../src/context-steward/test/temp-store.js";
-import { withTempFeature3Store } from "../../src/thread-view/test/fixtures.js";
-import { seedMissingDetailedPlaceholderThread } from "../thread-view/helpers.js";
+import {
+  makeBandRecord,
+  makeThreadView,
+  withTempFeature3Store,
+} from "../../src/thread-view/test/fixtures.js";
+import {
+  seedDeterministicRebuildThread,
+  seedMissingDetailedPlaceholderThread,
+} from "../thread-view/helpers.js";
 
 interface RegisteredCommand {
   handler: (args: string, ctx: ExtensionCommandContext) => Promise<void>;
@@ -210,6 +217,68 @@ class StaleRepairStore extends FileThreadStore {
 
     return super.writeTurns(input);
   }
+}
+
+async function seedCompactReportThread(storeRootDir: string) {
+  const context = await seedDeterministicRebuildThread(storeRootDir);
+  const olderThreadViewId = "thread-view-older";
+  const newerThreadViewId = "thread-view-newer";
+
+  const olderView = makeThreadView({
+    threadId: context.threadId,
+    threadViewId: olderThreadViewId,
+    updatedAt: "2026-05-10T00:00:00.000Z",
+    status: "ready",
+    fullFidelityBand: makeBandRecord({
+      bandType: "full_fidelity",
+      selectedIds: [context.turns.oldest.turnId],
+      renderedStatus: "ready",
+    }),
+  });
+  const newerView = makeThreadView({
+    threadId: context.threadId,
+    threadViewId: newerThreadViewId,
+    updatedAt: "2026-05-11T00:00:00.000Z",
+    status: "ready",
+    smoothBand: makeBandRecord({
+      bandType: "smooth",
+      selectedIds: [context.turns.middleOlder.turnId],
+      renderedStatus: "ready",
+    }),
+  });
+
+  assert.equal((await context.threadViewStore.createThreadView({ view: olderView })).ok, true);
+  assert.equal((await context.threadViewStore.createThreadView({ view: newerView })).ok, true);
+
+  const snapshot = expectOk(await context.threadStore.openThread(context.threadId));
+  expectOk(
+    await context.threadStore.updateThreadMetadata({
+      threadId: context.threadId,
+      expectedSourceRevision: snapshot.thread.sourceRevision,
+      patch: {
+        threadViewOutputSummary: {
+          count: 1,
+          currentGeneratedFilePath: "/tmp/newer-generated.jsonl",
+          lastRevisionStatus: "available",
+          generatedOutput: {
+            threadId: context.threadId,
+            threadViewId: newerThreadViewId,
+            generatedFilePath: "/tmp/newer-generated.jsonl",
+            archivePath: "/tmp/newer-archive.jsonl",
+            status: "available",
+            generatedSource: "thread_view",
+            placeholderExplicit: true,
+          },
+        },
+      },
+    }),
+  );
+
+  return {
+    ...context,
+    olderThreadViewId,
+    newerThreadViewId,
+  };
 }
 
 test("/lh-fixture renders created fixture id and failure code", async () => {
@@ -751,6 +820,132 @@ test("/lh-smart-compact reloads through the session-switch path even when PI alr
       secondRun.replacementNotifications[0]!.message,
       /^Smart compact: Generated PI session .+ for thread .+ and reloaded PI\.$/,
     );
+  });
+});
+
+test("/lh-compact-report is registered and defaults to the most recent thread view", async () => {
+  await withTempFeature3Store(async ({ projectDir }) => {
+    const seeded = await seedCompactReportThread(`${projectDir}/.context-steward`);
+    const target = makeThreadTarget({
+      sessionId: "session-thread-view-builder",
+      cwd: projectDir,
+    });
+
+    const { api, commands } = createMockPiApi();
+    registerContextStewardExtension(api, {
+      createStore: () => seeded.threadStore,
+      createThreadViewStore: () => seeded.threadViewStore,
+    });
+
+    const compactReportCommand = commands.get("lh-compact-report");
+    assert.ok(compactReportCommand);
+
+    const { ctx, notifications } = createCommandContext(target);
+    await compactReportCommand!.handler("", ctx);
+
+    assert.equal(notifications.length, 1);
+    assert.equal(notifications[0]!.level, "info");
+    assert.match(
+      notifications[0]!.message,
+      new RegExp(
+        `^Compact report: Compaction audit report\\nThread: ${seeded.threadId}\\nThread view: ${seeded.newerThreadViewId}\\nCompact status: available`,
+      ),
+    );
+  });
+});
+
+test("/lh-compact-report accepts --thread-view and reports the requested view", async () => {
+  await withTempFeature3Store(async ({ projectDir }) => {
+    const seeded = await seedCompactReportThread(`${projectDir}/.context-steward`);
+    const target = makeThreadTarget({
+      sessionId: "session-thread-view-builder",
+      cwd: projectDir,
+    });
+
+    const { api, commands } = createMockPiApi();
+    registerContextStewardExtension(api, {
+      createStore: () => seeded.threadStore,
+      createThreadViewStore: () => seeded.threadViewStore,
+    });
+
+    const compactReportCommand = commands.get("lh-compact-report");
+    assert.ok(compactReportCommand);
+
+    const { ctx, notifications } = createCommandContext(target);
+    await compactReportCommand!.handler(`--thread-view ${seeded.olderThreadViewId}`, ctx);
+
+    assert.equal(notifications.length, 1);
+    assert.equal(notifications[0]!.level, "info");
+    assert.match(
+      notifications[0]!.message,
+      new RegExp(
+        `^Compact report: Compaction audit report\\nThread: ${seeded.threadId}\\nThread view: ${seeded.olderThreadViewId}\\nCompact status: unknown`,
+      ),
+    );
+  });
+});
+
+test("/lh-compact-report validates --thread-view arguments and missing views", async () => {
+  await withTempFeature3Store(async ({ projectDir }) => {
+    const seeded = await seedCompactReportThread(`${projectDir}/.context-steward`);
+    const target = makeThreadTarget({
+      sessionId: "session-thread-view-builder",
+      cwd: projectDir,
+    });
+
+    const { api, commands } = createMockPiApi();
+    registerContextStewardExtension(api, {
+      createStore: () => seeded.threadStore,
+      createThreadViewStore: () => seeded.threadViewStore,
+    });
+
+    const compactReportCommand = commands.get("lh-compact-report");
+    assert.ok(compactReportCommand);
+
+    const missingValueContext = createCommandContext(target);
+    await compactReportCommand!.handler("--thread-view", missingValueContext.ctx);
+    assert.deepEqual(missingValueContext.notifications, [
+      {
+        level: "error",
+        message: "Compact report failed: Missing value for --thread-view. [INVALID_COMMAND_ARGS]",
+      },
+    ]);
+
+    const missingViewContext = createCommandContext(target);
+    await compactReportCommand!.handler("--thread-view missing-view", missingViewContext.ctx);
+    assert.equal(missingViewContext.notifications.length, 1);
+    assert.equal(missingViewContext.notifications[0]!.level, "error");
+    assert.equal(
+      missingViewContext.notifications[0]!.message,
+      `Compact report failed: Thread View missing-view was not found for thread ${seeded.threadId}. [THREAD_VIEW_NOT_FOUND]`,
+    );
+  });
+});
+
+test("/lh-compact-report handles missing managed threads", async () => {
+  await withTempThreadStore(async ({ projectDir }) => {
+    const target = makeThreadTarget({
+      sessionId: "session-command-compact-report-missing",
+      sessionFilePath: `${projectDir}/pi/session-command-compact-report-missing.jsonl`,
+      cwd: projectDir,
+    });
+    await ensureTargetSessionFile(target);
+
+    const { api, commands } = createMockPiApi();
+    registerContextStewardExtension(api);
+
+    const compactReportCommand = commands.get("lh-compact-report");
+    assert.ok(compactReportCommand);
+
+    const { ctx, notifications } = createCommandContext(target);
+    await compactReportCommand!.handler("", ctx);
+
+    assert.deepEqual(notifications, [
+      {
+        level: "error",
+        message: "Compact report failed: No managed thread exists for the current PI session.",
+      },
+    ]);
   });
 });
 

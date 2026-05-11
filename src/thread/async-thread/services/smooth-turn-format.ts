@@ -13,8 +13,7 @@ interface SmoothSection {
 }
 
 export interface DeterministicSmoothFormatOptions {
-  truncateToolTokenLimit: number;
-  removeToolTokenLimit: number;
+  toolOutputCharLimit: number;
 }
 
 export interface DeterministicSmoothFormatResult {
@@ -24,8 +23,7 @@ export interface DeterministicSmoothFormatResult {
 }
 
 const DEFAULT_FORMAT_OPTIONS: DeterministicSmoothFormatOptions = {
-  truncateToolTokenLimit: 80,
-  removeToolTokenLimit: 240,
+  toolOutputCharLimit: 240,
 };
 
 function stableSerialize(value: string | Record<string, unknown>): string {
@@ -76,21 +74,12 @@ function applyToolPolicy(
   content: string,
   options: DeterministicSmoothFormatOptions,
 ): string {
-  const tokenCount = estimateDeterministicTokenCount(content);
-  if (tokenCount === 0) {
+  if (content.length === 0) {
     return "";
   }
 
-  if (tokenCount > options.removeToolTokenLimit) {
-    return "[tool output removed by deterministic policy]";
-  }
-
-  if (tokenCount > options.truncateToolTokenLimit) {
-    const truncated = content
-      .split(" ")
-      .slice(0, options.truncateToolTokenLimit)
-      .join(" ");
-    return `${truncated} [tool output truncated by deterministic policy]`;
+  if (content.length > options.toolOutputCharLimit) {
+    return `${content.slice(0, options.toolOutputCharLimit)}...`;
   }
 
   return content;
@@ -120,7 +109,8 @@ function buildSections(
 
       const previous = sections[sections.length - 1];
       if (previous && previous.marker === marker) {
-        previous.content = `${previous.content}\n${content}`;
+        const separator = marker === "tool" ? "\n---\n" : "\n";
+        previous.content = `${previous.content}${separator}${content}`;
         continue;
       }
 

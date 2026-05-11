@@ -115,6 +115,77 @@ test("invalid chunk state is reported explicitly", async () => {
   });
 });
 
+test("empty open chunk is valid while empty closed chunk is rejected", async () => {
+  await withTempFeature3Store(async ({ storeRootDir }) => {
+    const context = await seedDeterministicRebuildThread(storeRootDir);
+    const snapshot = await context.threadStore.openThread(context.threadId);
+    assert.equal(snapshot.ok, true);
+
+    await context.threadStore.writeChunks({
+      threadId: context.threadId,
+      expectedSourceRevision: snapshot.value.thread.sourceRevision,
+      expectedMessageHighWatermark: snapshot.value.thread.messageHighWatermark,
+      expectedTurnsRevision: snapshot.value.thread.turnsRevision,
+      chunks: [
+        makeChunkState({
+          chunkId: "chunk-valid-open-empty",
+          threadId: context.threadId,
+          lifecycleStatus: "open",
+          sourceTurnIds: [],
+          smoothText: undefined,
+          smoothTokenCount: 0,
+          placeholders: undefined,
+        }),
+      ],
+    });
+
+    const openChunkResult = await prepareAsyncThread(
+      {
+        threadId: context.threadId,
+        mode: "strict",
+      },
+      {
+        store: context.threadStore,
+      },
+    );
+
+    assert.equal(openChunkResult.blockers.some((issue) => issue.code === "CHUNK_STATE_INVALID"), false);
+
+    const refreshed = await context.threadStore.openThread(context.threadId);
+    assert.equal(refreshed.ok, true);
+
+    await context.threadStore.writeChunks({
+      threadId: context.threadId,
+      expectedSourceRevision: refreshed.value.thread.sourceRevision,
+      expectedMessageHighWatermark: refreshed.value.thread.messageHighWatermark,
+      expectedTurnsRevision: refreshed.value.thread.turnsRevision,
+      chunks: [
+        makeChunkState({
+          chunkId: "chunk-invalid-closed-empty",
+          threadId: context.threadId,
+          lifecycleStatus: "closed",
+          sourceTurnIds: [],
+          smoothText: "closed empty",
+          smoothTokenCount: 2,
+          placeholders: undefined,
+        }),
+      ],
+    });
+
+    const closedChunkResult = await prepareAsyncThread(
+      {
+        threadId: context.threadId,
+        mode: "strict",
+      },
+      {
+        store: context.threadStore,
+      },
+    );
+
+    assert.equal(closedChunkResult.blockers.some((issue) => issue.code === "CHUNK_STATE_INVALID"), true);
+  });
+});
+
 test("invalid Thread View materialization state is reported explicitly", async () => {
   await withTempFeature3Store(async ({ storeRootDir }) => {
     const context = await seedDeterministicRebuildThread(storeRootDir);
