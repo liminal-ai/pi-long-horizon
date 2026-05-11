@@ -1,4 +1,4 @@
-import type { ThreadViewMessageRecord } from "../../../context-workbench/domain/thread-view-records.js";
+import type { ThreadViewMessageRecord } from "../../domain/thread-view-records.js";
 import type {
   BuildPiThreadViewFileInput,
   PiThreadViewEntry,

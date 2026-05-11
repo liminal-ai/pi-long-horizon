@@ -1,4 +1,4 @@
-import type { ThreadViewMessageRecord } from "../../context-workbench/domain/thread-view-records.js";
+import type { ThreadViewMessageRecord } from "./thread-view-records.js";
 import type { StewardIssue } from "../../thread/domain/errors.js";
 
 export interface ThreadViewBandPercentages {

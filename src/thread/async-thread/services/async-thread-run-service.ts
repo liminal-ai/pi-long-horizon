@@ -6,6 +6,7 @@ import {
 import type { ThreadViewBandPercentages } from "../../../thread-view/domain/pi-thread-view-file.js";
 import type { ThreadStore } from "../../store/thread-store.js";
 import type { MessageRecord, TurnRecord } from "../../domain/records.js";
+import { createStewardIssue, StewardResultError, type StewardIssue } from "../../domain/errors.js";
 import type { ChunkState } from "../domain/chunk-state.js";
 import { getPlaceholderArtifactMarker } from "../domain/placeholder-artifact-state.js";
 import { DEFAULT_PLACEHOLDER_BUILD_SETTINGS } from "../domain/settings.js";
@@ -47,6 +48,31 @@ interface LowerBandSelectionResult {
 }
 
 const BAND_ALLOCATION_KEYS = ["fullFidelity", "smooth", "detailed", "brief"] as const;
+
+function blockedReadiness(threadId: string, issues: readonly StewardIssue[]): PrepareAsyncThreadResult {
+  return {
+    threadId,
+    smoothReady: false,
+    chunksReady: false,
+    placeholdersReady: false,
+    blockers: issues.map((issue) => createStewardIssue(issue)),
+  };
+}
+
+function issuesFromUnknownError(error: unknown, threadId: string): StewardIssue[] {
+  if (error instanceof StewardResultError) {
+    return error.issues;
+  }
+
+  return [
+    createStewardIssue({
+      code: "STORE_UNAVAILABLE",
+      message: "Deterministic async thread preparation failed.",
+      threadId,
+      cause: error instanceof Error ? error.message : String(error),
+    }),
+  ];
+}
 
 function stringifyPartContent(content: string | Record<string, unknown>): string {
   if (typeof content === "string") {
@@ -606,12 +632,12 @@ async function readReadiness(
 ): Promise<PrepareAsyncThreadResult> {
   const threadSnapshot = await dependencies.store.openThread(input.threadId);
   if (!threadSnapshot.ok) {
-    throw new Error(threadSnapshot.issues.map((issue) => `${issue.code}: ${issue.message}`).join("; "));
+    return blockedReadiness(input.threadId, threadSnapshot.issues);
   }
 
   const chunksSnapshot = await dependencies.store.readChunks(input.threadId);
   if (!chunksSnapshot.ok) {
-    throw new Error(chunksSnapshot.issues.map((issue) => `${issue.code}: ${issue.message}`).join("; "));
+    return blockedReadiness(input.threadId, chunksSnapshot.issues);
   }
 
   return buildReadinessBlockers({
@@ -633,10 +659,10 @@ async function readReadiness(
 async function repairMissingArtifacts(
   threadId: string,
   dependencies: AsyncThreadRunDependencies,
-): Promise<void> {
+): Promise<StewardIssue[]> {
   const threadSnapshot = await dependencies.store.openThread(threadId);
   if (!threadSnapshot.ok) {
-    throw new Error(threadSnapshot.issues.map((issue) => `${issue.code}: ${issue.message}`).join("; "));
+    return threadSnapshot.issues;
   }
 
   for (const turn of threadSnapshot.value.turns) {
@@ -644,31 +670,39 @@ async function repairMissingArtifacts(
       continue;
     }
 
-    await ensureSmoothTurn(
+    try {
+      await ensureSmoothTurn(
+        {
+          threadId,
+          turnId: turn.turnId,
+        },
+        {
+          store: dependencies.store,
+          now: dependencies.now,
+        },
+      );
+    } catch (error) {
+      return issuesFromUnknownError(error, threadId);
+    }
+  }
+
+  try {
+    await updateChunkState(
       {
         threadId,
-        turnId: turn.turnId,
       },
       {
         store: dependencies.store,
         now: dependencies.now,
       },
     );
+  } catch (error) {
+    return issuesFromUnknownError(error, threadId);
   }
-
-  await updateChunkState(
-    {
-      threadId,
-    },
-    {
-      store: dependencies.store,
-      now: dependencies.now,
-    },
-  );
 
   const chunksSnapshot = await dependencies.store.readChunks(threadId);
   if (!chunksSnapshot.ok) {
-    throw new Error(chunksSnapshot.issues.map((issue) => `${issue.code}: ${issue.message}`).join("; "));
+    return chunksSnapshot.issues;
   }
 
   for (const chunk of chunksSnapshot.value) {
@@ -676,17 +710,23 @@ async function repairMissingArtifacts(
       continue;
     }
 
-    await ensurePlaceholderArtifacts(
-      {
-        threadId,
-        chunkId: chunk.chunkId,
-      },
-      {
-        store: dependencies.store,
-        now: dependencies.now,
-      },
-    );
+    try {
+      await ensurePlaceholderArtifacts(
+        {
+          threadId,
+          chunkId: chunk.chunkId,
+        },
+        {
+          store: dependencies.store,
+          now: dependencies.now,
+        },
+      );
+    } catch (error) {
+      return issuesFromUnknownError(error, threadId);
+    }
   }
+
+  return [];
 }
 
 export async function prepareAsyncThread(
@@ -694,7 +734,13 @@ export async function prepareAsyncThread(
   dependencies?: AsyncThreadRunDependencies,
 ): Promise<PrepareAsyncThreadResult> {
   if (!dependencies?.store) {
-    throw new Error("prepareAsyncThread requires a thread store dependency.");
+    return blockedReadiness(input.threadId, [
+      {
+        code: "STORE_UNAVAILABLE",
+        message: "prepareAsyncThread requires a thread store dependency.",
+        threadId: input.threadId,
+      },
+    ]);
   }
 
   const initialReadiness = await readReadiness(input, dependencies);
@@ -702,6 +748,9 @@ export async function prepareAsyncThread(
     return initialReadiness;
   }
 
-  await repairMissingArtifacts(input.threadId, dependencies);
+  const repairIssues = await repairMissingArtifacts(input.threadId, dependencies);
+  if (repairIssues.length > 0) {
+    return blockedReadiness(input.threadId, repairIssues);
+  }
   return readReadiness(input, dependencies);
 }

@@ -1,7 +1,5 @@
-import {
-  createProjectionRevisionId,
-} from "../context-steward/domain/ids.js";
-import { updateGeneratedSessionMetadata } from "../context-steward/services/thread-service.js";
+import { createThreadViewOutputRevisionId } from "../thread/domain/ids.js";
+import { updateGeneratedThreadViewOutputMetadata } from "../thread/services/thread-service.js";
 import { createPiCliHarnessAdapter } from "../harness-adapter/pi-cli-ha/pi-cli-ha.js";
 import type { PiCliHarnessAdapterDependencies } from "../harness-adapter/pi-cli-ha/pi-cli-ha.js";
 import { prepareAsyncThread, type AsyncThreadRunDependencies } from "../thread/async-thread/services/async-thread-run-service.js";
@@ -36,10 +34,23 @@ export interface SmartCompactCommandDependencies {
   now?: () => Date;
 }
 
-function buildProjectionRevisionStatus(
+function buildThreadViewOutputRevisionStatus(
   compactStatus: SmartCompactCommandResult["compactStatus"],
 ): "available" | "failed" {
   return compactStatus === "success" ? "available" : "failed";
+}
+
+function buildBlockedSmartCompactResult(
+  input: SmartCompactCommandInput,
+  issues: Parameters<typeof createStewardIssue>[0][],
+): SmartCompactCommandResult {
+  return {
+    threadId: input.threadId,
+    requestedLowerBound: input.requestedLowerBound,
+    requestedBandPercentages: input.requestedBandPercentages,
+    compactStatus: "blocked",
+    blockers: issues.map((issue) => createStewardIssue(issue)),
+  };
 }
 
 function compactStatusFromBuildStatus(
@@ -81,16 +92,34 @@ export async function runSmartCompact(
 ): Promise<SmartCompactCommandResult> {
   const inputErrors = validateSmartCompactCommandInput(input);
   if (inputErrors.length > 0) {
-    throw new Error(`Invalid smart compact input: ${inputErrors.join(" ")}`);
+    return buildBlockedSmartCompactResult(input, [
+      {
+        code: "INVALID_COMMAND_ARGS",
+        message: `Invalid smart compact input: ${inputErrors.join(" ")}`,
+        threadId: input.threadId,
+      },
+    ]);
   }
 
   if (!dependencies?.threadStore || !dependencies.threadViewStore) {
-    throw new Error("runSmartCompact requires threadStore and threadViewStore dependencies.");
+    return buildBlockedSmartCompactResult(input, [
+      {
+        code: "INVALID_COMMAND_ARGS",
+        message: "runSmartCompact requires threadStore and threadViewStore dependencies.",
+        threadId: input.threadId,
+      },
+    ]);
   }
 
   const threadSnapshotResult = await dependencies.threadStore.openThread(input.threadId);
   if (!threadSnapshotResult.ok) {
-    throw new Error(threadSnapshotResult.issues.map((issue) => `${issue.code}: ${issue.message}`).join("; "));
+    return {
+      threadId: input.threadId,
+      requestedLowerBound: input.requestedLowerBound,
+      requestedBandPercentages: input.requestedBandPercentages,
+      compactStatus: "blocked",
+      blockers: threadSnapshotResult.issues,
+    };
   }
 
   const mutationCoordinator =
@@ -136,7 +165,7 @@ export async function runSmartCompact(
     const compactStatus = compactStatusFromBuildStatus(buildResult.status);
     if (compactStatus !== "success") {
       if (compactStatus === "degraded") {
-        await updateGeneratedSessionMetadata({
+        await updateGeneratedThreadViewOutputMetadata({
           store: dependencies.threadStore,
           threadId: input.threadId,
           generatedOutput: buildGeneratedOutputMetadata({
@@ -168,14 +197,28 @@ export async function runSmartCompact(
       buildResult.draftThreadViewId,
     );
     if (!threadViewSnapshot.ok) {
-      throw new Error(
-        threadViewSnapshot.issues.map((issue) => `${issue.code}: ${issue.message}`).join("; "),
-      );
+      return {
+        threadId: input.threadId,
+        requestedLowerBound: input.requestedLowerBound,
+        requestedBandPercentages: input.requestedBandPercentages,
+        threadViewId: buildResult.draftThreadViewId,
+        compactStatus: "blocked",
+        blockers: threadViewSnapshot.issues,
+        resultingTokenCount: buildResult.resultingTokenCount,
+      };
     }
 
     const threadSnapshot = await dependencies.threadStore.openThread(input.threadId);
     if (!threadSnapshot.ok) {
-      throw new Error(threadSnapshot.issues.map((issue) => `${issue.code}: ${issue.message}`).join("; "));
+      return {
+        threadId: input.threadId,
+        requestedLowerBound: input.requestedLowerBound,
+        requestedBandPercentages: input.requestedBandPercentages,
+        threadViewId: buildResult.draftThreadViewId,
+        compactStatus: "blocked",
+        blockers: threadSnapshot.issues,
+        resultingTokenCount: buildResult.resultingTokenCount,
+      };
     }
 
     const piFile = await buildPiThreadViewFile({
@@ -215,7 +258,7 @@ export async function runSmartCompact(
         ],
         resultingTokenCount: buildResult.resultingTokenCount,
       };
-      await updateGeneratedSessionMetadata({
+      await updateGeneratedThreadViewOutputMetadata({
         store: dependencies.threadStore,
         threadId: input.threadId,
         generatedOutput: buildGeneratedOutputMetadata({
@@ -243,7 +286,7 @@ export async function runSmartCompact(
       ? "success"
       : "reload_failed";
 
-    await updateGeneratedSessionMetadata({
+    await updateGeneratedThreadViewOutputMetadata({
       store: dependencies.threadStore,
       threadId: input.threadId,
       generatedFilePath: writeResult.generatedFilePath,
@@ -258,14 +301,14 @@ export async function runSmartCompact(
         issues: loadResult.ok ? [] : loadResult.issues,
       }),
       revision: {
-        revisionId: createProjectionRevisionId(),
+        revisionId: createThreadViewOutputRevisionId(),
         threadId: input.threadId,
         threadViewId: buildResult.draftThreadViewId,
         targetRuntime: "pi",
         generatedFilePath: writeResult.generatedFilePath,
         createdAt: (dependencies.now ?? (() => new Date()))().toISOString(),
         sourceStateReference: threadViewSnapshot.value.view.sourceStateReference,
-        status: buildProjectionRevisionStatus(finalCompactStatus),
+        status: buildThreadViewOutputRevisionStatus(finalCompactStatus),
       },
       now: dependencies.now,
     });

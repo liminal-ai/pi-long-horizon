@@ -196,3 +196,92 @@
 
 ## Open Risks / Accepted Risks
 - Codex auth status unknown — proceeding on assumption CLI works in this environment
+
+## Post-Closeout Stabilization (Pre-Epic 4)
+
+Codex review identified that Epic 3 is behaviorally correct but architecturally incomplete.
+The intended surface split is partly facades over old modules, projection-era vocabulary
+persists in the critical path, error model is inconsistent, and Feature 3 integration/E2E
+coverage is thinner than the test plan specified. All must be resolved before Epic 4.
+
+### Round 1: Structural Consolidation
+- Scope: surface migration (re-exports → real implementations), projection vocabulary
+  cleanup, error model tightening in the Feature 3 critical path
+- Implementor: gpt-5.5 / low — session 019e16d6-d028-7611-be7d-d89c06f64b95
+- Verifier: gpt-5.5 / medium
+- Verifier: gpt-5.5 / medium — session 019e16dc-072f-7161-b6d4-aaabe49ca6de
+- Status: COMPLETE — verifier signed off after 2 impl passes + 2 verify passes
+
+#### R1 Impl Pass 1
+- Reversed critical facades: thread/, thread-view/, workbench/ now own real implementations;
+  old context-steward/, context-workbench/ are compatibility re-exports
+- smart-compact.ts updated to Feature 3 vocabulary (Thread View output naming wrappers)
+- pi-thread-view-file.ts imports from new thread-view domain
+- Raw throw new Error() replaced with structured SmartCompactCommandResult blockers
+  and StewardResultError in smart-compact.ts and async-thread services
+- verify-all green: 287 unit + 10 integration + 34 E2E = 331 tests, 0 failures
+
+#### R1 Verify Pass 1 — REVISE
+- Check 1 (facades): FAIL — thread-view/domain/thread-view-errors.ts still re-exports from workbench/
+- Check 2 (smart-compact imports): PASS at command level, FAIL at internal level —
+  thread/domain/ids.ts still has createProjectionRevisionId, thread/services/thread-service.ts
+  still has updateGeneratedSessionMetadata, projectionSummary, nextProjectionSummary
+- Check 3 (pi-thread-view-file imports): PASS
+- Check 4 (raw throw): PASS — no remaining raw throw new Error()
+- Check 5 (old compat re-exports): PASS — reversed correctly
+- Check 6 (verify-all): PASS — 287 unit + 10 integration + 34 E2E = 331 green
+
+#### R1 Impl Pass 2
+- thread-view/domain/thread-view-errors.ts: moved real error vocabulary from workbench,
+  workbench-errors.ts now re-exports from thread-view
+- thread/domain/ids.ts: createThreadViewOutputRevisionId is now real impl,
+  createProjectionRevisionId is compatibility alias
+- thread/services/thread-service.ts: updateGeneratedThreadViewOutputMetadata is now real
+  impl with Feature 3 vocabulary, old names are compatibility wrappers.
+  Persisted projectionSummary field kept for on-disk schema compat.
+- verify-all green: 287 unit + 10 integration + 34 E2E = 331 tests, 0 failures
+
+#### R1 Verify Pass 2 — SIGN-OFF
+- Check 1 (thread-view-errors): PASS — real implementation, workbench re-exports from it
+- Check 2 (output metadata): PASS — Feature 3 names are real, old names are aliases,
+  persisted field stays projectionSummary for disk compat
+- Check 3 (verify-all): PASS — 331 green
+- Verdict: SIGN-OFF
+
+### Round 2: Test Gap Closure
+- Scope: missing lower-band integration test, expanded Feature 3 E2E scenarios
+- Implementor: gpt-5.5 / low — session 019e16e2-a332-7661-8c1d-35c604e2c234
+- Verifier: gpt-5.5 / medium
+- Status: COMPLETE — verifier signed off after 1 impl pass + 1 verify pass
+
+#### R2 Impl Pass 1
+- Created tests/workbench/workbench-lower-band.integration.test.ts:
+  real file-backed stores, production WorkbenchQueryService with real ThreadStoreChunkReader,
+  persisted chunk state, placeholder availability, lower-band readiness, open chunk exclusion
+- Expanded tests/commands/smart-compact.e2e.test.ts with 8 new E2E scenarios:
+  1. Invalid inputs reject before state mutation
+  2. Open chunk excluded from lower bands during rebuild
+  3. Missing smooth blocks strict-mode compact (SMOOTH_MISSING)
+  4. Missing placeholder blocks lower-band use (CHUNK_PLACEHOLDER_MISSING)
+  5. Full-fidelity-only overage produces degraded threshold (LOWER_THRESHOLD_UNREACHED)
+  6. PI write success + load failure reports reload_failed
+  7. Degraded compact leaves inspectable state (usableStatus: "degraded")
+  8. Restart survival — persisted smooth/chunk/placeholder survives store reopen
+- verify-all green: 287 unit + 11 integration + 42 E2E = 340 tests, 0 failures
+
+#### R2 Verify Pass 1 — SIGN-OFF
+- Lower-band integration: PASS — real stores, real chunk reader, real readiness, real assertions
+- All 8 E2E scenarios: PASS — exercise real runSmartCompact path, real stores, real file writes,
+  specific behavioral assertions (not just "doesn't crash")
+- Only PI reload adapter doubled where appropriate (load failure scenario)
+- Targeted runs confirmed: integration 1/1 pass, e2e 9/9 pass
+- Full gate: PASS — 287 unit + 11 integration + 42 E2E = 340 green
+- Verdict: SIGN-OFF
+
+### Post-Stabilization Final State
+- Total tests: 340 (287 unit + 11 integration + 42 E2E)
+- Baseline: 560 test files (pre-Epic 3) → 577 test files (post-stabilization)
+- All Feature 3 mechanics covered by dedicated tests
+- Architecture consolidated: new surfaces are real, old surfaces are compat re-exports
+- Feature 3 vocabulary is primary, projection-era names are compatibility aliases
+- Error model unified on structured results in the core loop

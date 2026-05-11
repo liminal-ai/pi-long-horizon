@@ -11,7 +11,7 @@ import type { TurnRecord } from "../../domain/records.js";
 import type { DeterministicSmoothFormatOptions } from "./smooth-turn-format.js";
 import { buildSmoothTurnText } from "./smooth-turn-format.js";
 import { withSerializedThreadOperation } from "../../services/thread-service.js";
-import { fail, ok, type StewardResult } from "../../domain/errors.js";
+import { fail, ok, StewardResultError, type StewardResult } from "../../domain/errors.js";
 import { estimateDeterministicTokenCount } from "../domain/smooth-turn-state.js";
 
 export interface SmoothTurnServiceOptions {
@@ -277,7 +277,7 @@ export async function persistSmoothTurnState(
     persistSmoothTurnStateWithRetry(input, options.store),
   ).then((result) => {
     if (!result.ok) {
-      throw new Error(result.issues.map((issue) => `${issue.code}: ${issue.message}`).join("; "));
+      throw new StewardResultError(result.issues);
     }
   });
 }
@@ -288,12 +288,18 @@ export async function readSmoothTurnState(
 ): Promise<ReadSmoothTurnStateResult> {
   const snapshotResult = await options.store.openThread(input.threadId);
   if (!snapshotResult.ok) {
-    throw new Error(snapshotResult.issues.map((issue) => `${issue.code}: ${issue.message}`).join("; "));
+    throw new StewardResultError(snapshotResult.issues);
   }
 
   const turn = findTurn(snapshotResult.value, input.turnId);
   if (!turn) {
-    throw new Error(`Turn ${input.turnId} was not found in thread ${input.threadId}.`);
+    throw new StewardResultError([
+      {
+        code: "TURN_STATE_MISSING",
+        message: `Turn ${input.turnId} was not found in thread ${input.threadId}.`,
+        threadId: input.threadId,
+      },
+    ]);
   }
 
   return evaluateSmoothTurn(turn);
@@ -367,7 +373,7 @@ export async function ensureSmoothTurn(
     } satisfies EnsureSmoothTurnResult);
   }).then((result) => {
     if (!result.ok) {
-      throw new Error(result.issues.map((issue) => `${issue.code}: ${issue.message}`).join("; "));
+      throw new StewardResultError(result.issues);
     }
 
     return result.value;

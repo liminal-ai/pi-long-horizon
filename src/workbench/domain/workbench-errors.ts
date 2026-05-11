@@ -1,1 +1,1 @@
-export * from "../../context-workbench/domain/workbench-errors.js";
+export * from "../../thread-view/domain/thread-view-errors.js";

@@ -18,7 +18,7 @@ import {
   estimateDeterministicTokenCount,
   normalizeDeterministicText,
 } from "../domain/smooth-turn-state.js";
-import { fail, ok, type StewardIssue } from "../../domain/errors.js";
+import { fail, ok, StewardResultError, type StewardIssue } from "../../domain/errors.js";
 import type { ThreadStore } from "../../store/thread-store.js";
 import { withSerializedThreadOperation } from "../../services/thread-service.js";
 
@@ -233,7 +233,7 @@ export async function ensurePlaceholderArtifacts(
     } satisfies EnsurePlaceholderArtifactsResult);
   }).then((result) => {
     if (!result.ok) {
-      throw new Error(result.issues.map((issue) => `${issue.code}: ${issue.message}`).join("; "));
+      throw new StewardResultError(result.issues);
     }
 
     return result.value;

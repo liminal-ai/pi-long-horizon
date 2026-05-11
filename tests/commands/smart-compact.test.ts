@@ -292,21 +292,22 @@ test("default command path roots generated and archived output under the active 
 });
 
 test("command rejects invalid per-run inputs", async () => {
-  await assert.rejects(
-    runSmartCompact(
-      {
-        threadId: "thread-invalid-smart-compact",
-        requestedLowerBound: 0,
-        requestedBandPercentages: { fullFidelity: 50, smooth: 20, detailed: 20, brief: 10 },
-        mode: "strict",
-      },
-      {
-        threadStore: {} as never,
-        threadViewStore: {} as never,
-      },
-    ),
-    /requestedLowerBound must be greater than 0/,
+  const result = await runSmartCompact(
+    {
+      threadId: "thread-invalid-smart-compact",
+      requestedLowerBound: 0,
+      requestedBandPercentages: { fullFidelity: 50, smooth: 20, detailed: 20, brief: 10 },
+      mode: "strict",
+    },
+    {
+      threadStore: {} as never,
+      threadViewStore: {} as never,
+    },
   );
+
+  assert.equal(result.compactStatus, "blocked");
+  assert.equal(result.blockers[0]?.code, "INVALID_COMMAND_ARGS");
+  assert.match(result.blockers[0]?.message ?? "", /requestedLowerBound must be greater than 0/);
 });
 
 test("strict mode reports missing smooth output explicitly", async () => {
