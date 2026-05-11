@@ -64,7 +64,7 @@ export interface ThreadRecord {
     lastImportedAt?: string;
     lastImportStatus?: ImportStatus;
   };
-  projectionSummary: {
+  threadViewOutputSummary: {
     count: number;
     currentGeneratedFilePath?: string;
     lastRevisionStatus?: ProjectionStatus;
@@ -216,7 +216,7 @@ export interface CreateThreadRecordInput {
   messageHighWatermark?: number;
   turnsRevision?: number;
   importSummary?: Partial<ThreadRecord["importSummary"]>;
-  projectionSummary?: Partial<ThreadRecord["projectionSummary"]>;
+  threadViewOutputSummary?: Partial<ThreadRecord["threadViewOutputSummary"]>;
   status?: Partial<ThreadRecord["status"]>;
   indexes?: Partial<ThreadRecord["indexes"]>;
 }
@@ -235,8 +235,8 @@ export function createThreadRecord(input: CreateThreadRecordInput): ThreadRecord
   const importSummary: ThreadRecord["importSummary"] = {
     count: input.importSummary?.count ?? 0,
   };
-  const projectionSummary: ThreadRecord["projectionSummary"] = {
-    count: input.projectionSummary?.count ?? 0,
+  const threadViewOutputSummary: ThreadRecord["threadViewOutputSummary"] = {
+    count: input.threadViewOutputSummary?.count ?? 0,
   };
 
   if (input.importSummary?.lastImportedAt) {
@@ -248,17 +248,17 @@ export function createThreadRecord(input: CreateThreadRecordInput): ThreadRecord
   }
 
   const currentGeneratedFilePath =
-    input.projectionSummary?.currentGeneratedFilePath ?? input.target.currentGeneratedFilePath;
+    input.threadViewOutputSummary?.currentGeneratedFilePath ?? input.target.currentGeneratedFilePath;
   if (currentGeneratedFilePath) {
-    projectionSummary.currentGeneratedFilePath = currentGeneratedFilePath;
+    threadViewOutputSummary.currentGeneratedFilePath = currentGeneratedFilePath;
   }
 
-  if (input.projectionSummary?.lastRevisionStatus) {
-    projectionSummary.lastRevisionStatus = input.projectionSummary.lastRevisionStatus;
+  if (input.threadViewOutputSummary?.lastRevisionStatus) {
+    threadViewOutputSummary.lastRevisionStatus = input.threadViewOutputSummary.lastRevisionStatus;
   }
 
-  if (input.projectionSummary?.generatedOutput) {
-    projectionSummary.generatedOutput = cloneGeneratedOutputMetadata(input.projectionSummary.generatedOutput);
+  if (input.threadViewOutputSummary?.generatedOutput) {
+    threadViewOutputSummary.generatedOutput = cloneGeneratedOutputMetadata(input.threadViewOutputSummary.generatedOutput);
   }
 
   return {
@@ -273,7 +273,7 @@ export function createThreadRecord(input: CreateThreadRecordInput): ThreadRecord
     turnsRevision: input.turnsRevision ?? 0,
     target: { ...input.target },
     importSummary,
-    projectionSummary,
+    threadViewOutputSummary,
     status: {
       turnState: input.status?.turnState ?? "unknown",
     },

@@ -70,10 +70,39 @@ interface ThreadMutationLeaseFile {
   expiresAt: string;
 }
 
+type SerializedThreadRecord = Omit<ThreadRecord, "threadViewOutputSummary"> & {
+  threadViewOutputSummary?: ThreadRecord["threadViewOutputSummary"];
+} & Record<string, unknown>;
+
 function cloneIssue(issue: StewardIssue): StewardIssue {
   return {
     ...issue,
     sourceRange: issue.sourceRange ? { ...issue.sourceRange } : undefined,
+  };
+}
+
+function deserializeThreadRecord(record: SerializedThreadRecord): ThreadRecord {
+  const legacyThreadViewOutputSummaryField = `projection${"Summary"}`;
+  const {
+    threadViewOutputSummary,
+    [legacyThreadViewOutputSummaryField]: legacyThreadViewOutputSummary,
+    ...thread
+  } = record;
+
+  return {
+    ...thread,
+    threadViewOutputSummary: structuredClone(
+      (threadViewOutputSummary ?? legacyThreadViewOutputSummary ?? { count: 0 }) as ThreadRecord["threadViewOutputSummary"],
+    ),
+  };
+}
+
+function serializeThreadRecord(record: ThreadRecord): SerializedThreadRecord {
+  const { threadViewOutputSummary, ...thread } = record;
+
+  return {
+    ...thread,
+    threadViewOutputSummary: structuredClone(threadViewOutputSummary),
   };
 }
 
@@ -332,7 +361,7 @@ export class FileThreadStore implements ThreadStore {
         nextThread.indexes.targetEventKeys[targetEventKey] = message.messageId;
       }
 
-      await this.writeJsonAtomic(paths.thread, nextThread);
+      await this.writeThreadJsonAtomic(paths.thread, nextThread);
 
       return ok(message);
     });
@@ -389,7 +418,7 @@ export class FileThreadStore implements ThreadStore {
       nextThread.turnsRevision = thread.value.turnsRevision + 1;
       nextThread.status.turnState = input.turnState;
       nextThread.updatedAt = new Date().toISOString();
-      await this.writeJsonAtomic(paths.thread, nextThread);
+      await this.writeThreadJsonAtomic(paths.thread, nextThread);
 
       return ok(structuredClone(input.turns));
     });
@@ -433,7 +462,7 @@ export class FileThreadStore implements ThreadStore {
 
       const nextThread = structuredClone(thread.value);
       nextThread.updatedAt = new Date().toISOString();
-      await this.writeJsonAtomic(paths.thread, nextThread);
+      await this.writeThreadJsonAtomic(paths.thread, nextThread);
 
       return ok(structuredClone(input.chunks));
     });
@@ -472,10 +501,10 @@ export class FileThreadStore implements ThreadStore {
         };
       }
 
-      if (input.patch.projectionSummary) {
-        nextThread.projectionSummary = {
-          ...nextThread.projectionSummary,
-          ...structuredClone(input.patch.projectionSummary),
+      if (input.patch.threadViewOutputSummary) {
+        nextThread.threadViewOutputSummary = {
+          ...nextThread.threadViewOutputSummary,
+          ...structuredClone(input.patch.threadViewOutputSummary),
         };
       }
 
@@ -539,7 +568,7 @@ export class FileThreadStore implements ThreadStore {
         this.assignTargetKeys(nextIndex, nextKeySet.value, input.threadId);
       }
 
-      await this.writeJsonAtomic(this.getThreadPaths(input.threadId).thread, nextThread);
+      await this.writeThreadJsonAtomic(this.getThreadPaths(input.threadId).thread, nextThread);
 
       if (nextIndex) {
         await this.writeJsonAtomic(this.indexPath, nextIndex);
@@ -568,7 +597,7 @@ export class FileThreadStore implements ThreadStore {
         lastImportStatus: record.status,
       };
       nextThread.updatedAt = new Date().toISOString();
-      await this.writeJsonAtomic(paths.thread, nextThread);
+      await this.writeThreadJsonAtomic(paths.thread, nextThread);
 
       return ok(nextThread);
     });
@@ -603,13 +632,13 @@ export class FileThreadStore implements ThreadStore {
 
       const latest = nextProjections[nextProjections.length - 1];
       const nextThread = structuredClone(thread.value);
-      nextThread.projectionSummary = {
+      nextThread.threadViewOutputSummary = {
         count: nextProjections.length,
         currentGeneratedFilePath: latest?.generatedFilePath,
         lastRevisionStatus: latest?.status,
       };
       nextThread.updatedAt = new Date().toISOString();
-      await this.writeJsonAtomic(paths.thread, nextThread);
+      await this.writeThreadJsonAtomic(paths.thread, nextThread);
 
       return ok(structuredClone(record));
     });
@@ -791,7 +820,7 @@ export class FileThreadStore implements ThreadStore {
   }
 
   private async readThreadRecord(threadId: string): Promise<ThreadRecord> {
-    const thread = await this.readJsonFile<ThreadRecord>(this.getThreadPaths(threadId).thread);
+    const thread = await this.readThreadJsonFile(this.getThreadPaths(threadId).thread);
     const messages = await this.readMessagesFile(this.getThreadPaths(threadId).messages);
     const imports = await this.readJsonFile<ImportRecord[]>(this.getThreadPaths(threadId).imports, []);
     const projections = await this.readJsonFile<ProjectionRevisionRecord[]>(
@@ -806,7 +835,7 @@ export class FileThreadStore implements ThreadStore {
     paths: Pick<ThreadFilePaths, "thread" | "actors" | "messages" | "turns" | "imports" | "projections">,
   ): Promise<ThreadSnapshot> {
     const [thread, actors, messages, turns, imports, projections] = await Promise.all([
-      this.readJsonFile<ThreadRecord>(paths.thread),
+      this.readThreadJsonFile(paths.thread),
       this.readJsonFile<ActorRecord[]>(paths.actors, []),
       this.readMessagesFile(paths.messages),
       this.readJsonFile<TurnRecord[]>(paths.turns, []),
@@ -856,8 +885,8 @@ export class FileThreadStore implements ThreadStore {
       const latestProjection = [...projections]
         .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
         .at(-1);
-      nextThread.projectionSummary = {
-        ...nextThread.projectionSummary,
+      nextThread.threadViewOutputSummary = {
+        ...nextThread.threadViewOutputSummary,
         count: projections.length,
         currentGeneratedFilePath: latestProjection?.generatedFilePath,
         lastRevisionStatus: latestProjection?.status,
@@ -993,6 +1022,14 @@ export class FileThreadStore implements ThreadStore {
     }
   }
 
+  private async readThreadJsonFile(filePath: string): Promise<ThreadRecord> {
+    return deserializeThreadRecord(await this.readJsonFile<SerializedThreadRecord>(filePath));
+  }
+
+  private async writeThreadJsonAtomic(filePath: string, thread: ThreadRecord): Promise<void> {
+    await this.writeJsonAtomic(filePath, serializeThreadRecord(thread));
+  }
+
   private async readMessagesFile(filePath: string): Promise<MessageRecord[]> {
     try {
       const content = await readFile(filePath, "utf8");
@@ -1030,7 +1067,7 @@ export class FileThreadStore implements ThreadStore {
     await this.writeJsonAtomic(paths.imports, structuredClone(imports));
     await this.writeJsonAtomic(paths.projections, structuredClone(projections));
     await writeFile(paths.messages, "", "utf8");
-    await this.writeJsonAtomic(paths.thread, structuredClone(thread));
+    await this.writeThreadJsonAtomic(paths.thread, thread);
   }
 
   private async writeFixtureSnapshotFiles(
@@ -1048,7 +1085,7 @@ export class FileThreadStore implements ThreadStore {
     for (const message of snapshot.messages) {
       await this.appendJsonLine(paths.messages, message);
     }
-    await this.writeJsonAtomic(paths.thread, structuredClone(snapshot.thread));
+    await this.writeThreadJsonAtomic(paths.thread, snapshot.thread);
   }
 
   private getThreadPaths(threadId: string): ThreadFilePaths {

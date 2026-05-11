@@ -127,7 +127,7 @@ test("smart compact E2E rejects invalid compaction inputs before state mutation"
 
     assert.equal(result.compactStatus, "blocked");
     assert.equal(result.blockers.some((issue) => issue.code === "INVALID_COMMAND_ARGS"), true);
-    assert.deepEqual(afterThread.value.thread.projectionSummary, beforeThread.value.thread.projectionSummary);
+    assert.deepEqual(afterThread.value.thread.threadViewOutputSummary, beforeThread.value.thread.threadViewOutputSummary);
     assert.deepEqual(afterViews.value, beforeViews.value);
   });
 });
@@ -213,7 +213,7 @@ test("smart compact E2E reports PI load failure after successful target write", 
     await access(result.generatedFilePath!);
     const thread = await seeded.threadStore.openThread(seeded.threadId);
     assert.equal(thread.ok, true);
-    assert.equal(thread.value.thread.projectionSummary.generatedOutput?.status, "reload_failed");
+    assert.equal(thread.value.thread.threadViewOutputSummary.generatedOutput?.status, "reload_failed");
   });
 });
 

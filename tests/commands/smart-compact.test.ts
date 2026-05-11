@@ -32,14 +32,14 @@ function createPathResolver(context: {
 }
 
 function countGeneratedSourceEntries(fileContent: string, generatedSource: string): number {
-  const projectionMetadata = fileContent
+  const threadViewOutputMetadata = fileContent
     .trim()
     .split("\n")
     .map((line) => JSON.parse(line) as { customType?: string; data?: { entries?: Array<{ generatedSource?: string }> } })
-    .find((entry) => entry.customType === "pi-long-horizon.thread-view.projection");
+    .find((entry) => entry.customType === "pi-long-horizon.thread-view.output");
 
   return (
-    projectionMetadata?.data?.entries?.filter((entry) => entry.generatedSource === generatedSource).length ?? 0
+    threadViewOutputMetadata?.data?.entries?.filter((entry) => entry.generatedSource === generatedSource).length ?? 0
   );
 }
 
@@ -132,7 +132,7 @@ test("command accepts explicit per-run inputs, writes a generated PI file, and r
     assert.deepEqual(switchedTo, [result.generatedFilePath!]);
 
     const fileContent = await readFile(result.generatedFilePath!, "utf8");
-    assert.match(fileContent, /pi-long-horizon\.thread-view\.projection/);
+    assert.match(fileContent, /pi-long-horizon\.thread-view\.output/);
     assert.match(fileContent, /\[deterministic-placeholder:detailed\]/);
 
     const after = await seeded.threadStore.openThread(seeded.threadId);
@@ -635,9 +635,9 @@ test("above-target draft reports degraded threshold result explicitly", async ()
 
     const thread = await seeded.threadStore.openThread(seeded.threadId);
     assert.equal(thread.ok, true);
-    assert.equal(thread.value.thread.projectionSummary.generatedOutput?.status, "degraded");
+    assert.equal(thread.value.thread.threadViewOutputSummary.generatedOutput?.status, "degraded");
     assert.equal(
-      thread.value.thread.projectionSummary.generatedOutput?.issues?.some(
+      thread.value.thread.threadViewOutputSummary.generatedOutput?.issues?.some(
         (issue) => issue.code === "LOWER_THRESHOLD_UNREACHED",
       ),
       true,
@@ -715,6 +715,6 @@ test("reload failure is explicit while preserving the generated output", async (
     assert.equal(thread.ok, true);
     assert.equal(thread.value.thread.target.currentGeneratedFilePath, result.generatedFilePath);
     assert.equal(thread.value.projections.at(-1)?.status, "failed");
-    assert.equal(thread.value.thread.projectionSummary.generatedOutput?.status, "reload_failed");
+    assert.equal(thread.value.thread.threadViewOutputSummary.generatedOutput?.status, "reload_failed");
   });
 });

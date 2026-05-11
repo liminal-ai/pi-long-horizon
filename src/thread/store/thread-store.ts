@@ -46,7 +46,7 @@ export interface AppendMessageInput {
 export interface UpdateThreadMetadataInput {
   threadId: string;
   expectedSourceRevision?: number;
-  patch: Partial<Pick<ThreadRecord, "target" | "status" | "importSummary" | "projectionSummary" | "updatedAt">> & {
+  patch: Partial<Pick<ThreadRecord, "target" | "status" | "importSummary" | "threadViewOutputSummary" | "updatedAt">> & {
     activeThreadViewId?: string | null;
   };
 }

@@ -238,7 +238,7 @@ export function makeThreadRecord(overrides: Partial<ThreadRecord> = {}): ThreadR
     messageHighWatermark: overrides.messageHighWatermark,
     turnsRevision: overrides.turnsRevision,
     importSummary: overrides.importSummary,
-    projectionSummary: overrides.projectionSummary,
+    threadViewOutputSummary: overrides.threadViewOutputSummary,
     status: overrides.status,
     indexes: overrides.indexes,
   });
@@ -251,9 +251,9 @@ export function makeThreadRecord(overrides: Partial<ThreadRecord> = {}): ThreadR
       ...baseRecord.importSummary,
       ...overrides.importSummary,
     },
-    projectionSummary: {
-      ...baseRecord.projectionSummary,
-      ...overrides.projectionSummary,
+    threadViewOutputSummary: {
+      ...baseRecord.threadViewOutputSummary,
+      ...overrides.threadViewOutputSummary,
     },
     status: {
       ...baseRecord.status,

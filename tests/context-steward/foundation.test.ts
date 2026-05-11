@@ -195,7 +195,7 @@ test("schema-version constants match thread initialization", () => {
   assert.equal(thread.sourceRevision, 0);
   assert.equal(thread.messageHighWatermark, 0);
   assert.deepEqual(thread.importSummary, { count: 0 });
-  assert.deepEqual(thread.projectionSummary, {
+  assert.deepEqual(thread.threadViewOutputSummary, {
     count: 0,
     currentGeneratedFilePath: "/tmp/generated/session-123.jsonl",
   });

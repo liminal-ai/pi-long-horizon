@@ -278,10 +278,44 @@ coverage is thinner than the test plan specified. All must be resolved before Ep
 - Full gate: PASS — 287 unit + 11 integration + 42 E2E = 340 green
 - Verdict: SIGN-OFF
 
+### Round 3: Final Naming Cleanup
+- Scope: remove all remaining projection-era naming from codebase
+- Implementor: gpt-5.5 / low — session 019e16f7-720e-7581-8d44-9edb27707b20
+- Verifier: gpt-5.5 / medium — session 019e16fa-ae9f-7741-a21f-91754b8501ca
+- Status: COMPLETE — verifier signed off after 2 impl passes + 2 verify passes
+
+#### R3 Impl Pass 1
+- Removed createProjectionRevisionId alias, all callers updated to createThreadViewOutputRevisionId
+- Removed updateGeneratedSessionMetadata and nextProjectionSummary wrappers, all callers updated
+- PI metadata namespace changed from pi-long-horizon.thread-view.projection to pi-long-horizon.thread-view.output
+- Persisted field dual-read added: reads projectionSummary or threadViewOutputSummary, writes only new name
+- Added regression test for write-new/read-old behavior
+- verify-all green: 288 unit + 11 integration + 42 E2E = 341 tests
+
+#### R3 Verify Pass 1 — REVISE
+- Checks 1-3, 5: PASS (aliases gone, PI metadata updated, dual-read correct, gate green)
+- Check 4: FAIL — projectionSummary still used as field name in domain types (records.ts),
+  store types (thread-store.ts), store internals (file-thread-store.ts), service code
+  (thread-service.ts), workbench (workbench-query-service.ts), and fixtures
+
+#### R3 Impl Pass 2
+- Renamed projectionSummary → threadViewOutputSummary in ThreadRecord type, store patch type,
+  file-store internals, thread-service, workbench-query-service, fixtures, and all tests
+- Only dual-read in file-thread-store.ts retains the old name for on-disk compat
+- Repo search for projectionSummary in src/ and tests/ returns zero matches
+- verify-all green: 288 unit + 11 integration + 42 E2E = 341 tests
+
+#### R3 Verify Pass 2 — SIGN-OFF
+- projectionSummary search: zero matches outside dual-read compat block
+- Dual-read logic confirmed in file-thread-store.ts:84-88 (computed key, not string literal)
+- Gate: 341 green
+- Verdict: SIGN-OFF
+
 ### Post-Stabilization Final State
-- Total tests: 340 (287 unit + 11 integration + 42 E2E)
+- Total tests: 341 (288 unit + 11 integration + 42 E2E)
 - Baseline: 560 test files (pre-Epic 3) → 577 test files (post-stabilization)
 - All Feature 3 mechanics covered by dedicated tests
-- Architecture consolidated: new surfaces are real, old surfaces are compat re-exports
-- Feature 3 vocabulary is primary, projection-era names are compatibility aliases
+- Architecture consolidated: new surfaces own real implementations, old surfaces are compat re-exports
+- Feature 3 vocabulary is sole vocabulary — zero projection-era names remain outside on-disk compat
 - Error model unified on structured results in the core loop
+- Persisted data backward compatible via dual-read in file-thread-store.ts

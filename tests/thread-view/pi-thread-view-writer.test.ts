@@ -69,7 +69,7 @@ test("PI-target file write is atomic", async () => {
     assert.equal((lines[1] as { type: string; customType: string }).type, "custom");
     assert.equal(
       (lines[1] as { customType: string }).customType,
-      "pi-long-horizon.thread-view.projection",
+      "pi-long-horizon.thread-view.output",
     );
     assert.equal((lines[2] as { type: string }).type, "message");
   });

@@ -8,7 +8,7 @@ import { CURRENT_SESSION_VERSION, type SessionEntry } from "@earendil-works/pi-c
 import type { StewardErrorCode, StewardResult } from "../../src/context-steward/domain/errors.js";
 import { createRealSessionFixture } from "../../src/context-steward/services/fixture-service.js";
 import { captureFinalizedActivity } from "../../src/context-steward/services/capture-service.js";
-import { updateGeneratedSessionMetadata, openOrCreateManagedThread } from "../../src/context-steward/services/thread-service.js";
+import { updateGeneratedThreadViewOutputMetadata, openOrCreateManagedThread } from "../../src/context-steward/services/thread-service.js";
 import { mapPiMessageEnd } from "../../src/context-steward/pi/pi-message-mapper.js";
 import { FileThreadStore } from "../../src/context-steward/store/file-thread-store.js";
 import {
@@ -166,7 +166,7 @@ async function listManagedThreadDirs(resolveStorePath: (...segments: string[]) =
 test("creates a fixture from a managed thread with thread-shaped records", async () => {
   await withTempThreadStore(async ({ storeRootDir, resolveStorePath }) => {
     const { store, thread, ctx } = await createManagedThread(storeRootDir);
-    await updateGeneratedSessionMetadata({
+    await updateGeneratedThreadViewOutputMetadata({
       store,
       threadId: thread.threadId,
       generatedFilePath: "/tmp/generated/session-001.jsonl",

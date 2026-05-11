@@ -33,7 +33,6 @@ export interface GeneratedThreadViewOutputMetadataInput {
   generatedOutput?: GeneratedOutputMetadata;
   now?: () => Date;
 }
-export interface GeneratedSessionMetadataInput extends GeneratedThreadViewOutputMetadataInput {}
 
 const serializedThreadOperationQueues = new Map<string, Promise<void>>();
 
@@ -192,14 +191,14 @@ function buildNextThreadViewOutputSummary(input: {
   thread: ThreadRecord;
   generatedFilePath?: string;
   generatedOutput?: GeneratedOutputMetadata;
-}): ThreadRecord["projectionSummary"] {
+}): ThreadRecord["threadViewOutputSummary"] {
   const nextThreadViewOutputSummary =
-    input.thread.projectionSummary.count > 0
-      ? input.thread.projectionSummary
+    input.thread.threadViewOutputSummary.count > 0
+      ? input.thread.threadViewOutputSummary
       : {
-          ...input.thread.projectionSummary,
+          ...input.thread.threadViewOutputSummary,
           currentGeneratedFilePath:
-            input.generatedFilePath ?? input.thread.projectionSummary.currentGeneratedFilePath,
+            input.generatedFilePath ?? input.thread.threadViewOutputSummary.currentGeneratedFilePath,
         };
 
   return input.generatedOutput === undefined
@@ -264,27 +263,11 @@ export async function updateGeneratedThreadViewOutputMetadata(
           ...refreshedThread.value.thread.target,
           currentGeneratedFilePath: nextGeneratedFilePath,
         },
-        // Persisted field name stays `projectionSummary` for on-disk compatibility.
-        projectionSummary:
-          nextThreadViewOutputSummary,
+        threadViewOutputSummary: nextThreadViewOutputSummary,
         updatedAt: nowIso(input.now),
       },
     });
   });
-}
-
-export async function updateGeneratedSessionMetadata(
-  input: GeneratedSessionMetadataInput,
-): Promise<StewardResult<ThreadRecord>> {
-  return updateGeneratedThreadViewOutputMetadata(input);
-}
-
-export function nextProjectionSummary(input: {
-  thread: ThreadRecord;
-  generatedFilePath?: string;
-  generatedOutput?: GeneratedOutputMetadata;
-}): ThreadRecord["projectionSummary"] {
-  return buildNextThreadViewOutputSummary(input);
 }
 
 export async function readThreadTurns(store: ThreadStore, threadId: string): Promise<StewardResult<TurnRecord[]>> {

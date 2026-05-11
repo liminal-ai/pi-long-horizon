@@ -7,7 +7,7 @@ import type { StewardErrorCode, StewardResult } from "../../src/context-steward/
 import { deriveTargetSessionKeys } from "../../src/context-steward/domain/ids.js";
 import type { ActorRecord, MessageRecord, ThreadRecord } from "../../src/context-steward/domain/records.js";
 import { createStewardRootIndex } from "../../src/context-steward/domain/records.js";
-import { appendSourceMessage, declareThreadActor, openOrCreateManagedThread, updateGeneratedSessionMetadata } from "../../src/context-steward/services/thread-service.js";
+import { appendSourceMessage, declareThreadActor, openOrCreateManagedThread, updateGeneratedThreadViewOutputMetadata } from "../../src/context-steward/services/thread-service.js";
 import { makeActorRecord, makeMessageRecord, makeProjectionRevisionRecord, makeThreadTarget, makeTurnRecord } from "../../src/context-steward/test/fixtures.js";
 import { withTempThreadStore } from "../../src/context-steward/test/temp-store.js";
 import { FileThreadStore } from "../../src/context-steward/store/file-thread-store.js";
@@ -747,7 +747,7 @@ test("records the generated PI session file path on the thread target metadata",
     const generatedFilePath = resolveProjectPath("generated", "session-001.jsonl");
 
     expectOk(
-      await updateGeneratedSessionMetadata({
+      await updateGeneratedThreadViewOutputMetadata({
         store,
         threadId: thread.threadId,
         generatedFilePath,
@@ -776,7 +776,7 @@ test("represents a missing generated PI session file path explicitly", async () 
 
     const snapshot = expectOk(await store.openThread(thread.threadId));
     assert.equal(snapshot.thread.target.currentGeneratedFilePath, undefined);
-    assert.equal(snapshot.thread.projectionSummary.currentGeneratedFilePath, undefined);
+    assert.equal(snapshot.thread.threadViewOutputSummary.currentGeneratedFilePath, undefined);
   });
 });
 
@@ -820,7 +820,7 @@ test("reads canonical source ordering instead of any generated file ordering", a
       await openOrCreateManagedThread({ target: await makeManagedTarget(resolveProjectPath) }, store),
     );
     expectOk(
-      await updateGeneratedSessionMetadata({
+      await updateGeneratedThreadViewOutputMetadata({
         store,
         threadId: thread.threadId,
         generatedFilePath,
@@ -911,7 +911,7 @@ test("keeps the active generated path separate from the latest projection summar
     );
 
     expectOk(
-      await updateGeneratedSessionMetadata({
+      await updateGeneratedThreadViewOutputMetadata({
         store,
         threadId: thread.threadId,
         generatedFilePath: activeGeneratedPath,
@@ -921,9 +921,9 @@ test("keeps the active generated path separate from the latest projection summar
     const snapshot = expectOk(await store.openThread(thread.threadId));
 
     assert.equal(snapshot.thread.target.currentGeneratedFilePath, activeGeneratedPath);
-    assert.equal(snapshot.thread.projectionSummary.currentGeneratedFilePath, latestProjectionPath);
-    assert.equal(snapshot.thread.projectionSummary.count, 1);
-    assert.equal(snapshot.thread.projectionSummary.lastRevisionStatus, "available");
+    assert.equal(snapshot.thread.threadViewOutputSummary.currentGeneratedFilePath, latestProjectionPath);
+    assert.equal(snapshot.thread.threadViewOutputSummary.count, 1);
+    assert.equal(snapshot.thread.threadViewOutputSummary.lastRevisionStatus, "available");
   });
 });
 
@@ -937,7 +937,7 @@ test("returns refreshed projection summary details after recording a revision th
     const activeGeneratedPath = resolveProjectPath("generated", "projection-active.jsonl");
 
     const updatedThread = expectOk(
-      await updateGeneratedSessionMetadata({
+      await updateGeneratedThreadViewOutputMetadata({
         store,
         threadId: thread.threadId,
         generatedFilePath: activeGeneratedPath,
@@ -951,9 +951,9 @@ test("returns refreshed projection summary details after recording a revision th
     );
 
     assert.equal(updatedThread.target.currentGeneratedFilePath, activeGeneratedPath);
-    assert.equal(updatedThread.projectionSummary.currentGeneratedFilePath, latestProjectionPath);
-    assert.equal(updatedThread.projectionSummary.count, 1);
-    assert.equal(updatedThread.projectionSummary.lastRevisionStatus, "stale");
+    assert.equal(updatedThread.threadViewOutputSummary.currentGeneratedFilePath, latestProjectionPath);
+    assert.equal(updatedThread.threadViewOutputSummary.count, 1);
+    assert.equal(updatedThread.threadViewOutputSummary.lastRevisionStatus, "stale");
   });
 });
 
@@ -1060,7 +1060,7 @@ test("leaves the last committed metadata file intact when a temp metadata write 
     const before = await readFile(threadJsonPath, "utf8");
 
     store.failNextThreadMetadataWrite = true;
-    const result = await updateGeneratedSessionMetadata({
+    const result = await updateGeneratedThreadViewOutputMetadata({
       store,
       threadId: thread.threadId,
       generatedFilePath: "/tmp/generated/failure-case.jsonl",
@@ -1069,6 +1069,38 @@ test("leaves the last committed metadata file intact when a temp metadata write 
 
     expectIssueCode(result, "STORE_UNAVAILABLE");
     assert.equal(after, before);
+  });
+});
+
+test("writes thread view output summary with legacy projection summary read compatibility", async () => {
+  await withTempThreadStore(async ({ storeRootDir, resolveProjectPath, resolveStorePath }) => {
+    const store = new FileThreadStore(storeRootDir);
+    const thread = expectOk(await openOrCreateManagedThread({ target: await makeManagedTarget(resolveProjectPath) }, store));
+    const threadJsonPath = resolveStorePath("threads", thread.threadId, "thread.json");
+    const generatedFilePath = resolveProjectPath("generated", "thread-view-output.jsonl");
+
+    expectOk(
+      await updateGeneratedThreadViewOutputMetadata({
+        store,
+        threadId: thread.threadId,
+        generatedFilePath,
+      }),
+    );
+
+    const legacyThreadViewOutputSummaryField = `projection${"Summary"}`;
+    const persisted = JSON.parse(await readFile(threadJsonPath, "utf8")) as {
+      threadViewOutputSummary?: ThreadRecord["threadViewOutputSummary"];
+      [key: string]: unknown;
+    };
+    assert.equal(persisted[legacyThreadViewOutputSummaryField], undefined);
+    assert.equal(persisted.threadViewOutputSummary?.currentGeneratedFilePath, generatedFilePath);
+
+    persisted[legacyThreadViewOutputSummaryField] = persisted.threadViewOutputSummary;
+    delete persisted.threadViewOutputSummary;
+    await writeFile(threadJsonPath, `${JSON.stringify(persisted, null, 2)}\n`);
+
+    const reopened = expectOk(await store.openThread(thread.threadId));
+    assert.equal(reopened.thread.threadViewOutputSummary.currentGeneratedFilePath, generatedFilePath);
   });
 });
 

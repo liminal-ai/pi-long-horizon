@@ -128,10 +128,6 @@ export function createThreadViewOutputRevisionId(): string {
   return createGeneratedId("projection");
 }
 
-export function createProjectionRevisionId(): string {
-  return createThreadViewOutputRevisionId();
-}
-
 export function createFixtureId(): string {
   return createGeneratedId("fixture");
 }

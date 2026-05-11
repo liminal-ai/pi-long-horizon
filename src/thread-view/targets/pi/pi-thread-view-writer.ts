@@ -320,13 +320,13 @@ function serializeSessionMessageEntry(
   };
 }
 
-function serializeProjectionMetadataEntry(
+function serializeThreadViewOutputMetadataEntry(
   input: WritePiThreadViewFileInput,
   timestamp: string,
 ): CustomEntry<Record<string, unknown>> {
   return {
     type: "custom",
-    customType: "pi-long-horizon.thread-view.projection",
+    customType: "pi-long-horizon.thread-view.output",
     data: {
       threadId: input.threadId,
       threadViewId: input.threadViewId,
@@ -340,7 +340,7 @@ function serializeProjectionMetadataEntry(
         metadata: entry.metadata ? structuredClone(entry.metadata) : undefined,
       })),
     },
-    id: "projection-metadata-001",
+    id: "thread-view-output-metadata-001",
     parentId: null,
     timestamp,
   };
@@ -355,17 +355,17 @@ function serializeFileContent(input: WritePiThreadViewFileInput, timestamp: stri
     cwd: input.file.cwd,
     parentSession: input.file.parentSessionId,
   };
-  const projectionMetadata = serializeProjectionMetadataEntry(input, timestamp);
+  const threadViewOutputMetadata = serializeThreadViewOutputMetadataEntry(input, timestamp);
   const messageEntries = input.file.entries.map((entry, index) =>
     serializeSessionMessageEntry(
       entry,
       index,
-      index === 0 ? projectionMetadata.id : `entry-${String(index).padStart(3, "0")}`,
+      index === 0 ? threadViewOutputMetadata.id : `entry-${String(index).padStart(3, "0")}`,
       timestamp,
     ),
   );
 
-  return [header, projectionMetadata, ...messageEntries].map((entry) => JSON.stringify(entry)).join("\n") + "\n";
+  return [header, threadViewOutputMetadata, ...messageEntries].map((entry) => JSON.stringify(entry)).join("\n") + "\n";
 }
 
 async function writeAtomic(filePath: string, content: string, fsImpl: PiThreadViewWriterFs): Promise<void> {

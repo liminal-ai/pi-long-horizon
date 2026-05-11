@@ -9,7 +9,7 @@ import type { StewardResult } from "../../src/context-steward/domain/errors.js";
 import { mapPiMessageEnd } from "../../src/context-steward/pi/pi-message-mapper.js";
 import { captureFinalizedActivity } from "../../src/context-steward/services/capture-service.js";
 import { createRealSessionFixture } from "../../src/context-steward/services/fixture-service.js";
-import { openOrCreateManagedThread, updateGeneratedSessionMetadata } from "../../src/context-steward/services/thread-service.js";
+import { openOrCreateManagedThread, updateGeneratedThreadViewOutputMetadata } from "../../src/context-steward/services/thread-service.js";
 import { FileThreadStore } from "../../src/context-steward/store/file-thread-store.js";
 import {
   DEFAULT_TEST_TIMESTAMP,
@@ -298,7 +298,7 @@ test("stale temp metadata file does not replace the last committed snapshot", as
     const store = new FileThreadStore(storeRootDir);
     const thread = expectOk(await openOrCreateManagedThread({ target }, store));
     expectOk(
-      await updateGeneratedSessionMetadata({
+      await updateGeneratedThreadViewOutputMetadata({
         store,
         threadId: thread.threadId,
         generatedFilePath: "/tmp/generated/committed-session.jsonl",

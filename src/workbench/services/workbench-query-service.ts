@@ -436,7 +436,7 @@ export class WorkbenchQueryService {
     const hasAsyncThreadState =
       input.snapshot.turns.some((turn) => turn.smooth !== undefined) ||
       input.snapshot.projections.length > 0 ||
-      input.snapshot.thread.projectionSummary.generatedOutput !== undefined;
+      input.snapshot.thread.threadViewOutputSummary.generatedOutput !== undefined;
     if (!hasAsyncThreadState) {
       const chunks = await this.threadStore.readChunks(input.threadId);
       if (!chunks.ok) {
@@ -521,7 +521,7 @@ export class WorkbenchQueryService {
         refreshedThreadSnapshot.value.thread,
         listedViews.value,
         mergeWorkbenchIssues(listedViews.issues, readiness.blockers, asyncThreadBlockers),
-        refreshedThreadSnapshot.value.thread.projectionSummary.generatedOutput,
+        refreshedThreadSnapshot.value.thread.threadViewOutputSummary.generatedOutput,
       ),
     );
   }
@@ -537,7 +537,7 @@ export class WorkbenchQueryService {
       fixtureSnapshot.value.snapshot.thread,
       [],
       readiness.blockers,
-      fixtureSnapshot.value.snapshot.thread.projectionSummary.generatedOutput,
+      fixtureSnapshot.value.snapshot.thread.threadViewOutputSummary.generatedOutput,
     );
 
     return okWorkbenchResult({
