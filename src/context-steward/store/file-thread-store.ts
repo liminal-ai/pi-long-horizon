@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { appendFile, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 
 import { fail, ok, type StewardIssue, type StewardResult } from "../domain/errors.js";
 import {
@@ -59,6 +60,13 @@ interface ReconciledIndex {
   changed: boolean;
 }
 
+interface ThreadMutationLeaseFile {
+  token: string;
+  pid: number;
+  acquiredAt: string;
+  expiresAt: string;
+}
+
 function cloneIssue(issue: StewardIssue): StewardIssue {
   return {
     ...issue,
@@ -92,21 +100,34 @@ function staleSourceRevisionIssue(thread: ThreadRecord, expectedSourceRevision: 
   };
 }
 
+function staleTurnsRevisionIssue(thread: ThreadRecord, expectedTurnsRevision: number): StewardIssue {
+  return {
+    code: "STALE_SOURCE_REVISION",
+    message: `Thread ${thread.threadId} turns revision ${thread.turnsRevision} does not match expected ${expectedTurnsRevision}.`,
+    threadId: thread.threadId,
+    cause: "turns_revision",
+  };
+}
+
 function sortMessages(messages: readonly MessageRecord[]): MessageRecord[] {
   return [...messages].sort((left, right) => left.sourceOrder - right.sourceOrder);
 }
 
 export class FileThreadStore implements ThreadStore {
   private static readonly globalThreadQueues = new Map<string, Promise<void>>();
+  private static readonly mutationLeaseTimeoutMs = 30_000;
+  private static readonly mutationLeaseRetryMs = 10;
 
   private readonly threadsDir: string;
   private readonly fixturesDir: string;
   private readonly indexPath: string;
+  private readonly mutationLocksDir: string;
 
   constructor(private readonly rootDir: string) {
     this.threadsDir = join(rootDir, "threads");
     this.fixturesDir = join(rootDir, "fixtures");
     this.indexPath = join(rootDir, "index.json");
+    this.mutationLocksDir = join(rootDir, ".thread-mutation-locks");
   }
 
   async createThread(input: CreateThreadInput): Promise<StewardResult<ThreadRecord>> {
@@ -354,10 +375,15 @@ export class FileThreadStore implements ThreadStore {
         });
       }
 
+      if (thread.value.turnsRevision !== input.expectedTurnsRevision) {
+        return fail(staleTurnsRevisionIssue(thread.value, input.expectedTurnsRevision));
+      }
+
       const paths = this.getThreadPaths(input.threadId);
       await this.writeJsonAtomic(paths.turns, structuredClone(input.turns));
 
       const nextThread = structuredClone(thread.value);
+      nextThread.turnsRevision = thread.value.turnsRevision + 1;
       nextThread.status.turnState = input.turnState;
       nextThread.updatedAt = new Date().toISOString();
       await this.writeJsonAtomic(paths.thread, nextThread);
@@ -581,6 +607,11 @@ export class FileThreadStore implements ThreadStore {
     threadId: string,
     run: () => Promise<StewardResult<T>>,
   ): Promise<StewardResult<T>> {
+    const ready = await this.ensureStoreReady();
+    if (!ready.ok) {
+      return ready;
+    }
+
     const previous = FileThreadStore.globalThreadQueues.get(threadId) ?? Promise.resolve();
     let releaseQueue!: () => void;
     const current = new Promise<void>((resolve) => {
@@ -590,12 +621,20 @@ export class FileThreadStore implements ThreadStore {
     FileThreadStore.globalThreadQueues.set(threadId, chain);
 
     await previous.catch(() => undefined);
+    const releaseLease = await this.acquireThreadMutationLease(threadId);
 
     try {
+      if (!releaseLease.ok) {
+        return releaseLease;
+      }
+
       return await run();
     } catch (error) {
       return fail(storeUnavailableIssue(error, "thread mutation", threadId));
     } finally {
+      if (releaseLease.ok) {
+        await releaseLease.value();
+      }
       releaseQueue();
       if (FileThreadStore.globalThreadQueues.get(threadId) === chain) {
         FileThreadStore.globalThreadQueues.delete(threadId);
@@ -608,9 +647,11 @@ export class FileThreadStore implements ThreadStore {
       await mkdir(this.rootDir, { recursive: true });
       await mkdir(this.threadsDir, { recursive: true });
       await mkdir(this.fixturesDir, { recursive: true });
+      await mkdir(this.mutationLocksDir, { recursive: true });
       await this.cleanupStaleTempFiles(this.rootDir);
       await this.cleanupNestedTempFiles(this.threadsDir);
       await this.cleanupNestedTempFiles(this.fixturesDir);
+      await this.cleanupExpiredThreadMutationLeases();
 
       const reconciled = await this.reconcileRootIndex();
       if (!reconciled.ok) {
@@ -746,6 +787,7 @@ export class FileThreadStore implements ThreadStore {
     const lastMessage = messages[messages.length - 1];
     nextThread.sourceRevision = Math.max(nextThread.sourceRevision, lastMessage?.sourceRevision ?? 0);
     nextThread.messageHighWatermark = Math.max(nextThread.messageHighWatermark, lastMessage?.sourceOrder ?? 0);
+    nextThread.turnsRevision = Math.max(nextThread.turnsRevision ?? 0, 0);
 
     for (const message of messages) {
       const targetEventKey = message.targetMetadata?.targetEventKey;
@@ -775,6 +817,119 @@ export class FileThreadStore implements ThreadStore {
     }
 
     return nextThread;
+  }
+
+  private threadMutationLockPath(threadId: string): string {
+    return join(this.mutationLocksDir, `${threadId}.lock`);
+  }
+
+  private async acquireThreadMutationLease(threadId: string): Promise<StewardResult<() => Promise<void>>> {
+    const lockPath = this.threadMutationLockPath(threadId);
+    const deadline = Date.now() + FileThreadStore.mutationLeaseTimeoutMs;
+    const token = randomUUID();
+    let released = false;
+
+    while (Date.now() <= deadline) {
+      const lease: ThreadMutationLeaseFile = {
+        token,
+        pid: process.pid,
+        acquiredAt: new Date().toISOString(),
+        expiresAt: new Date(Date.now() + FileThreadStore.mutationLeaseTimeoutMs).toISOString(),
+      };
+
+      try {
+        const handle = await open(lockPath, "wx");
+        try {
+          await handle.writeFile(`${JSON.stringify(lease)}\n`, "utf8");
+        } finally {
+          await handle.close();
+        }
+
+        return ok(async () => {
+          if (released) {
+            return;
+          }
+
+          released = true;
+
+          try {
+            const current = await this.readThreadMutationLeaseFile(lockPath);
+            if (!current || current.token !== token) {
+              return;
+            }
+          } catch {
+            return;
+          }
+
+          await rm(lockPath, { force: true });
+        });
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code !== "EEXIST") {
+          return fail(storeUnavailableIssue(error, "thread mutation lease", threadId));
+        }
+      }
+
+      await this.releaseExpiredThreadMutationLease(lockPath);
+      await sleep(FileThreadStore.mutationLeaseRetryMs);
+    }
+
+    return fail({
+      code: "STORE_UNAVAILABLE",
+      message: `Timed out acquiring thread mutation lease for ${threadId}.`,
+      threadId,
+    });
+  }
+
+  private async cleanupExpiredThreadMutationLeases(): Promise<void> {
+    const entries = await readdir(this.mutationLocksDir, { withFileTypes: true });
+
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith(".lock")) {
+        continue;
+      }
+
+      await this.releaseExpiredThreadMutationLease(join(this.mutationLocksDir, entry.name));
+    }
+  }
+
+  private async releaseExpiredThreadMutationLease(lockPath: string): Promise<void> {
+    try {
+      const lease = await this.readThreadMutationLeaseFile(lockPath);
+      const expired = lease ? Date.parse(lease.expiresAt) <= Date.now() : true;
+
+      if (!expired) {
+        return;
+      }
+
+      await rm(lockPath, { force: true });
+    } catch (error) {
+      const fileStat = await stat(lockPath).catch(() => undefined);
+      if (!fileStat) {
+        return;
+      }
+
+      if (Date.now() - fileStat.mtimeMs > FileThreadStore.mutationLeaseTimeoutMs) {
+        await rm(lockPath, { force: true });
+      }
+    }
+  }
+
+  private async readThreadMutationLeaseFile(lockPath: string): Promise<ThreadMutationLeaseFile | undefined> {
+    const content = await readFile(lockPath, "utf8").catch((error: unknown) => {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") {
+        return undefined;
+      }
+
+      throw error;
+    });
+
+    if (!content) {
+      return undefined;
+    }
+
+    return JSON.parse(content) as ThreadMutationLeaseFile;
   }
 
   private async readJsonFile<T>(filePath: string, fallback?: T): Promise<T> {

@@ -54,6 +54,7 @@ export interface ThreadRecord {
   updatedAt: string;
   sourceRevision: number;
   messageHighWatermark: number;
+  turnsRevision: number;
   activeThreadViewId?: string;
   target: ThreadTargetMetadata;
   importSummary: {
@@ -128,8 +129,12 @@ export interface TurnRecord {
 }
 
 export interface TurnSmoothRecord {
-  text: string;
+  status?: "ready" | "missing" | "stale" | "invalid";
+  text?: string;
   tokenCount?: number;
+  strategy?: "deterministic_marker_sections_v1";
+  generatedAt?: string;
+  sourceRevision?: number;
 }
 
 export interface RepairMetadata {
@@ -206,6 +211,7 @@ export interface CreateThreadRecordInput {
   updatedAt?: string;
   sourceRevision?: number;
   messageHighWatermark?: number;
+  turnsRevision?: number;
   importSummary?: Partial<ThreadRecord["importSummary"]>;
   projectionSummary?: Partial<ThreadRecord["projectionSummary"]>;
   status?: Partial<ThreadRecord["status"]>;
@@ -257,6 +263,7 @@ export function createThreadRecord(input: CreateThreadRecordInput): ThreadRecord
     updatedAt,
     sourceRevision: input.sourceRevision ?? 0,
     messageHighWatermark: input.messageHighWatermark ?? 0,
+    turnsRevision: input.turnsRevision ?? 0,
     target: { ...input.target },
     importSummary,
     projectionSummary,

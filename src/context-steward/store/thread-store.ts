@@ -54,6 +54,7 @@ export interface WriteTurnsInput {
   threadId: string;
   expectedSourceRevision: number;
   expectedMessageHighWatermark: number;
+  expectedTurnsRevision: number;
   turns: TurnRecord[];
   turnState: ThreadRecord["status"]["turnState"];
 }

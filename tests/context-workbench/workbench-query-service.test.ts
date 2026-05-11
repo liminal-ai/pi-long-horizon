@@ -147,6 +147,7 @@ async function writeThreadTurns(store: FileThreadStore, threadId: string, turns:
       threadId,
       expectedSourceRevision: snapshot.thread.sourceRevision,
       expectedMessageHighWatermark: snapshot.thread.messageHighWatermark,
+      expectedTurnsRevision: snapshot.thread.turnsRevision,
       turns,
       turnState: "ready",
     }),

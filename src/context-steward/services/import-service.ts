@@ -217,6 +217,7 @@ async function finalizeThreadTurnState(input: {
       threadId: input.thread.threadId,
       expectedSourceRevision: input.thread.sourceRevision,
       expectedMessageHighWatermark: input.thread.messageHighWatermark,
+      expectedTurnsRevision: input.thread.turnsRevision,
       turns: input.turns,
       turnState: input.status,
     });

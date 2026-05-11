@@ -1,3 +1,5 @@
+import type { TurnSmoothRecord } from "../../domain/records.js";
+
 export const SMOOTH_TURN_STATUSES = ["ready", "missing", "stale", "invalid"] as const;
 export const SMOOTH_TURN_STRATEGIES = ["deterministic_marker_sections_v1"] as const;
 
@@ -20,10 +22,22 @@ export interface EnsureSmoothTurnInput {
   turnId: string;
 }
 
+export interface ReadSmoothTurnStateInput {
+  threadId: string;
+  turnId: string;
+}
+
 export interface EnsureSmoothTurnResult {
   turnId: string;
   smoothStatus: SmoothTurnStatus;
   smoothTokenCount?: number;
+}
+
+export interface ReadSmoothTurnStateResult extends EnsureSmoothTurnResult {
+  smoothText?: string;
+  smoothStrategy?: SmoothTurnStrategy;
+  generatedAt?: string;
+  sourceRevision?: number;
 }
 
 export function normalizeDeterministicText(text: string): string {
@@ -38,5 +52,16 @@ export function estimateDeterministicTokenCount(text: string): number {
 export function cloneSmoothTurnState(record: SmoothTurnState): SmoothTurnState {
   return {
     ...record,
+  };
+}
+
+export function toTurnSmoothRecord(record: SmoothTurnState): TurnSmoothRecord {
+  return {
+    status: record.status,
+    text: record.text,
+    tokenCount: record.tokenCount,
+    strategy: record.strategy,
+    generatedAt: record.generatedAt,
+    sourceRevision: record.sourceRevision,
   };
 }

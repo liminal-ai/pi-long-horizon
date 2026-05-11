@@ -144,6 +144,7 @@ async function clearTurnState(store: FileThreadStore, threadId: string) {
       threadId,
       expectedSourceRevision: snapshot.thread.sourceRevision,
       expectedMessageHighWatermark: snapshot.thread.messageHighWatermark,
+      expectedTurnsRevision: snapshot.thread.turnsRevision,
       turns: [],
       turnState: "repair_needed",
     }),

@@ -3,7 +3,7 @@
 ## Run Overview
 - State: BETWEEN_STORIES
 - Spec Pack Root: /Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/03-deterministic-band-and-projection-mechanics
-- Current Story: 01-deterministic-smooth-turns
+- Current Story: 02-deterministic-chunk-lifecycle
 - Current Phase: none
 
 ## Run Configuration
@@ -73,10 +73,30 @@
 - Baseline Before: 560 (test files)
 - Baseline After: 560 (test files — 4 new foundation tests added, no regressions)
 
+### 01-deterministic-smooth-turns
+- Story Title: Story 1: Deterministic Smooth Turns
+- Implementor Evidence: artifacts/01-deterministic-smooth-turns/003-implementor.json
+- Verifier Evidence:
+  - artifacts/01-deterministic-smooth-turns/005-verify.json (initial — revise, smooth-turn-stale-write-clobber)
+  - artifacts/01-deterministic-smooth-turns/006-verify.json (follow-up — revise, finding persisted)
+  - artifacts/01-deterministic-smooth-turns/007-verify.json (fresh pass — pass)
+- Quick Fix Evidence:
+  - artifacts/quick-fix/002-quick-fix.json (first fix attempt)
+  - artifacts/quick-fix/003-quick-fix.json (second fix attempt — resolved)
+- Final Package: artifacts/01-deterministic-smooth-turns/story-lead/001-final-package.json
+- Story Gate: `npm run verify` — pass (207 unit tests, 0 failures)
+- Epic Gate: `npm run verify-all` — pass (207 unit + 8 integration + 33 E2E = 248 tests, 0 failures)
+- Dispositions:
+  - smooth-turn-stale-write-clobber: fixed (stale whole-snapshot writes could clobber smooth-turn persistence; required two quick-fix rounds)
+- Open Risks:
+  - none
+- Baseline Before: 561 (test files)
+- Baseline After: 562 (test files — 11 new smooth-turn tests added, no regressions)
+
 ## Cumulative Baselines
-- Baseline Before Current Story: 560
+- Baseline Before Current Story: 561
 - Expected After Current Story: TBD
-- Latest Actual Total: 560 (test files); 237 test cases (196 unit + 8 integration + 33 E2E)
+- Latest Actual Total: 562 (test files); 248 test cases (207 unit + 8 integration + 33 E2E)
 
 ## Epic Closeout
 - Current Epic Review Artifact: none

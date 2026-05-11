@@ -185,6 +185,7 @@ async function seedMaterializerThread(storeRootDir: string) {
       threadId: thread.threadId,
       expectedSourceRevision: snapshot.thread.sourceRevision,
       expectedMessageHighWatermark: snapshot.thread.messageHighWatermark,
+      expectedTurnsRevision: snapshot.thread.turnsRevision,
       turns: [
         makeTurnRecord({
           threadId: thread.threadId,

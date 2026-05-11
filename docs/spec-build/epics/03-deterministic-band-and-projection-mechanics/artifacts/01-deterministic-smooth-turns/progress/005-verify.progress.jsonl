@@ -1,0 +1,13 @@
+{"timestamp":"2026-05-11T02:46:21.425Z","command":"story-verify","phase":"verifier-initial","event":"command-started","summary":"story-verify started."}
+{"timestamp":"2026-05-11T02:46:21.434Z","command":"story-verify","phase":"verifier-initial","event":"verifier-started","summary":"Story verifier started for 01-deterministic-smooth-turns."}
+{"timestamp":"2026-05-11T02:46:21.444Z","command":"story-verify","phase":"verifier-initial","event":"provider-spawned","summary":"Provider spawned with pid 62297.","metadata":{"pid":62297}}
+{"timestamp":"2026-05-11T02:46:21.531Z","command":"story-verify","phase":"verifier-initial","event":"first-output-received","summary":"First provider stderr output received.","metadata":{"stream":"stderr"}}
+{"timestamp":"2026-05-11T02:46:52.015Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-11T02:47:24.099Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-11T02:48:05.745Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-11T02:49:02.626Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-11T02:50:15.729Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-11T02:52:38.575Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-11T02:52:38.741Z","command":"story-verify","phase":"verifier-initial","event":"provider-exit","summary":"Provider exited with code 0.","metadata":{"exitCode":0,"signal":null,"elapsedMs":377297,"configuredTimeoutMs":3600000}}
+{"timestamp":"2026-05-11T02:52:38.746Z","command":"story-verify","phase":"verifier-initial","event":"verifier-completed","summary":"Story verifier completed for 01-deterministic-smooth-turns.","metadata":{"outcome":"revise"}}
+{"timestamp":"2026-05-11T02:52:38.764Z","command":"story-verify","phase":"finalizing","event":"completed","summary":"story-verify completed for 01-deterministic-smooth-turns with outcome revise.","metadata":{"outcome":"revise","verifiersCompleted":1}}

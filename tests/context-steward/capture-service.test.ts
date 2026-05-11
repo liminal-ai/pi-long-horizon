@@ -995,6 +995,7 @@ test("returns updated turn data when a downstream turn writer succeeds", async (
             threadId,
             expectedSourceRevision: message.sourceRevision,
             expectedMessageHighWatermark: message.sourceOrder,
+            expectedTurnsRevision: thread.turnsRevision,
             turns,
             turnState: "ready",
           });

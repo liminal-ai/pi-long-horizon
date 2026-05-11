@@ -239,6 +239,11 @@ export function applyCapturedMessageToTurns(input: ApplyTurnInput): StewardResul
 export async function writeCapturedMessageTurns(
   input: CapturedTurnWriteInput,
 ): Promise<StewardResult<CapturedTurnWriteResult>> {
+  const mutationCheck = await input.store.assertCanMutate(input.threadId);
+  if (!mutationCheck.ok) {
+    return mutationCheck;
+  }
+
   const existingTurns = await input.store.readTurns(input.threadId);
   if (!existingTurns.ok) {
     return existingTurns;
@@ -256,6 +261,7 @@ export async function writeCapturedMessageTurns(
     threadId: input.threadId,
     expectedSourceRevision: input.message.sourceRevision,
     expectedMessageHighWatermark: input.message.sourceOrder,
+    expectedTurnsRevision: mutationCheck.value.turnsRevision,
     turns: appliedTurns.value,
     turnState: "ready",
   });

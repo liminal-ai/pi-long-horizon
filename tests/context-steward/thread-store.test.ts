@@ -369,6 +369,7 @@ test("allows mutation when the thread uses a supported schema version", async ()
         threadId: thread.threadId,
         expectedSourceRevision: appended.sourceRevision,
         expectedMessageHighWatermark: appended.sourceOrder,
+        expectedTurnsRevision: 0,
         turnState: "ready",
         turns: [
           makeTurnRecord({
@@ -413,6 +414,7 @@ test("blocks append and turn writes for unsupported schema versions", async () =
       threadId: thread.threadId,
       expectedSourceRevision: 0,
       expectedMessageHighWatermark: 0,
+      expectedTurnsRevision: 0,
       turnState: "ready",
       turns: [],
     });
@@ -631,6 +633,7 @@ test("turn state changes do not mutate stored message content", async () => {
         threadId: thread.threadId,
         expectedSourceRevision: prompt.sourceRevision,
         expectedMessageHighWatermark: prompt.sourceOrder,
+        expectedTurnsRevision: 0,
         turnState: "ready",
         turns: [
           makeTurnRecord({
@@ -651,6 +654,7 @@ test("turn state changes do not mutate stored message content", async () => {
         threadId: thread.threadId,
         expectedSourceRevision: prompt.sourceRevision,
         expectedMessageHighWatermark: prompt.sourceOrder,
+        expectedTurnsRevision: 1,
         turnState: "ready",
         turns: [
           makeTurnRecord({
@@ -699,6 +703,7 @@ test("repair-style turn rewrites do not mutate stored message content or source 
         threadId: thread.threadId,
         expectedSourceRevision: response.sourceRevision,
         expectedMessageHighWatermark: response.sourceOrder,
+        expectedTurnsRevision: 0,
         turnState: "repair_needed",
         turns: [],
       }),
@@ -709,6 +714,7 @@ test("repair-style turn rewrites do not mutate stored message content or source 
         threadId: thread.threadId,
         expectedSourceRevision: response.sourceRevision,
         expectedMessageHighWatermark: response.sourceOrder,
+        expectedTurnsRevision: 1,
         turnState: "ready",
         turns: [
           makeTurnRecord({

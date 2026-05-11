@@ -236,6 +236,7 @@ export function makeThreadRecord(overrides: Partial<ThreadRecord> = {}): ThreadR
     updatedAt: overrides.updatedAt,
     sourceRevision: overrides.sourceRevision,
     messageHighWatermark: overrides.messageHighWatermark,
+    turnsRevision: overrides.turnsRevision,
     importSummary: overrides.importSummary,
     projectionSummary: overrides.projectionSummary,
     status: overrides.status,

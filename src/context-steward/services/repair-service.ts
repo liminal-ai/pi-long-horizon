@@ -174,6 +174,7 @@ export async function repairTurnState(
       threadId: input.threadId,
       expectedSourceRevision: snapshot.value.thread.sourceRevision,
       expectedMessageHighWatermark: snapshot.value.thread.messageHighWatermark,
+      expectedTurnsRevision: snapshot.value.thread.turnsRevision,
       turns: nextTurns,
       turnState: nextTurnState,
     });
