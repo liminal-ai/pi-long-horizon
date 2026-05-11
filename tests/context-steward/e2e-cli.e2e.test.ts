@@ -199,6 +199,7 @@ describe("e2e: new session creates artifacts", () => {
     const files = (await readdir(threadDir)).sort();
     assert.deepEqual(files, [
       "actors.json",
+      "chunks.json",
       "imports.json",
       "messages.jsonl",
       "projections.json",

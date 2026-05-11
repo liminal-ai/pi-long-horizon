@@ -3,7 +3,7 @@
 ## Run Overview
 - State: BETWEEN_STORIES
 - Spec Pack Root: /Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/03-deterministic-band-and-projection-mechanics
-- Current Story: 02-deterministic-chunk-lifecycle
+- Current Story: 03-placeholder-lower-fidelity-outputs
 - Current Phase: none
 
 ## Run Configuration
@@ -93,10 +93,25 @@
 - Baseline Before: 561 (test files)
 - Baseline After: 562 (test files — 11 new smooth-turn tests added, no regressions)
 
+### 02-deterministic-chunk-lifecycle
+- Story Title: Story 2: Deterministic Chunk Lifecycle
+- Implementor Evidence: artifacts/02-deterministic-chunk-lifecycle/003-implementor.json
+- Verifier Evidence:
+  - artifacts/02-deterministic-chunk-lifecycle/005-verify.json (initial — pass)
+- Final Package: artifacts/02-deterministic-chunk-lifecycle/story-lead/001-final-package.json
+- Story Gate: `npm run verify` — pass (219 unit tests, 0 failures)
+- Epic Gate: `npm run verify-all` — pass (219 unit + 8 integration + 33 E2E = 260 tests, 0 failures)
+- Dispositions:
+  - none (clean first-pass verification)
+- Open Risks:
+  - none
+- Baseline Before: 562 (test files)
+- Baseline After: 563 (test files — 12 new chunk lifecycle tests added, no regressions)
+
 ## Cumulative Baselines
-- Baseline Before Current Story: 561
+- Baseline Before Current Story: 563
 - Expected After Current Story: TBD
-- Latest Actual Total: 562 (test files); 248 test cases (207 unit + 8 integration + 33 E2E)
+- Latest Actual Total: 563 (test files); 260 test cases (219 unit + 8 integration + 33 E2E)
 
 ## Epic Closeout
 - Current Epic Review Artifact: none

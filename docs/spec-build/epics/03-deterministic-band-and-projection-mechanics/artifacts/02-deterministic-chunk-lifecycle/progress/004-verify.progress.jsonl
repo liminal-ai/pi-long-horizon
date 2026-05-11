@@ -1,0 +1,12 @@
+{"timestamp":"2026-05-11T03:24:50.944Z","command":"story-verify","phase":"verifier-initial","event":"command-started","summary":"story-verify started."}
+{"timestamp":"2026-05-11T03:24:50.955Z","command":"story-verify","phase":"verifier-initial","event":"verifier-started","summary":"Story verifier started for 02-deterministic-chunk-lifecycle."}
+{"timestamp":"2026-05-11T03:24:50.967Z","command":"story-verify","phase":"verifier-initial","event":"provider-spawned","summary":"Provider spawned with pid 12477.","metadata":{"pid":12477}}
+{"timestamp":"2026-05-11T03:24:51.055Z","command":"story-verify","phase":"verifier-initial","event":"first-output-received","summary":"First provider stderr output received.","metadata":{"stream":"stderr"}}
+{"timestamp":"2026-05-11T03:25:24.155Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-11T03:25:58.363Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-11T03:27:12.563Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-11T03:27:53.728Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-11T03:29:16.651Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-11T03:29:16.809Z","command":"story-verify","phase":"verifier-initial","event":"provider-exit","summary":"Provider exited with code 0.","metadata":{"exitCode":0,"signal":null,"elapsedMs":265843,"configuredTimeoutMs":3600000}}
+{"timestamp":"2026-05-11T03:29:16.814Z","command":"story-verify","phase":"verifier-initial","event":"verifier-completed","summary":"Story verifier completed for 02-deterministic-chunk-lifecycle.","metadata":{"outcome":"pass"}}
+{"timestamp":"2026-05-11T03:29:16.832Z","command":"story-verify","phase":"finalizing","event":"completed","summary":"story-verify completed for 02-deterministic-chunk-lifecycle with outcome pass.","metadata":{"outcome":"pass","verifiersCompleted":1}}

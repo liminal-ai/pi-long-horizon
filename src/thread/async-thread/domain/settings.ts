@@ -30,6 +30,32 @@ export function cloneChunkCloseSettings(settings: ChunkCloseSettings): ChunkClos
   };
 }
 
+export function validateChunkCloseSettings(settings: ChunkCloseSettings): string[] {
+  const issues: string[] = [];
+
+  if (!Number.isFinite(settings.targetMinSmoothTokens) || settings.targetMinSmoothTokens <= 0) {
+    issues.push("targetMinSmoothTokens must be greater than 0.");
+  }
+
+  if (!Number.isFinite(settings.targetSoftMaxSmoothTokens) || settings.targetSoftMaxSmoothTokens <= 0) {
+    issues.push("targetSoftMaxSmoothTokens must be greater than 0.");
+  }
+
+  if (!Number.isFinite(settings.hardMaxSmoothTokens) || settings.hardMaxSmoothTokens <= 0) {
+    issues.push("hardMaxSmoothTokens must be greater than 0.");
+  }
+
+  if (settings.targetSoftMaxSmoothTokens < settings.targetMinSmoothTokens) {
+    issues.push("targetSoftMaxSmoothTokens must be greater than or equal to targetMinSmoothTokens.");
+  }
+
+  if (settings.hardMaxSmoothTokens < settings.targetSoftMaxSmoothTokens) {
+    issues.push("hardMaxSmoothTokens must be greater than or equal to targetSoftMaxSmoothTokens.");
+  }
+
+  return issues;
+}
+
 export function clonePlaceholderBuildSettings(
   settings: PlaceholderBuildSettings,
 ): PlaceholderBuildSettings {

@@ -11,6 +11,7 @@ import type {
   TurnRecord,
 } from "../domain/records.js";
 import type { TargetSessionKey, TargetSessionKeySet, ThreadTargetRef } from "../domain/ids.js";
+import type { ChunkState } from "../../thread/async-thread/domain/chunk-state.js";
 
 export type { TargetSessionKey, TargetSessionKeySet, ThreadTargetRef } from "../domain/ids.js";
 
@@ -59,6 +60,14 @@ export interface WriteTurnsInput {
   turnState: ThreadRecord["status"]["turnState"];
 }
 
+export interface WriteChunksInput {
+  threadId: string;
+  expectedSourceRevision: number;
+  expectedMessageHighWatermark: number;
+  expectedTurnsRevision: number;
+  chunks: ChunkState[];
+}
+
 export interface CreateFixtureInput {
   fixture: FixtureRecord;
   snapshot: ThreadSnapshot;
@@ -80,6 +89,8 @@ export interface ThreadStore {
 
   readTurns(threadId: string): Promise<StewardResult<TurnRecord[]>>;
   writeTurns(input: WriteTurnsInput): Promise<StewardResult<TurnRecord[]>>;
+  readChunks(threadId: string): Promise<StewardResult<ChunkState[]>>;
+  writeChunks(input: WriteChunksInput): Promise<StewardResult<ChunkState[]>>;
 
   updateThreadMetadata(input: UpdateThreadMetadataInput): Promise<StewardResult<ThreadRecord>>;
   recordImport(threadId: string, record: ImportRecord): Promise<StewardResult<ThreadRecord>>;

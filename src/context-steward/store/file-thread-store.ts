@@ -23,6 +23,7 @@ import {
   type ThreadRecord,
   type TurnRecord,
 } from "../domain/records.js";
+import type { ChunkState } from "../../thread/async-thread/domain/chunk-state.js";
 import { assertSupportedThreadSchemaVersion } from "./schema-version.js";
 import type {
   AppendMessageInput,
@@ -31,6 +32,7 @@ import type {
   ThreadSnapshot,
   ThreadStore,
   UpdateThreadMetadataInput,
+  WriteChunksInput,
   WriteTurnsInput,
 } from "./thread-store.js";
 
@@ -40,6 +42,7 @@ interface ThreadFilePaths {
   actors: string;
   messages: string;
   turns: string;
+  chunks: string;
   imports: string;
   projections: string;
 }
@@ -154,7 +157,7 @@ export class FileThreadStore implements ThreadStore {
       try {
         const paths = this.getThreadPaths(input.thread.threadId);
         await mkdir(paths.threadDir, { recursive: false });
-        await this.writeThreadSnapshotFiles(paths, input.thread, [], [], [], []);
+        await this.writeThreadSnapshotFiles(paths, input.thread, [], [], [], [], []);
 
         const nextIndex = createStewardRootIndex(indexResult.value.threadByTargetKey);
         this.assignTargetKeys(nextIndex, keySet.value, input.thread.threadId);
@@ -389,6 +392,50 @@ export class FileThreadStore implements ThreadStore {
       await this.writeJsonAtomic(paths.thread, nextThread);
 
       return ok(structuredClone(input.turns));
+    });
+  }
+
+  async readChunks(threadId: string): Promise<StewardResult<ChunkState[]>> {
+    try {
+      await this.ensureStoreReady();
+      const chunks = await this.readJsonFile<ChunkState[]>(this.getThreadPaths(threadId).chunks, []);
+      return ok(structuredClone(chunks));
+    } catch (error) {
+      return fail(storeUnavailableIssue(error, "readChunks", threadId));
+    }
+  }
+
+  async writeChunks(input: WriteChunksInput): Promise<StewardResult<ChunkState[]>> {
+    return this.withThreadMutation(input.threadId, async () => {
+      const thread = await this.requireMutableThread(input.threadId);
+      if (!thread.ok) {
+        return thread;
+      }
+
+      if (thread.value.sourceRevision !== input.expectedSourceRevision) {
+        return fail(staleSourceRevisionIssue(thread.value, input.expectedSourceRevision));
+      }
+
+      if (thread.value.messageHighWatermark !== input.expectedMessageHighWatermark) {
+        return fail({
+          code: "STALE_SOURCE_REVISION",
+          message: `Thread ${input.threadId} message high watermark ${thread.value.messageHighWatermark} does not match expected ${input.expectedMessageHighWatermark}.`,
+          threadId: input.threadId,
+        });
+      }
+
+      if (thread.value.turnsRevision !== input.expectedTurnsRevision) {
+        return fail(staleTurnsRevisionIssue(thread.value, input.expectedTurnsRevision));
+      }
+
+      const paths = this.getThreadPaths(input.threadId);
+      await this.writeJsonAtomic(paths.chunks, structuredClone(input.chunks));
+
+      const nextThread = structuredClone(thread.value);
+      nextThread.updatedAt = new Date().toISOString();
+      await this.writeJsonAtomic(paths.thread, nextThread);
+
+      return ok(structuredClone(input.chunks));
     });
   }
 
@@ -972,11 +1019,13 @@ export class FileThreadStore implements ThreadStore {
     thread: ThreadRecord,
     actors: readonly ActorRecord[],
     turns: readonly TurnRecord[],
+    chunks: readonly ChunkState[],
     imports: readonly ImportRecord[],
     projections: readonly ProjectionRevisionRecord[],
   ): Promise<void> {
     await this.writeJsonAtomic(paths.actors, structuredClone(actors));
     await this.writeJsonAtomic(paths.turns, structuredClone(turns));
+    await this.writeJsonAtomic(paths.chunks, structuredClone(chunks));
     await this.writeJsonAtomic(paths.imports, structuredClone(imports));
     await this.writeJsonAtomic(paths.projections, structuredClone(projections));
     await writeFile(paths.messages, "", "utf8");
@@ -1010,6 +1059,7 @@ export class FileThreadStore implements ThreadStore {
       actors: join(threadDir, "actors.json"),
       messages: join(threadDir, "messages.jsonl"),
       turns: join(threadDir, "turns.json"),
+      chunks: join(threadDir, "chunks.json"),
       imports: join(threadDir, "imports.json"),
       projections: join(threadDir, "projections.json"),
     };
