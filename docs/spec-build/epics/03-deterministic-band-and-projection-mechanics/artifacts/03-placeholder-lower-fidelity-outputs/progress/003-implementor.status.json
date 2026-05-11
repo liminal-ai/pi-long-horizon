@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "command": "story-implement",
+  "status": "completed",
+  "phase": "finalizing",
+  "startedAt": "2026-05-11T03:31:42.948Z",
+  "updatedAt": "2026-05-11T03:37:35.781Z",
+  "lastOutputAt": "2026-05-11T03:37:35.651Z",
+  "providerLiveness": "completed",
+  "provider": "codex",
+  "pid": 23273,
+  "cwd": "/Users/leemoore/code/pi-long-horizon",
+  "timeoutMs": 7200000,
+  "configuredStartupTimeoutMs": 300000,
+  "configuredSilenceTimeoutMs": 600000,
+  "artifactPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/03-deterministic-band-and-projection-mechanics/artifacts/03-placeholder-lower-fidelity-outputs/003-implementor.json",
+  "streamPaths": {
+    "stdoutPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/03-deterministic-band-and-projection-mechanics/artifacts/03-placeholder-lower-fidelity-outputs/streams/003-implementor.stdout.log",
+    "stderrPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/03-deterministic-band-and-projection-mechanics/artifacts/03-placeholder-lower-fidelity-outputs/streams/003-implementor.stderr.log"
+  },
+  "progressPaths": {
+    "statusPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/03-deterministic-band-and-projection-mechanics/artifacts/03-placeholder-lower-fidelity-outputs/progress/003-implementor.status.json",
+    "progressPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/03-deterministic-band-and-projection-mechanics/artifacts/03-placeholder-lower-fidelity-outputs/progress/003-implementor.progress.jsonl"
+  },
+  "lastEvent": "completed",
+  "lastEventSummary": "story-implement completed for 03-placeholder-lower-fidelity-outputs with outcome ready-for-verification.",
+  "selfReviewPassesCompleted": 0,
+  "selfReviewPassesPlanned": 0
+}

@@ -3,7 +3,7 @@
 ## Run Overview
 - State: BETWEEN_STORIES
 - Spec Pack Root: /Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/03-deterministic-band-and-projection-mechanics
-- Current Story: 03-placeholder-lower-fidelity-outputs
+- Current Story: 04-deterministic-band-rebuild
 - Current Phase: none
 
 ## Run Configuration
@@ -108,10 +108,25 @@
 - Baseline Before: 562 (test files)
 - Baseline After: 563 (test files — 12 new chunk lifecycle tests added, no regressions)
 
+### 03-placeholder-lower-fidelity-outputs
+- Story Title: Story 3: Placeholder Lower-Fidelity Outputs
+- Implementor Evidence: artifacts/03-placeholder-lower-fidelity-outputs/003-implementor.json
+- Verifier Evidence:
+  - artifacts/03-placeholder-lower-fidelity-outputs/005-verify.json (initial — pass)
+- Final Package: artifacts/03-placeholder-lower-fidelity-outputs/story-lead/001-final-package.json
+- Story Gate: `npm run verify` — pass (228 unit tests, 0 failures)
+- Epic Gate: `npm run verify-all` — pass (228 unit + 8 integration + 33 E2E = 269 tests, 0 failures)
+- Dispositions:
+  - none (clean first-pass verification)
+- Open Risks:
+  - none
+- Baseline Before: 563 (test files)
+- Baseline After: 564 (test files — 9 new placeholder tests added, no regressions)
+
 ## Cumulative Baselines
-- Baseline Before Current Story: 563
+- Baseline Before Current Story: 564
 - Expected After Current Story: TBD
-- Latest Actual Total: 563 (test files); 260 test cases (219 unit + 8 integration + 33 E2E)
+- Latest Actual Total: 564 (test files); 269 test cases (228 unit + 8 integration + 33 E2E)
 
 ## Epic Closeout
 - Current Epic Review Artifact: none

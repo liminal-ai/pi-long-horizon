@@ -63,3 +63,29 @@ export function clonePlaceholderBuildSettings(
     ...settings,
   };
 }
+
+export function validatePlaceholderBuildSettings(settings: PlaceholderBuildSettings): string[] {
+  const issues: string[] = [];
+
+  if (!Number.isFinite(settings.detailedRatio) || settings.detailedRatio <= 0 || settings.detailedRatio > 1) {
+    issues.push("detailedRatio must be greater than 0 and less than or equal to 1.");
+  }
+
+  if (!Number.isFinite(settings.briefRatio) || settings.briefRatio <= 0 || settings.briefRatio > 1) {
+    issues.push("briefRatio must be greater than 0 and less than or equal to 1.");
+  }
+
+  if (settings.briefRatio > settings.detailedRatio) {
+    issues.push("briefRatio must be less than or equal to detailedRatio.");
+  }
+
+  if (settings.detailedStrategy !== "deterministic_truncate_30") {
+    issues.push("detailedStrategy must be deterministic_truncate_30.");
+  }
+
+  if (settings.briefStrategy !== "deterministic_truncate_5") {
+    issues.push("briefStrategy must be deterministic_truncate_5.");
+  }
+
+  return issues;
+}

@@ -44,6 +44,10 @@ export function makePlaceholderArtifactState(
 ): PlaceholderArtifactState {
   const threadId = overrides.threadId ?? "thread-001";
   const chunkId = overrides.chunkId ?? "chunk-001";
+  const defaultDetailedText =
+    "Deterministic detailed text\n\n[deterministic-placeholder:detailed] [not-semantic-summary]";
+  const defaultBriefText =
+    "Deterministic brief text\n\n[deterministic-placeholder:brief] [not-semantic-summary]";
 
   return clonePlaceholderArtifactState({
     chunkId,
@@ -53,8 +57,8 @@ export function makePlaceholderArtifactState(
         ? {
             kind: "detailed",
             status: "ready",
-            text: "[placeholder:detailed] Deterministic lower-band text",
-            tokenCount: 5,
+            text: defaultDetailedText,
+            tokenCount: estimateDeterministicTokenCount(defaultDetailedText),
             strategy: "deterministic_truncate_30",
             generatedAt: DEFAULT_TEST_TIMESTAMP,
           }
@@ -64,8 +68,8 @@ export function makePlaceholderArtifactState(
         ? {
             kind: "brief",
             status: "ready",
-            text: "[placeholder:brief] Deterministic lower-band text",
-            tokenCount: 4,
+            text: defaultBriefText,
+            tokenCount: estimateDeterministicTokenCount(defaultBriefText),
             strategy: "deterministic_truncate_5",
             generatedAt: DEFAULT_TEST_TIMESTAMP,
           }
