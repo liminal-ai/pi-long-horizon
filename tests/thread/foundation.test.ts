@@ -57,7 +57,7 @@ test("Feature 3 foundation exports the new blocker vocabulary and reusable stubs
     requestedLowerBound: 100,
     requestedBandPercentages: { fullFidelity: 40, smooth: 30, detailed: 20, brief: 10 },
     mode: "strict",
-  }), /Story 4 implements buildDraftThreadView/);
+  }), /threadStore and threadViewStore dependencies/);
 });
 
 test("deterministic token-count helpers are stable across reruns", () => {

@@ -3,7 +3,7 @@
 ## Run Overview
 - State: BETWEEN_STORIES
 - Spec Pack Root: /Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/03-deterministic-band-and-projection-mechanics
-- Current Story: 04-deterministic-band-rebuild
+- Current Story: 05-manual-smart-compact-and-pi-reload
 - Current Phase: none
 
 ## Run Configuration
@@ -123,10 +123,25 @@
 - Baseline Before: 563 (test files)
 - Baseline After: 564 (test files — 9 new placeholder tests added, no regressions)
 
+### 04-deterministic-band-rebuild
+- Story Title: Story 4: Deterministic Band Rebuild
+- Implementor Evidence: artifacts/04-deterministic-band-rebuild/003-implementor.json
+- Verifier Evidence:
+  - artifacts/04-deterministic-band-rebuild/005-verify.json (initial — pass)
+- Final Package: artifacts/04-deterministic-band-rebuild/story-lead/001-final-package.json
+- Story Gate: `npm run verify` — pass (245 unit tests, 0 failures)
+- Epic Gate: `npm run verify-all` — pass (245 unit + 8 integration + 33 E2E = 286 tests, 0 failures)
+- Dispositions:
+  - none (clean first-pass verification)
+- Open Risks:
+  - none
+- Baseline Before: 564 (test files)
+- Baseline After: 565 (test files — 17 new band rebuild tests added, no regressions)
+
 ## Cumulative Baselines
-- Baseline Before Current Story: 564
+- Baseline Before Current Story: 565
 - Expected After Current Story: TBD
-- Latest Actual Total: 564 (test files); 269 test cases (228 unit + 8 integration + 33 E2E)
+- Latest Actual Total: 565 (test files); 286 test cases (245 unit + 8 integration + 33 E2E)
 
 ## Epic Closeout
 - Current Epic Review Artifact: none
