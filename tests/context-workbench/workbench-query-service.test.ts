@@ -9,6 +9,8 @@ import {
   appendSourceMessage,
   openOrCreateManagedThread,
 } from "../../src/context-steward/services/thread-service.js";
+import { runSmartCompact } from "../../src/commands/smart-compact.js";
+import { createPiCliHarnessAdapter } from "../../src/harness-adapter/pi-cli-ha/pi-cli-ha.js";
 import { FileThreadStore } from "../../src/context-steward/store/file-thread-store.js";
 import {
   makeActorRecord,
@@ -28,6 +30,11 @@ import {
 } from "../../src/context-workbench/test/fixtures.js";
 import type { WorkbenchChunkRead } from "../../src/context-workbench/domain/thread-view-records.js";
 import { withTempWorkbenchStore } from "../../src/context-workbench/test/temp-workbench-store.js";
+import { withTempFeature3Store } from "../../src/thread-view/test/fixtures.js";
+import {
+  seedDeterministicRebuildThread,
+  seedMissingDetailedPlaceholderThread,
+} from "../thread-view/helpers.js";
 
 function expectOk<T>(result: StewardResult<T>): T {
   assert.equal(result.ok, true, result.ok ? undefined : result.issues.map((issue) => issue.code).join(", "));
@@ -675,6 +682,180 @@ test("reports degraded Thread state and names the blocker", async () => {
     assert.equal(openedThread.blockers[0]?.code, "THREAD_VIEW_STATE_CONFLICT");
     assert.match(openedThread.blockers[0]?.message ?? "", /reconciled/i);
     assert.equal(openedThread.thread.activeThreadViewId, activeView.threadViewId);
+  });
+});
+
+test("blocked smooth or chunk state appears in inspectable records", async () => {
+  await withTempFeature3Store(async ({ storeRootDir }) => {
+    const context = await seedMissingDetailedPlaceholderThread(storeRootDir);
+    const snapshot = await context.threadStore.openThread(context.threadId);
+    assert.equal(snapshot.ok, true);
+
+    await context.threadStore.writeTurns({
+      threadId: context.threadId,
+      expectedSourceRevision: snapshot.value.thread.sourceRevision,
+      expectedMessageHighWatermark: snapshot.value.thread.messageHighWatermark,
+      expectedTurnsRevision: snapshot.value.thread.turnsRevision,
+      turns: snapshot.value.turns.map((turn) =>
+        turn.turnId === context.turns.middleNewer.turnId
+          ? {
+              ...turn,
+              smooth: undefined,
+            }
+          : turn),
+      turnState: snapshot.value.thread.status.turnState,
+    });
+
+    const queryService = new WorkbenchQueryService(context.threadStore, context.threadViewStore);
+    const openedThread = expectOk(await queryService.openThread({ threadId: context.threadId }));
+    const turnDetail = expectOk(
+      await queryService.openTurnDetail({
+        threadId: context.threadId,
+        turnId: context.turns.middleNewer.turnId,
+      }),
+    );
+    const chunkDetail = expectOk(
+      await queryService.openChunkDetail({
+        threadId: context.threadId,
+        chunkId: context.chunks.newerClosed,
+      }),
+    );
+
+    assert.equal(openedThread.usableStatus, "blocked");
+    assert.equal(openedThread.blockers.some((issue) => issue.code === "SMOOTH_MISSING"), true);
+    assert.equal(openedThread.blockers.some((issue) => issue.code === "CHUNK_PLACEHOLDER_MISSING"), true);
+    assert.equal(turnDetail.turn.smooth, undefined);
+    assert.equal(chunkDetail.chunk.issues?.some((issue) => issue.code === "CHUNK_PLACEHOLDER_MISSING"), true);
+  });
+});
+
+test("projection failure state appears in inspectable output metadata", async () => {
+  await withTempFeature3Store(async ({ storeRootDir }) => {
+    const context = await seedDeterministicRebuildThread(storeRootDir);
+
+    const result = await runSmartCompact(
+      {
+        threadId: context.threadId,
+        requestedLowerBound: 30,
+        requestedBandPercentages: { fullFidelity: 50, smooth: 20, detailed: 20, brief: 10 },
+        mode: "strict",
+      },
+      {
+        threadStore: context.threadStore,
+        threadViewStore: context.threadViewStore,
+        piCliHarnessAdapter: createPiCliHarnessAdapter({
+          switchSession: async () => {
+            throw new Error("reload failed");
+          },
+        }),
+      },
+    );
+
+    const queryService = new WorkbenchQueryService(context.threadStore, context.threadViewStore);
+    const openedThread = expectOk(await queryService.openThread({ threadId: context.threadId }));
+
+    assert.equal(result.compactStatus, "reload_failed");
+    assert.equal(openedThread.usableStatus, "degraded");
+    assert.equal(openedThread.generatedOutput?.status, "reload_failed");
+    assert.equal(openedThread.generatedOutput?.generatedFilePath, result.generatedFilePath);
+    assert.equal(openedThread.blockers.some((issue) => issue.code === "PI_RELOAD_FAILED"), true);
+  });
+});
+
+test("chunk inspection reports unresolved source turns as invalid state", async () => {
+  await withTempFeature3Store(async ({ storeRootDir }) => {
+    const context = await seedDeterministicRebuildThread(storeRootDir);
+    const snapshot = await context.threadStore.openThread(context.threadId);
+    assert.equal(snapshot.ok, true);
+    const chunks = await context.threadStore.readChunks(context.threadId);
+    assert.equal(chunks.ok, true);
+
+    await context.threadStore.writeChunks({
+      threadId: context.threadId,
+      expectedSourceRevision: snapshot.value.thread.sourceRevision,
+      expectedMessageHighWatermark: snapshot.value.thread.messageHighWatermark,
+      expectedTurnsRevision: snapshot.value.thread.turnsRevision,
+      chunks: chunks.value.map((chunk) =>
+        chunk.chunkId === context.chunks.newerClosed
+          ? {
+              ...chunk,
+              sourceTurnIds: ["turn-missing"],
+            }
+          : chunk),
+    });
+
+    const queryService = new WorkbenchQueryService(context.threadStore, context.threadViewStore);
+    const detail = expectOk(
+      await queryService.openChunkDetail({
+        threadId: context.threadId,
+        chunkId: context.chunks.newerClosed,
+      }),
+    );
+
+    assert.equal(detail.chunk.issues?.some((issue) => issue.code === "CHUNK_STATE_INVALID"), true);
+  });
+});
+
+test("threshold-degraded compact results remain inspectable through normal workbench state", async () => {
+  await withTempFeature3Store(async ({ storeRootDir }) => {
+    const context = await seedDeterministicRebuildThread(storeRootDir);
+
+    const result = await runSmartCompact(
+      {
+        threadId: context.threadId,
+        requestedLowerBound: 2,
+        requestedBandPercentages: { fullFidelity: 100, smooth: 0, detailed: 0, brief: 0 },
+        mode: "strict",
+      },
+      {
+        threadStore: context.threadStore,
+        threadViewStore: context.threadViewStore,
+      },
+    );
+
+    const queryService = new WorkbenchQueryService(context.threadStore, context.threadViewStore);
+    const openedThread = expectOk(await queryService.openThread({ threadId: context.threadId }));
+
+    assert.equal(result.compactStatus, "degraded");
+    assert.equal(openedThread.usableStatus, "degraded");
+    assert.equal(openedThread.generatedOutput?.status, "degraded");
+    assert.equal(openedThread.blockers.some((issue) => issue.code === "LOWER_THRESHOLD_UNREACHED"), true);
+  });
+});
+
+test("placeholder strategy is visible in lower-band records", async () => {
+  await withTempFeature3Store(async ({ storeRootDir }) => {
+    const context = await seedDeterministicRebuildThread(storeRootDir);
+    const queryService = new WorkbenchQueryService(context.threadStore, context.threadViewStore);
+
+    const detail = expectOk(
+      await queryService.openChunkDetail({
+        threadId: context.threadId,
+        chunkId: context.chunks.newerClosed,
+      }),
+    );
+
+    assert.equal(detail.chunk.detailedSummaryStrategy, "deterministic_truncate_30");
+    assert.equal(detail.chunk.briefSummaryStrategy, "deterministic_truncate_5");
+  });
+});
+
+test("Feature 3 lower-band output stays explicit about non-semantic summary quality", async () => {
+  await withTempFeature3Store(async ({ storeRootDir }) => {
+    const context = await seedDeterministicRebuildThread(storeRootDir);
+    const queryService = new WorkbenchQueryService(context.threadStore, context.threadViewStore);
+
+    const detail = expectOk(
+      await queryService.openChunkDetail({
+        threadId: context.threadId,
+        chunkId: context.chunks.newerClosed,
+      }),
+    );
+
+    assert.equal(detail.chunk.placeholderExplicit, true);
+    assert.equal(detail.chunk.summaryQuality, "deterministic_placeholder_not_semantic");
+    assert.match(detail.chunk.detailedSummary ?? "", /\[not-semantic-summary\]/);
+    assert.match(detail.chunk.briefSummary ?? "", /\[not-semantic-summary\]/);
   });
 });
 

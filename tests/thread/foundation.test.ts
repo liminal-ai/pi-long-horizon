@@ -37,6 +37,7 @@ test("Feature 3 foundation exports the new blocker vocabulary and reusable stubs
     "SMOOTH_INVALID",
     "CHUNK_STATE_INVALID",
     "CHUNK_PLACEHOLDER_MISSING",
+    "THREAD_VIEW_STATE_CONFLICT",
     "LOWER_THRESHOLD_UNREACHED",
     "GENERATED_WRITE_FAILED",
     "PI_RELOAD_FAILED",

@@ -857,6 +857,7 @@ export class FileThreadStore implements ThreadStore {
         .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
         .at(-1);
       nextThread.projectionSummary = {
+        ...nextThread.projectionSummary,
         count: projections.length,
         currentGeneratedFilePath: latestProjection?.generatedFilePath,
         lastRevisionStatus: latestProjection?.status,

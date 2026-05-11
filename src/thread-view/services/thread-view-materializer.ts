@@ -448,6 +448,17 @@ function buildUpperBandMessages(input: {
         .map((messageId) => messagesById.get(messageId))
         .filter((message): message is MessageRecord => message !== undefined),
     );
+    if (turnMessages.length !== turn.messageIds.length) {
+      issues.push(
+        createWorkbenchIssue({
+          code: "THREAD_VIEW_STATE_CONFLICT",
+          message: `Turn ${turn.turnId} cannot be materialized because canonical source messages are missing.`,
+          threadId: input.thread.threadId,
+          sourceRange: structuredClone(turn.sourceRange),
+        }),
+      );
+      return;
+    }
 
     turnMessages.forEach((message, messageIndex) => {
       fullFidelityMessages.push(
@@ -495,7 +506,11 @@ function buildUpperBandMessages(input: {
       smooth: smoothMessages,
     }),
     bandStatuses: {
-      full_fidelity: "ready",
+      full_fidelity:
+        input.fullFidelityBand.selectedIds.length > 0 &&
+        issues.some((issue) => issue.code === "THREAD_VIEW_STATE_CONFLICT")
+          ? "blocked"
+          : "ready",
       smooth:
         input.smoothBand.selectedIds.length > 0 &&
         issues.some((issue) => issue.code === "WORKBENCH_ARTIFACT_MISSING")

@@ -1,3 +1,5 @@
+import type { GeneratedOutputMetadata } from "../../thread/domain/output-metadata.js";
+import { cloneGeneratedOutputMetadata } from "../../thread/domain/output-metadata.js";
 import type { StewardErrorCode, StewardIssue } from "./errors.js";
 
 export const THREAD_SCHEMA_VERSION = "context-steward.thread.v1" as const;
@@ -66,6 +68,7 @@ export interface ThreadRecord {
     count: number;
     currentGeneratedFilePath?: string;
     lastRevisionStatus?: ProjectionStatus;
+    generatedOutput?: GeneratedOutputMetadata;
   };
   status: {
     turnState: TurnRepairStatus;
@@ -252,6 +255,10 @@ export function createThreadRecord(input: CreateThreadRecordInput): ThreadRecord
 
   if (input.projectionSummary?.lastRevisionStatus) {
     projectionSummary.lastRevisionStatus = input.projectionSummary.lastRevisionStatus;
+  }
+
+  if (input.projectionSummary?.generatedOutput) {
+    projectionSummary.generatedOutput = cloneGeneratedOutputMetadata(input.projectionSummary.generatedOutput);
   }
 
   return {

@@ -10,6 +10,7 @@ import type {
 } from "../domain/records.js";
 import { createThreadRecord } from "../domain/records.js";
 import type { AppendMessageInput, ThreadStore } from "../store/thread-store.js";
+import type { GeneratedOutputMetadata } from "../../thread/domain/output-metadata.js";
 
 export interface ManagedThreadInput {
   target: ThreadTargetMetadata;
@@ -29,6 +30,7 @@ export interface GeneratedSessionMetadataInput {
   threadId: string;
   generatedFilePath?: string;
   revision?: ProjectionRevisionRecord;
+  generatedOutput?: GeneratedOutputMetadata;
   now?: () => Date;
 }
 
@@ -228,8 +230,11 @@ export async function updateGeneratedSessionMetadata(
         ? refreshedThread.value.thread.projectionSummary
         : {
             ...refreshedThread.value.thread.projectionSummary,
-            currentGeneratedFilePath: input.generatedFilePath,
+            currentGeneratedFilePath:
+              input.generatedFilePath ?? refreshedThread.value.thread.projectionSummary.currentGeneratedFilePath,
           };
+    const nextGeneratedFilePath =
+      input.generatedFilePath ?? refreshedThread.value.thread.target.currentGeneratedFilePath;
 
     return input.store.updateThreadMetadata({
       threadId: input.threadId,
@@ -237,9 +242,15 @@ export async function updateGeneratedSessionMetadata(
       patch: {
         target: {
           ...refreshedThread.value.thread.target,
-          currentGeneratedFilePath: input.generatedFilePath,
+          currentGeneratedFilePath: nextGeneratedFilePath,
         },
-        projectionSummary: nextProjectionSummary,
+        projectionSummary:
+          input.generatedOutput === undefined
+            ? nextProjectionSummary
+            : {
+                ...nextProjectionSummary,
+                generatedOutput: input.generatedOutput,
+              },
         updatedAt: nowIso(input.now),
       },
     });

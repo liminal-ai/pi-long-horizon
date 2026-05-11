@@ -24,6 +24,7 @@ export interface AsyncThreadRunDependencies {
 }
 
 interface SelectionAwareReadinessPlan {
+  fullFidelityTurnIds: ReadonlySet<string>;
   smoothTurnIds: ReadonlySet<string>;
   detailedChunkIds: ReadonlySet<string>;
   briefChunkIds: ReadonlySet<string>;
@@ -433,6 +434,7 @@ function buildSelectionAwareReadinessPlan(input: {
   );
 
   return {
+    fullFidelityTurnIds: new Set(fullFidelityTurnIds),
     smoothTurnIds: new Set(smoothTurnIds),
     detailedChunkIds: new Set(detailedSelection.selectedChunkIds),
     briefChunkIds: new Set(briefSelection.selectedChunkIds),
@@ -447,12 +449,14 @@ function buildReadinessBlockers(input: {
   };
   selectionPlan?: SelectionAwareReadinessPlan;
   turns: ReadonlyArray<TurnRecord>;
+  messages: ReadonlyArray<MessageRecord>;
   chunks: ReadonlyArray<ChunkState>;
 }): PrepareAsyncThreadResult {
   const requiredPlaceholderBands = input.requiredPlaceholderBands ?? {
     detailed: true,
     brief: true,
   };
+  const requiredFullFidelityTurnIds = input.selectionPlan?.fullFidelityTurnIds;
   const requiredSmoothTurnIds = input.selectionPlan?.smoothTurnIds;
   const requiredDetailedChunkIds = input.selectionPlan?.detailedChunkIds;
   const requiredBriefChunkIds = input.selectionPlan?.briefChunkIds;
@@ -460,6 +464,7 @@ function buildReadinessBlockers(input: {
     requiredDetailedChunkIds || requiredBriefChunkIds
       ? new Set([...(requiredDetailedChunkIds ?? []), ...(requiredBriefChunkIds ?? [])])
       : undefined;
+  const messagesById = new Map(input.messages.map((message) => [message.messageId, message]));
   const blockers = input.turns
     .filter((turn) => requiredSmoothTurnIds?.has(turn.turnId) ?? turn.lifecycleStatus === "closed")
     .filter((turn) => turn.lifecycleStatus === "closed" && !isSmoothTurnReady(turn))
@@ -471,6 +476,27 @@ function buildReadinessBlockers(input: {
       }),
     );
 
+  for (const turn of input.turns) {
+    if (!requiredFullFidelityTurnIds?.has(turn.turnId)) {
+      continue;
+    }
+
+    const missingMessageIds = turn.messageIds.filter((messageId) => !messagesById.has(messageId));
+    if (missingMessageIds.length === 0) {
+      continue;
+    }
+
+    blockers.push(
+      createAsyncThreadBlocker({
+        code: "THREAD_VIEW_STATE_CONFLICT",
+        message: `Turn ${turn.turnId} cannot be materialized because canonical source messages are missing for deterministic full-fidelity output.`,
+        threadId: input.threadId,
+        cause: missingMessageIds.join(", "),
+      }),
+    );
+  }
+
+  const turnIds = new Set(input.turns.map((turn) => turn.turnId));
   const openChunks = input.chunks.filter((chunk) => chunk.lifecycleStatus === "open");
   if (openChunks.length > 1) {
     blockers.push(
@@ -483,6 +509,20 @@ function buildReadinessBlockers(input: {
   }
 
   for (const chunk of input.chunks) {
+    if (
+      chunk.sourceTurnIds.length === 0 ||
+      chunk.sourceTurnIds.some((turnId) => !turnIds.has(turnId))
+    ) {
+      blockers.push(
+        createAsyncThreadBlocker({
+          code: "CHUNK_STATE_INVALID",
+          message: `Chunk ${chunk.chunkId} has source turns that do not resolve cleanly against the current thread state.`,
+          threadId: input.threadId,
+        }),
+      );
+      continue;
+    }
+
     if (requiredChunkIds && !requiredChunkIds.has(chunk.chunkId)) {
       continue;
     }
@@ -538,7 +578,9 @@ function buildReadinessBlockers(input: {
   const smoothReady = !blockers.some(
     (issue) => issue.code === "SMOOTH_MISSING" || issue.code === "SMOOTH_INVALID",
   );
-  const chunksReady = !blockers.some((issue) => issue.code === "CHUNK_STATE_INVALID");
+  const chunksReady = !blockers.some(
+    (issue) => issue.code === "CHUNK_STATE_INVALID" || issue.code === "THREAD_VIEW_STATE_CONFLICT",
+  );
   const placeholdersReady = !blockers.some((issue) => issue.code === "CHUNK_PLACEHOLDER_MISSING");
 
   return {
@@ -583,6 +625,7 @@ async function readReadiness(
       chunks: chunksSnapshot.value,
     }),
     turns: threadSnapshot.value.turns,
+    messages: threadSnapshot.value.messages,
     chunks: chunksSnapshot.value,
   });
 }

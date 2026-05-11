@@ -1,3 +1,5 @@
+import { createStewardIssue, type StewardIssue } from "./errors.js";
+
 export const GENERATED_OUTPUT_STATUSES = [
   "available",
   "blocked",
@@ -17,10 +19,12 @@ export interface GeneratedOutputMetadata {
   status: GeneratedOutputStatus;
   generatedSource: "thread_view";
   placeholderExplicit: boolean;
+  issues?: StewardIssue[];
 }
 
 export function cloneGeneratedOutputMetadata(record: GeneratedOutputMetadata): GeneratedOutputMetadata {
   return {
     ...record,
+    issues: record.issues?.map((issue) => createStewardIssue(issue)),
   };
 }

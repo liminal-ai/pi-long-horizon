@@ -86,8 +86,18 @@ export interface WorkbenchChunkRead {
   smoothTokenCount?: number;
   detailedSummary?: string;
   detailedSummaryTokenCount?: number;
+  detailedSummaryStrategy?: string;
   briefSummary?: string;
   briefSummaryTokenCount?: number;
+  briefSummaryStrategy?: string;
+  placeholderExplicit?: boolean;
+  summaryQuality?: "deterministic_placeholder_not_semantic";
+  issues?: Array<{
+    code: string;
+    message: string;
+    threadId?: string;
+    cause?: string;
+  }>;
 }
 
 export interface WorkbenchSearchInput {
@@ -155,6 +165,7 @@ export function cloneWorkbenchChunkRead(record: WorkbenchChunkRead): WorkbenchCh
   return {
     ...record,
     sourceTurnIds: [...record.sourceTurnIds],
+    issues: record.issues ? record.issues.map((issue) => ({ ...issue })) : undefined,
   };
 }
 

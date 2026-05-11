@@ -1,5 +1,5 @@
 import { checkMaintenanceReadiness } from "../../context-steward/services/turn-service.js";
-import type { StewardIssue } from "../../context-steward/domain/errors.js";
+import { createStewardIssue, type StewardIssue } from "../../context-steward/domain/errors.js";
 import type {
   FixtureRecord,
   MessageRecord,
@@ -7,6 +7,12 @@ import type {
   TurnRecord,
 } from "../../context-steward/domain/records.js";
 import type { ThreadSnapshot, ThreadStore } from "../../context-steward/store/thread-store.js";
+import type { ChunkState } from "../../thread/async-thread/domain/chunk-state.js";
+import { prepareAsyncThread } from "../../thread/async-thread/services/async-thread-run-service.js";
+import {
+  cloneGeneratedOutputMetadata,
+  type GeneratedOutputMetadata,
+} from "../../thread/domain/output-metadata.js";
 import {
   BAND_ORDER,
   compareBandTypeOrder,
@@ -41,6 +47,7 @@ export interface OpenWorkbenchThreadResult {
   activeThreadView?: ThreadViewRecord;
   usableStatus: "ready" | "blocked" | "degraded";
   blockers: StewardIssue[];
+  generatedOutput?: GeneratedOutputMetadata;
 }
 
 export interface OpenFixtureThreadResult extends OpenWorkbenchThreadResult {
@@ -112,11 +119,150 @@ const THREAD_VIEW_STATE_ORDER: Record<ThreadViewState, number> = {
   archived: 2,
 };
 
-const EMPTY_CHUNK_READER: WorkbenchChunkReader = {
-  async listChunks() {
-    return okWorkbenchResult([]);
-  },
-};
+const DEGRADED_BLOCKER_CODES = new Set([
+  "THREAD_VIEW_STATE_CONFLICT",
+  "LOWER_THRESHOLD_UNREACHED",
+  "GENERATED_WRITE_FAILED",
+  "PI_RELOAD_FAILED",
+]);
+
+function summarizeMissingPlaceholderBands(chunk: ChunkState): string[] {
+  const missingBands: string[] = [];
+
+  if (chunk.placeholders?.detailed?.status !== "ready" || !chunk.placeholders?.detailed?.text) {
+    missingBands.push("detailed");
+  }
+
+  if (chunk.placeholders?.brief?.status !== "ready" || !chunk.placeholders?.brief?.text) {
+    missingBands.push("brief");
+  }
+
+  return missingBands;
+}
+
+function buildChunkIssues(
+  chunk: ChunkState,
+  knownTurnIds: ReadonlySet<string> | undefined,
+): StewardIssue[] {
+  const issues: StewardIssue[] = [];
+
+  if (chunk.lifecycleStatus === "closed" && (!chunk.smoothText || chunk.smoothTokenCount <= 0)) {
+    issues.push(
+      createStewardIssue({
+        code: "CHUNK_STATE_INVALID",
+        message: `Chunk ${chunk.chunkId} is missing deterministic smooth chunk state required for lower-band inspection.`,
+        threadId: chunk.threadId,
+      }),
+    );
+  }
+
+  if (chunk.sourceTurnIds.length === 0) {
+    issues.push(
+      createStewardIssue({
+        code: "CHUNK_STATE_INVALID",
+        message: `Chunk ${chunk.chunkId} does not reference any source turns.`,
+        threadId: chunk.threadId,
+      }),
+    );
+  }
+
+  if (knownTurnIds && chunk.sourceTurnIds.some((turnId) => !knownTurnIds.has(turnId))) {
+    issues.push(
+      createStewardIssue({
+        code: "CHUNK_STATE_INVALID",
+        message: `Chunk ${chunk.chunkId} has source turns that do not resolve cleanly against the current thread state.`,
+        threadId: chunk.threadId,
+      }),
+    );
+  }
+
+  if (chunk.lifecycleStatus === "closed") {
+    const missingPlaceholderBands = summarizeMissingPlaceholderBands(chunk);
+    if (missingPlaceholderBands.length > 0) {
+      issues.push(
+        createStewardIssue({
+          code: "CHUNK_PLACEHOLDER_MISSING",
+          message: `Chunk ${chunk.chunkId} is missing deterministic ${missingPlaceholderBands.join("/")} placeholder output required for lower-band inspection.`,
+          threadId: chunk.threadId,
+        }),
+      );
+    }
+  }
+
+  return issues;
+}
+
+function toWorkbenchChunkRead(
+  chunk: ChunkState,
+  knownTurnIds: ReadonlySet<string> | undefined,
+): WorkbenchChunkRead {
+  const detailed = chunk.placeholders?.detailed;
+  const brief = chunk.placeholders?.brief;
+  const hasReadyPlaceholder = detailed?.status === "ready" || brief?.status === "ready";
+
+  return {
+    chunkId: chunk.chunkId,
+    lifecycleStatus: chunk.lifecycleStatus,
+    sourceTurnIds: [...chunk.sourceTurnIds],
+    smoothText: chunk.smoothText,
+    smoothTokenCount: chunk.smoothTokenCount,
+    detailedSummary: detailed?.status === "ready" ? detailed.text : undefined,
+    detailedSummaryTokenCount: detailed?.status === "ready" ? detailed.tokenCount : undefined,
+    detailedSummaryStrategy: detailed?.status === "ready" ? detailed.strategy : undefined,
+    briefSummary: brief?.status === "ready" ? brief.text : undefined,
+    briefSummaryTokenCount: brief?.status === "ready" ? brief.tokenCount : undefined,
+    briefSummaryStrategy: brief?.status === "ready" ? brief.strategy : undefined,
+    placeholderExplicit: hasReadyPlaceholder ? true : undefined,
+    summaryQuality: hasReadyPlaceholder ? "deterministic_placeholder_not_semantic" : undefined,
+    issues: buildChunkIssues(chunk, knownTurnIds),
+  };
+}
+
+class ThreadStoreChunkReader implements WorkbenchChunkReader {
+  constructor(private readonly threadStore: ThreadStore) {}
+
+  async listChunks(threadId: string): Promise<WorkbenchResult<WorkbenchChunkRead[]>> {
+    const threadSnapshot = await this.threadStore.openThread(threadId);
+    if (!threadSnapshot.ok) {
+      return failWorkbenchResult(...threadSnapshot.issues);
+    }
+
+    const chunks = await this.threadStore.readChunks(threadId);
+    if (!chunks.ok) {
+      return failWorkbenchResult(...chunks.issues);
+    }
+
+    const knownTurnIds = new Set(threadSnapshot.value.turns.map((turn) => turn.turnId));
+    return okWorkbenchResult(
+      chunks.value.map((chunk) => toWorkbenchChunkRead(chunk, knownTurnIds)),
+      mergeWorkbenchIssues(threadSnapshot.issues, chunks.issues),
+    );
+  }
+}
+
+function cloneGeneratedOutput(
+  generatedOutput: GeneratedOutputMetadata | undefined,
+): GeneratedOutputMetadata | undefined {
+  return generatedOutput ? cloneGeneratedOutputMetadata(generatedOutput) : undefined;
+}
+
+function inferIssueUsableStatus(blockers: readonly StewardIssue[]): "ready" | "blocked" | "degraded" {
+  if (blockers.length === 0) {
+    return "ready";
+  }
+
+  return blockers.every((issue) => DEGRADED_BLOCKER_CODES.has(issue.code)) ? "degraded" : "blocked";
+}
+
+function inferGeneratedOutputUsableStatus(
+  generatedOutput: GeneratedOutputMetadata | undefined,
+): "ready" | "blocked" | "degraded" {
+  if (!generatedOutput || generatedOutput.status === "available") {
+    return "ready";
+  }
+
+  return generatedOutput.status === "blocked" ? "blocked" : "degraded";
+}
 
 function cloneThread(thread: ThreadRecord): ThreadRecord {
   return structuredClone(thread);
@@ -154,16 +300,19 @@ function buildInspectionResult(
   thread: ThreadRecord,
   threadViews: readonly ThreadViewRecord[],
   blockers: readonly StewardIssue[] = [],
+  generatedOutput?: GeneratedOutputMetadata,
 ): OpenWorkbenchThreadResult {
   const activeThreadView = resolveActiveThreadView(thread, threadViews);
   const nextThreadViews = threadViews.map(cloneThreadViewRecord);
-  const nextBlockers = mergeWorkbenchIssues(blockers);
+  const nextBlockers = mergeWorkbenchIssues(blockers, generatedOutput?.issues);
+  const issueStatus = inferIssueUsableStatus(nextBlockers);
+  const generatedOutputStatus = inferGeneratedOutputUsableStatus(generatedOutput);
   const usableStatus =
-    nextBlockers.length > 0
-      ? nextBlockers.every((issue) => issue.code === "THREAD_VIEW_STATE_CONFLICT")
+    issueStatus === "blocked" || generatedOutputStatus === "blocked"
+      ? "blocked"
+      : issueStatus === "degraded" || generatedOutputStatus === "degraded"
         ? "degraded"
-        : "blocked"
-      : "ready";
+        : "ready";
 
   return {
     thread: cloneThread(thread),
@@ -171,6 +320,7 @@ function buildInspectionResult(
     activeThreadView,
     usableStatus,
     blockers: nextBlockers,
+    generatedOutput: cloneGeneratedOutput(generatedOutput),
   };
 }
 
@@ -276,8 +426,40 @@ export class WorkbenchQueryService {
   constructor(
     private readonly threadStore: ThreadStore,
     private readonly threadViewStore: ThreadViewStore,
-    private readonly chunkReader: WorkbenchChunkReader = EMPTY_CHUNK_READER,
+    private readonly chunkReader: WorkbenchChunkReader = new ThreadStoreChunkReader(threadStore),
   ) {}
+
+  private async loadAsyncThreadBlockers(input: {
+    threadId: string;
+    snapshot: ThreadSnapshot;
+  }): Promise<StewardIssue[]> {
+    const hasAsyncThreadState =
+      input.snapshot.turns.some((turn) => turn.smooth !== undefined) ||
+      input.snapshot.projections.length > 0 ||
+      input.snapshot.thread.projectionSummary.generatedOutput !== undefined;
+    if (!hasAsyncThreadState) {
+      const chunks = await this.threadStore.readChunks(input.threadId);
+      if (!chunks.ok) {
+        return [...chunks.issues];
+      }
+
+      if (chunks.value.length === 0) {
+        return [];
+      }
+    }
+
+    const readiness = await prepareAsyncThread(
+      {
+        threadId: input.threadId,
+        mode: "strict",
+      },
+      {
+        store: this.threadStore,
+      },
+    );
+
+    return readiness.blockers;
+  }
 
   private async loadThreadScope(
     threadId: string,
@@ -329,12 +511,17 @@ export class WorkbenchQueryService {
     }
 
     const readiness = checkMaintenanceReadiness(refreshedThreadSnapshot.value);
+    const asyncThreadBlockers = await this.loadAsyncThreadBlockers({
+      threadId: input.threadId,
+      snapshot: refreshedThreadSnapshot.value,
+    });
 
     return okWorkbenchResult(
       buildInspectionResult(
         refreshedThreadSnapshot.value.thread,
         listedViews.value,
-        mergeWorkbenchIssues(listedViews.issues, readiness.blockers),
+        mergeWorkbenchIssues(listedViews.issues, readiness.blockers, asyncThreadBlockers),
+        refreshedThreadSnapshot.value.thread.projectionSummary.generatedOutput,
       ),
     );
   }
@@ -350,6 +537,7 @@ export class WorkbenchQueryService {
       fixtureSnapshot.value.snapshot.thread,
       [],
       readiness.blockers,
+      fixtureSnapshot.value.snapshot.thread.projectionSummary.generatedOutput,
     );
 
     return okWorkbenchResult({

@@ -162,7 +162,12 @@ export function makeWorkbenchChunkRead(
     smoothTokenCount: overrides.smoothTokenCount,
     detailedSummary: overrides.detailedSummary,
     detailedSummaryTokenCount: overrides.detailedSummaryTokenCount,
+    detailedSummaryStrategy: overrides.detailedSummaryStrategy,
     briefSummary: overrides.briefSummary,
     briefSummaryTokenCount: overrides.briefSummaryTokenCount,
+    briefSummaryStrategy: overrides.briefSummaryStrategy,
+    placeholderExplicit: overrides.placeholderExplicit,
+    summaryQuality: overrides.summaryQuality,
+    issues: overrides.issues ? overrides.issues.map((issue) => ({ ...issue })) : undefined,
   };
 }

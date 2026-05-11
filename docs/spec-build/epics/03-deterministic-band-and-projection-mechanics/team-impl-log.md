@@ -1,9 +1,9 @@
 # Team Implementation Log
 
 ## Run Overview
-- State: BETWEEN_STORIES
+- State: PRE_EPIC_VERIFY
 - Spec Pack Root: /Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/03-deterministic-band-and-projection-mechanics
-- Current Story: 06-blocked-and-degraded-maintenance-state
+- Current Story: none (all stories accepted)
 - Current Phase: none
 
 ## Run Configuration
@@ -163,10 +163,29 @@
 - Baseline Before: 566 (test files)
 - Baseline After: 570 (test files — 30 new smart compact tests + 2 integration + 1 E2E, no regressions)
 
+### 06-blocked-and-degraded-maintenance-state
+- Story Title: Story 6: Blocked And Degraded Deterministic Maintenance State
+- Implementor Evidence: artifacts/06-blocked-and-degraded-maintenance-state/003-implementor.json
+- Verifier Evidence:
+  - artifacts/06-blocked-and-degraded-maintenance-state/005-verify.json (initial — revise, 3 findings)
+  - artifacts/06-blocked-and-degraded-maintenance-state/007-verify.json (follow-up — pass)
+- Story-Continue Evidence: artifacts/06-blocked-and-degraded-maintenance-state/006-continue.json
+- Final Package: artifacts/06-blocked-and-degraded-maintenance-state/story-lead/001-final-package.json
+- Story Gate: `npm run verify` — pass (285 unit tests, 0 failures)
+- Epic Gate: `npm run verify-all` — pass (285 unit + 10 integration + 34 E2E = 329 tests, 0 failures)
+- Dispositions:
+  - F6-01-materializer-silent-missing-messages: fixed
+  - F6-02-chunk-inspection-misses-broken-source-turns: fixed
+  - F6-03-threshold-degrade-not-inspectable: fixed
+- Open Risks:
+  - none
+- Baseline Before: 573 (test files)
+- Baseline After: 575 (test files — 13 new blocked/degraded observability tests, no regressions)
+
 ## Cumulative Baselines
-- Baseline Before Current Story: 570
-- Expected After Current Story: TBD
-- Latest Actual Total: 570 (test files); 316 test cases (272 unit + 10 integration + 34 E2E)
+- Baseline Before Current Story: 573
+- Expected After Current Story: N/A (all stories complete)
+- Latest Actual Total: 575 (test files); 329 test cases (285 unit + 10 integration + 34 E2E)
 
 ## Epic Closeout
 - Current Epic Review Artifact: none

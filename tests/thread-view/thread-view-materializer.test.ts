@@ -98,3 +98,46 @@ test("band order is preserved when multiple middle or lower bands are empty", as
     );
   });
 });
+
+test("missing full-fidelity source messages surface explicit invalid materialization state", async () => {
+  await withTempFeature3Store(async ({ storeRootDir }) => {
+    const context = await seedDeterministicRebuildThread(storeRootDir);
+    const snapshot = await context.threadStore.openThread(context.threadId);
+    assert.equal(snapshot.ok, true);
+
+    await context.threadStore.writeTurns({
+      threadId: context.threadId,
+      expectedSourceRevision: snapshot.value.thread.sourceRevision,
+      expectedMessageHighWatermark: snapshot.value.thread.messageHighWatermark,
+      expectedTurnsRevision: snapshot.value.thread.turnsRevision,
+      turns: snapshot.value.turns.map((turn) =>
+        turn.turnId === context.turns.newest.turnId
+          ? {
+              ...turn,
+              messageIds: [...turn.messageIds, "message-missing-materialization"],
+            }
+          : turn),
+      turnState: snapshot.value.thread.status.turnState,
+    });
+
+    const materializer = new ThreadViewMaterializer(context.threadStore);
+    const draftView = makeSelectedLowerBandView({
+      threadId: context.threadId,
+      fullTurnId: context.turns.newest.turnId,
+    });
+
+    const result = await materializer.materializeThreadView({
+      threadId: context.threadId,
+      draftView,
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.value.fullFidelityBand.renderedStatus, "blocked");
+    assert.equal(result.value.bandStatuses.full_fidelity, "blocked");
+    assert.equal(result.value.issues.some((issue) => issue.code === "THREAD_VIEW_STATE_CONFLICT"), true);
+    assert.deepEqual(
+      result.value.emittedMessages.filter((message) => message.bandType === "full_fidelity"),
+      [],
+    );
+  });
+});

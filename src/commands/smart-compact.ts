@@ -23,6 +23,7 @@ import type {
   SmartCompactCommandResult,
 } from "../thread-view/domain/pi-thread-view-file.js";
 import { validateSmartCompactCommandInput } from "../thread-view/domain/pi-thread-view-file.js";
+import type { GeneratedOutputMetadata } from "../thread/domain/output-metadata.js";
 
 export interface SmartCompactCommandDependencies {
   threadStore: ThreadStore;
@@ -49,6 +50,29 @@ function compactStatusFromBuildStatus(
   }
 
   return status;
+}
+
+function buildGeneratedOutputMetadata(input: {
+  threadId: string;
+  threadViewId?: string;
+  generatedFilePath?: string;
+  archivePath?: string;
+  generatedAt: string;
+  status: GeneratedOutputMetadata["status"];
+  placeholderExplicit: boolean;
+  issues?: GeneratedOutputMetadata["issues"];
+}): GeneratedOutputMetadata {
+  return {
+    threadId: input.threadId,
+    threadViewId: input.threadViewId,
+    generatedFilePath: input.generatedFilePath,
+    archivePath: input.archivePath,
+    generatedAt: input.generatedAt,
+    status: input.status,
+    generatedSource: "thread_view",
+    placeholderExplicit: input.placeholderExplicit,
+    issues: input.issues?.map((issue) => createStewardIssue(issue)),
+  };
 }
 
 export async function runSmartCompact(
@@ -111,6 +135,23 @@ export async function runSmartCompact(
     });
     const compactStatus = compactStatusFromBuildStatus(buildResult.status);
     if (compactStatus !== "success") {
+      if (compactStatus === "degraded") {
+        await updateGeneratedSessionMetadata({
+          store: dependencies.threadStore,
+          threadId: input.threadId,
+          generatedOutput: buildGeneratedOutputMetadata({
+            threadId: input.threadId,
+            threadViewId: buildResult.draftThreadViewId,
+            generatedAt: (dependencies.now ?? (() => new Date()))().toISOString(),
+            status: "degraded",
+            placeholderExplicit:
+              input.requestedBandPercentages.detailed > 0 || input.requestedBandPercentages.brief > 0,
+            issues: buildResult.blockers,
+          }),
+          now: dependencies.now,
+        });
+      }
+
       return {
         threadId: input.threadId,
         requestedLowerBound: input.requestedLowerBound,
@@ -158,7 +199,7 @@ export async function runSmartCompact(
         dependencies.piThreadViewWriterOptions,
       );
     } catch (error) {
-      return {
+      const writeFailedResult: SmartCompactCommandResult = {
         threadId: input.threadId,
         requestedLowerBound: input.requestedLowerBound,
         requestedBandPercentages: input.requestedBandPercentages,
@@ -174,6 +215,21 @@ export async function runSmartCompact(
         ],
         resultingTokenCount: buildResult.resultingTokenCount,
       };
+      await updateGeneratedSessionMetadata({
+        store: dependencies.threadStore,
+        threadId: input.threadId,
+        generatedOutput: buildGeneratedOutputMetadata({
+          threadId: input.threadId,
+          threadViewId: buildResult.draftThreadViewId,
+          generatedAt: (dependencies.now ?? (() => new Date()))().toISOString(),
+          status: "write_failed",
+          placeholderExplicit: piFile.placeholderExplicit,
+          issues: writeFailedResult.blockers,
+        }),
+        now: dependencies.now,
+      });
+
+      return writeFailedResult;
     }
 
     const piCliHarnessAdapter =
@@ -191,6 +247,16 @@ export async function runSmartCompact(
       store: dependencies.threadStore,
       threadId: input.threadId,
       generatedFilePath: writeResult.generatedFilePath,
+      generatedOutput: buildGeneratedOutputMetadata({
+        threadId: input.threadId,
+        threadViewId: buildResult.draftThreadViewId,
+        generatedFilePath: writeResult.generatedFilePath,
+        archivePath: writeResult.archivePath,
+        generatedAt: (dependencies.now ?? (() => new Date()))().toISOString(),
+        status: finalCompactStatus === "success" ? "available" : "reload_failed",
+        placeholderExplicit: piFile.placeholderExplicit,
+        issues: loadResult.ok ? [] : loadResult.issues,
+      }),
       revision: {
         revisionId: createProjectionRevisionId(),
         threadId: input.threadId,

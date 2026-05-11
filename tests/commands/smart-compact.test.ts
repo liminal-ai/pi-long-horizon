@@ -562,6 +562,80 @@ test("first smart compact can bootstrap deterministic artifacts", async () => {
   });
 });
 
+test("above-target draft reports degraded threshold result explicitly", async () => {
+  await withTempFeature3Store(async (context) => {
+    const seeded = await seedDeterministicRebuildThread(context.storeRootDir);
+
+    const result = await runSmartCompact(
+      {
+        threadId: seeded.threadId,
+        requestedLowerBound: 2,
+        requestedBandPercentages: { fullFidelity: 100, smooth: 0, detailed: 0, brief: 0 },
+        mode: "strict",
+      },
+      {
+        threadStore: seeded.threadStore,
+        threadViewStore: seeded.threadViewStore,
+        piThreadViewWriterOptions: {
+          pathResolver: createPathResolver(context),
+        },
+      },
+    );
+
+    assert.equal(result.compactStatus, "degraded");
+    assert.equal(result.blockers.some((issue) => issue.code === "LOWER_THRESHOLD_UNREACHED"), true);
+    assert.equal((result.resultingTokenCount ?? 0) > 2, true);
+    assert.equal(result.generatedFilePath, undefined);
+
+    const thread = await seeded.threadStore.openThread(seeded.threadId);
+    assert.equal(thread.ok, true);
+    assert.equal(thread.value.thread.projectionSummary.generatedOutput?.status, "degraded");
+    assert.equal(
+      thread.value.thread.projectionSummary.generatedOutput?.issues?.some(
+        (issue) => issue.code === "LOWER_THRESHOLD_UNREACHED",
+      ),
+      true,
+    );
+  });
+});
+
+test("compaction stops explicitly on threshold failure without writing or reloading", async () => {
+  await withTempFeature3Store(async (context) => {
+    const seeded = await seedDeterministicRebuildThread(context.storeRootDir);
+    const switchedTo: string[] = [];
+
+    const result = await runSmartCompact(
+      {
+        threadId: seeded.threadId,
+        requestedLowerBound: 2,
+        requestedBandPercentages: { fullFidelity: 100, smooth: 0, detailed: 0, brief: 0 },
+        mode: "strict",
+      },
+      {
+        threadStore: seeded.threadStore,
+        threadViewStore: seeded.threadViewStore,
+        piThreadViewWriterOptions: {
+          pathResolver: createPathResolver(context),
+        },
+        piCliHarnessAdapter: createPiCliHarnessAdapter({
+          switchSession: async (sessionPath) => {
+            switchedTo.push(sessionPath);
+            return { cancelled: false };
+          },
+        }),
+      },
+    );
+
+    assert.equal(result.compactStatus, "degraded");
+    assert.deepEqual(switchedTo, []);
+
+    const thread = await seeded.threadStore.openThread(seeded.threadId);
+    assert.equal(thread.ok, true);
+    assert.equal(thread.value.thread.target.currentGeneratedFilePath, undefined);
+    assert.deepEqual(thread.value.projections, []);
+  });
+});
+
 test("reload failure is explicit while preserving the generated output", async () => {
   await withTempFeature3Store(async (context) => {
     const seeded = await seedDeterministicRebuildThread(context.storeRootDir);
@@ -595,5 +669,6 @@ test("reload failure is explicit while preserving the generated output", async (
     assert.equal(thread.ok, true);
     assert.equal(thread.value.thread.target.currentGeneratedFilePath, result.generatedFilePath);
     assert.equal(thread.value.projections.at(-1)?.status, "failed");
+    assert.equal(thread.value.thread.projectionSummary.generatedOutput?.status, "reload_failed");
   });
 });
