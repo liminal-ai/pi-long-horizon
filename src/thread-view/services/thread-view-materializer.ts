@@ -182,6 +182,12 @@ function deriveDefaultSmoothBand(
   orderedTurns: readonly TurnRecord[],
   fullFidelityBand: BandRecord,
 ): BandRecord {
+  // Feature 3 rebuilds persist a zero smooth-band budget when the operator explicitly selects 0%.
+  // Preserve that explicit empty selection instead of backfilling from the full-fidelity boundary.
+  if (smoothBand.selectedIds.length === 0 && smoothBand.targetTokenBudget === 0) {
+    return normalizeTurnBand("smooth", smoothBand, orderedTurns);
+  }
+
   if (smoothBand.selectedIds.length > 0) {
     return normalizeTurnBand("smooth", smoothBand, orderedTurns, {
       excludeTurnIds: new Set(fullFidelityBand.selectedIds),

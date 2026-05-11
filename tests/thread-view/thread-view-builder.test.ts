@@ -148,6 +148,33 @@ test("smooth band begins after full-fidelity region by default", async () => {
   });
 });
 
+test("zero-percent smooth allocation preserves an explicitly empty smooth band", async () => {
+  await withTempFeature3Store(async ({ storeRootDir }) => {
+    const context = await seedDeterministicRebuildThread(storeRootDir);
+
+    const result = await buildDraftThreadView(
+      {
+        threadId: context.threadId,
+        requestedLowerBound: 30,
+        requestedBandPercentages: { fullFidelity: 100, smooth: 0, detailed: 0, brief: 0 },
+        mode: "strict",
+      },
+      {
+        threadStore: context.threadStore,
+        threadViewStore: context.threadViewStore,
+      },
+    );
+    const opened = await context.threadViewStore.openThreadView(context.threadId, result.draftThreadViewId);
+
+    assert.equal(opened.ok, true);
+    assert.deepEqual(opened.value.view.smoothBand.selectedIds, []);
+    assert.deepEqual(
+      opened.value.view.emittedMessages.filter((message) => message.bandType === "smooth"),
+      [],
+    );
+  });
+});
+
 test("smooth band does not split turns", async () => {
   await withTempFeature3Store(async ({ storeRootDir }) => {
     const context = await seedDeterministicRebuildThread(storeRootDir);

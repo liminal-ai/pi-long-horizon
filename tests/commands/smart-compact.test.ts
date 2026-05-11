@@ -31,6 +31,18 @@ function createPathResolver(context: {
   };
 }
 
+function countGeneratedSourceEntries(fileContent: string, generatedSource: string): number {
+  const projectionMetadata = fileContent
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line) as { customType?: string; data?: { entries?: Array<{ generatedSource?: string }> } })
+    .find((entry) => entry.customType === "pi-long-horizon.thread-view.projection");
+
+  return (
+    projectionMetadata?.data?.entries?.filter((entry) => entry.generatedSource === generatedSource).length ?? 0
+  );
+}
+
 async function stripDerivedState(context: Awaited<ReturnType<typeof seedDeterministicRebuildThread>>) {
   const snapshot = await context.threadStore.openThread(context.threadId);
   assert.equal(snapshot.ok, true);
@@ -163,6 +175,39 @@ test("command default reload path uses the configured PI session switch dependen
 
     assert.equal(result.compactStatus, "success");
     assert.deepEqual(switchedTo, [result.generatedFilePath!]);
+  });
+});
+
+test("zero-percent smooth allocation writes no smooth_turn entries to the PI session file", async () => {
+  await withTempFeature3Store(async (context) => {
+    const seeded = await seedDeterministicRebuildThread(context.storeRootDir);
+
+    const result = await runSmartCompact(
+      {
+        threadId: seeded.threadId,
+        requestedLowerBound: 30,
+        requestedBandPercentages: { fullFidelity: 100, smooth: 0, detailed: 0, brief: 0 },
+        mode: "strict",
+      },
+      {
+        threadStore: seeded.threadStore,
+        threadViewStore: seeded.threadViewStore,
+        piThreadViewWriterOptions: {
+          pathResolver: createPathResolver(context),
+          now: () => new Date("2026-01-01T00:00:00.000Z"),
+        },
+        piCliHarnessAdapter: createPiCliHarnessAdapter({
+          switchSession: async () => ({ cancelled: false }),
+        }),
+        now: () => new Date("2026-01-01T00:00:00.000Z"),
+      },
+    );
+
+    assert.equal(result.compactStatus, "success");
+    assert.ok(result.generatedFilePath);
+
+    const fileContent = await readFile(result.generatedFilePath!, "utf8");
+    assert.equal(countGeneratedSourceEntries(fileContent, "smooth_turn"), 0);
   });
 });
 

@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "command": "epic-review",
+  "status": "completed",
+  "phase": "finalizing",
+  "startedAt": "2026-05-11T10:50:24.860Z",
+  "updatedAt": "2026-05-11T11:00:15.542Z",
+  "lastOutputAt": "2026-05-11T11:00:15.419Z",
+  "providerLiveness": "completed",
+  "provider": "codex",
+  "pid": 75370,
+  "cwd": "/Users/leemoore/code/pi-long-horizon",
+  "timeoutMs": 3600000,
+  "configuredStartupTimeoutMs": 300000,
+  "configuredSilenceTimeoutMs": 600000,
+  "artifactPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/03-deterministic-band-and-projection-mechanics/artifacts/epic/001-epic-review.json",
+  "streamPaths": {
+    "stdoutPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/03-deterministic-band-and-projection-mechanics/artifacts/epic/streams/001-epic-review.stdout.log",
+    "stderrPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/03-deterministic-band-and-projection-mechanics/artifacts/epic/streams/001-epic-review.stderr.log"
+  },
+  "progressPaths": {
+    "statusPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/03-deterministic-band-and-projection-mechanics/artifacts/epic/progress/001-epic-review.status.json",
+    "progressPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/03-deterministic-band-and-projection-mechanics/artifacts/epic/progress/001-epic-review.progress.jsonl"
+  },
+  "lastEvent": "completed",
+  "lastEventSummary": "epic-review completed with outcome revise.",
+  "verifiersCompleted": 2,
+  "verifiersPlanned": 2,
+  "verifierLanes": [
+    {
+      "label": "epic-reviewer-1",
+      "provider": "codex",
+      "state": "completed",
+      "providerLiveness": "completed",
+      "lastOutputAt": "2026-05-11T10:55:46.600Z",
+      "lastEvent": "verifier-completed",
+      "lastEventSummary": "epic-reviewer-1 completed for epic review."
+    },
+    {
+      "label": "epic-reviewer-2",
+      "provider": "codex",
+      "state": "completed",
+      "providerLiveness": "completed",
+      "lastOutputAt": "2026-05-11T10:52:03.697Z",
+      "lastEvent": "verifier-completed",
+      "lastEventSummary": "epic-reviewer-2 completed for epic review."
+    }
+  ]
+}

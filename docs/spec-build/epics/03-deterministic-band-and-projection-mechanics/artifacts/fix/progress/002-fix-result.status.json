@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "command": "epic-fix",
+  "status": "completed",
+  "phase": "finalizing",
+  "startedAt": "2026-05-11T11:01:25.328Z",
+  "updatedAt": "2026-05-11T11:04:37.878Z",
+  "lastOutputAt": "2026-05-11T11:04:37.786Z",
+  "providerLiveness": "completed",
+  "provider": "codex",
+  "pid": 84034,
+  "cwd": "/Users/leemoore/code/pi-long-horizon",
+  "timeoutMs": 3600000,
+  "configuredStartupTimeoutMs": 300000,
+  "configuredSilenceTimeoutMs": 480000,
+  "artifactPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/03-deterministic-band-and-projection-mechanics/artifacts/fix/002-fix-result.json",
+  "streamPaths": {
+    "stdoutPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/03-deterministic-band-and-projection-mechanics/artifacts/fix/streams/002-fix-result.stdout.log",
+    "stderrPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/03-deterministic-band-and-projection-mechanics/artifacts/fix/streams/002-fix-result.stderr.log"
+  },
+  "progressPaths": {
+    "statusPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/03-deterministic-band-and-projection-mechanics/artifacts/fix/progress/002-fix-result.status.json",
+    "progressPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/03-deterministic-band-and-projection-mechanics/artifacts/fix/progress/002-fix-result.progress.jsonl"
+  },
+  "lastEvent": "completed",
+  "lastEventSummary": "epic-fix completed with outcome cleaned."
+}

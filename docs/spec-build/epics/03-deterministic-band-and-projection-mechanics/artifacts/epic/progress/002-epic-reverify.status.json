@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "command": "epic-reverify",
+  "status": "completed",
+  "phase": "finalizing",
+  "startedAt": "2026-05-11T11:05:36.071Z",
+  "updatedAt": "2026-05-11T11:08:38.120Z",
+  "lastOutputAt": "2026-05-11T11:08:38.033Z",
+  "providerLiveness": "completed",
+  "provider": "codex",
+  "pid": 92051,
+  "cwd": "/Users/leemoore/code/pi-long-horizon",
+  "timeoutMs": 3600000,
+  "configuredStartupTimeoutMs": 300000,
+  "configuredSilenceTimeoutMs": 600000,
+  "artifactPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/03-deterministic-band-and-projection-mechanics/artifacts/epic/002-epic-reverify.json",
+  "streamPaths": {
+    "stdoutPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/03-deterministic-band-and-projection-mechanics/artifacts/epic/streams/002-epic-reverify.stdout.log",
+    "stderrPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/03-deterministic-band-and-projection-mechanics/artifacts/epic/streams/002-epic-reverify.stderr.log"
+  },
+  "progressPaths": {
+    "statusPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/03-deterministic-band-and-projection-mechanics/artifacts/epic/progress/002-epic-reverify.status.json",
+    "progressPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/03-deterministic-band-and-projection-mechanics/artifacts/epic/progress/002-epic-reverify.progress.jsonl"
+  },
+  "lastEvent": "completed",
+  "lastEventSummary": "epic-reverify completed with outcome ready-for-closeout."
+}

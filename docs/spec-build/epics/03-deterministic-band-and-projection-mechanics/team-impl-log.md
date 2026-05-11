@@ -1,7 +1,7 @@
 # Team Implementation Log
 
 ## Run Overview
-- State: PRE_EPIC_VERIFY
+- State: COMPLETE
 - Spec Pack Root: /Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/03-deterministic-band-and-projection-mechanics
 - Current Story: none (all stories accepted)
 - Current Phase: none
@@ -185,14 +185,14 @@
 ## Cumulative Baselines
 - Baseline Before Current Story: 573
 - Expected After Current Story: N/A (all stories complete)
-- Latest Actual Total: 575 (test files); 329 test cases (285 unit + 10 integration + 34 E2E)
+- Latest Actual Total: 575 (test files); 331 test cases (287 unit + 10 integration + 34 E2E)
 
 ## Epic Closeout
-- Current Epic Review Artifact: none
-- Epic Review Status: not-started
-- Epic Fix Status: not-started
-- Epic Reverify Status: not-started
-- Final Gate Status: not-run
+- Current Epic Review Artifact: artifacts/epic/001-epic-review.json
+- Epic Review Status: pass (after one fix round)
+- Epic Fix Status: cleaned (EV-03-001 zero-smooth materializer regression, EV-03-002 missing regression tests)
+- Epic Reverify Status: ready-for-closeout
+- Final Gate Status: pass (287 unit + 10 integration + 34 E2E = 331 tests, 0 failures)
 
 ## Open Risks / Accepted Risks
 - Codex auth status unknown — proceeding on assumption CLI works in this environment
