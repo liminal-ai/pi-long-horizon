@@ -62,6 +62,7 @@ export interface CanonicalActivityFixture {
   parts: PartRecord[];
   targetMetadata: PiTargetMetadata;
   targetEventKey?: string;
+  tokenTelemetry?: MessageRecord["tokenTelemetry"];
 }
 
 export type PiExtensionContextFixture = Pick<ExtensionContext, "cwd" | "sessionManager">;
@@ -146,6 +147,7 @@ export function makeMessageRecord(overrides: Partial<MessageRecord> = {}): Messa
     parts: overrides.parts ? overrides.parts.map((part) => ({ ...part })) : [makePartRecord()],
     ...overrides,
     targetMetadata: overrides.targetMetadata ? { ...overrides.targetMetadata } : undefined,
+    tokenTelemetry: overrides.tokenTelemetry ? structuredClone(overrides.tokenTelemetry) : undefined,
   };
 }
 
@@ -376,6 +378,7 @@ export function makeRuntimeNoteActivity(
     targetEventKey: "pi:session-001:runtime-note-001",
     ...overrides,
     parts,
+    tokenTelemetry: overrides.tokenTelemetry ? structuredClone(overrides.tokenTelemetry) : undefined,
   };
 }
 

@@ -12,6 +12,7 @@ import { openOrCreateManagedThread } from "../../src/context-steward/services/th
 import { mapPiMessageEnd } from "../../src/context-steward/pi/pi-message-mapper.js";
 import {
   DEFAULT_PI_MESSAGE_TIMESTAMP,
+  DEFAULT_PI_USAGE,
   DEFAULT_TEST_TIMESTAMP,
   makePiAssistantMessage,
   makePiExtensionContext,
@@ -281,6 +282,21 @@ test("rejects a branched PI session when no active branch can be resolved", asyn
 test("preserves imported source order, supported parts, timestamps, and PI metadata", async () => {
   await withTempThreadStore(async ({ storeRootDir, resolveProjectPath }) => {
     const store = new FileThreadStore(storeRootDir);
+    const assistantUsage = {
+      ...DEFAULT_PI_USAGE,
+      input: 300,
+      output: 101,
+      cacheRead: 17,
+      cacheWrite: 3,
+      totalTokens: 421,
+      cost: {
+        input: 0.003,
+        output: 0.00202,
+        cacheRead: 0.00005,
+        cacheWrite: 0.00008,
+        total: 0.00515,
+      },
+    };
     const entries = makePiSessionEntries({
       messages: [
         makePiUserMessage({
@@ -294,6 +310,7 @@ test("preserves imported source order, supported parts, timestamps, and PI metad
         makePiAssistantMessage({
           timestamp: DEFAULT_PI_MESSAGE_TIMESTAMP + 2_000,
           responseId: "response-import-001",
+          usage: assistantUsage,
           content: [
             { type: "text", text: "I inspected both." },
             { type: "thinking", thinking: "Need to preserve typed parts.", thinkingSignature: "sig-import-001" },
@@ -337,6 +354,11 @@ test("preserves imported source order, supported parts, timestamps, and PI metad
     assert.equal(snapshot.messages[1]?.targetMetadata?.responseId, "response-import-001");
     assert.equal(snapshot.messages[2]?.targetMetadata?.toolCallId, "call-import-001");
     assert.equal(snapshot.messages.every((message) => message.targetMetadata?.imported === true), true);
+    assert.equal(snapshot.messages[0]?.tokenTelemetry, undefined);
+    assert.deepEqual(snapshot.messages[1]?.tokenTelemetry?.providerUsage?.usage, assistantUsage);
+    assert.equal(snapshot.messages[1]?.tokenTelemetry?.providerUsage?.tokenCountRecord?.count, 421);
+    assert.equal(snapshot.messages[1]?.tokenTelemetry?.providerUsage?.tokenCountRecord?.scope, "provider_usage_telemetry");
+    assert.equal(snapshot.messages[2]?.tokenTelemetry, undefined);
   });
 });
 

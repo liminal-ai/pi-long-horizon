@@ -9,6 +9,9 @@ import type { StewardResult } from "../../src/context-steward/domain/errors.js";
 import { mapPiMessageEnd } from "../../src/context-steward/pi/pi-message-mapper.js";
 import { captureFinalizedActivity } from "../../src/context-steward/services/capture-service.js";
 import registerContextStewardExtension from "../../src/context-steward/pi/pi-extension.js";
+import { commandResultFromSmartCompact } from "../../src/context-steward/pi/pi-extension.js";
+import { OpenAIInputTokenCounter } from "../../src/token-accounting/index.js";
+import type { SmartCompactCommandResult } from "../../src/thread-view/domain/pi-thread-view-file.js";
 import { openOrCreateManagedThread } from "../../src/context-steward/services/thread-service.js";
 import type { WriteTurnsInput } from "../../src/context-steward/store/thread-store.js";
 import { FileThreadStore } from "../../src/context-steward/store/file-thread-store.js";
@@ -32,6 +35,36 @@ import {
   seedDeterministicRebuildThread,
   seedMissingDetailedPlaceholderThread,
 } from "../thread-view/helpers.js";
+
+const fakeOpenAICounter = new OpenAIInputTokenCounter({
+  async countInputTokens() {
+    return 1;
+  },
+}, "gpt-test");
+const fakeOverTargetOpenAICounter = new OpenAIInputTokenCounter({
+  async countInputTokens(request) {
+    return request.input.length === 1 ? 1 : 1_500;
+  },
+}, "gpt-test");
+const fakeBlockedPolicyCounter = Object.assign(
+  new OpenAIInputTokenCounter({
+    async countInputTokens() {
+      return 1;
+    },
+  }, "gpt-test"),
+  {
+    async countGeneratedSession() {
+      return {
+        count: 100,
+        scope: "generated_session",
+        source: "pi_heuristic",
+        trustClass: "heuristic_estimate",
+        representationHash: "sha256:blocked-policy",
+        createdAt: DEFAULT_TEST_TIMESTAMP,
+      };
+    },
+  },
+) as OpenAIInputTokenCounter;
 
 interface RegisteredCommand {
   handler: (args: string, ctx: ExtensionCommandContext) => Promise<void>;
@@ -57,6 +90,11 @@ function createCommandContext(
   const notifications: Array<{ message: string; level: string }> = [];
   const ctx = {
     cwd: target.cwd!,
+    model: {
+      provider: "openai-codex",
+      id: "gpt-5.4-mini",
+    },
+    getThinkingLevel: () => "high",
     sessionManager: {
       getSessionId: () => target.sessionId ?? "",
       getSessionFile: () => target.sessionFilePath,
@@ -702,6 +740,7 @@ test("/lh-smart-compact accepts explicit inputs through the production command s
     registerContextStewardExtension(api, {
       createStore: () => seeded.threadStore,
       createThreadViewStore: () => seeded.threadViewStore,
+      openAIInputTokenCounter: fakeOpenAICounter,
     });
 
     const smartCompactCommand = commands.get("lh-smart-compact");
@@ -709,7 +748,7 @@ test("/lh-smart-compact accepts explicit inputs through the production command s
 
     const { ctx, notifications, replacementNotifications, switchedTo } = createSwitchingCommandContext(target);
     await smartCompactCommand!.handler(
-      "--lower-bound 120 --full 60 --smooth 40 --detailed 0 --brief 0 --mode strict",
+      "--lower-bound 2000 --full 60 --smooth 40 --detailed 0 --brief 0 --mode prepare",
       ctx,
     );
 
@@ -718,7 +757,7 @@ test("/lh-smart-compact accepts explicit inputs through the production command s
     assert.equal(replacementNotifications[0]!.level, "info");
     assert.match(
       replacementNotifications[0]!.message,
-      /^Smart compact: Generated PI session .+ for thread .+ and reloaded PI\.$/,
+      /^Smart compact: Generated PI session .+ for thread .+ and reloaded PI\. Generated-session token count: 1 \(provider_input_count\/exact\)\.$/,
     );
     assert.equal(switchedTo.length, 1);
 
@@ -727,6 +766,128 @@ test("/lh-smart-compact accepts explicit inputs through the production command s
     assert.equal(thread.value.thread.target.currentGeneratedFilePath, switchedTo[0]);
     await access(switchedTo[0]!);
   });
+});
+
+test("/lh-smart-compact surfaces final generated-session count source and trust when output is degraded", async () => {
+  await withTempFeature3Store(async ({ projectDir }) => {
+    const seeded = await seedMissingDetailedPlaceholderThread(`${projectDir}/.context-steward`);
+    const target = makeThreadTarget({
+      sessionId: "session-thread-view-builder",
+      cwd: projectDir,
+    });
+
+    const { api, commands } = createMockPiApi();
+    registerContextStewardExtension(api, {
+      createStore: () => seeded.threadStore,
+      createThreadViewStore: () => seeded.threadViewStore,
+      openAIInputTokenCounter: fakeOverTargetOpenAICounter,
+    });
+
+    const smartCompactCommand = commands.get("lh-smart-compact");
+    assert.ok(smartCompactCommand);
+
+    const { ctx, notifications, replacementNotifications, switchedTo } = createSwitchingCommandContext(target);
+    await smartCompactCommand!.handler(
+      "--lower-bound 1200 --full 60 --smooth 40 --detailed 0 --brief 0 --mode prepare",
+      ctx,
+    );
+
+    assert.deepEqual(replacementNotifications, []);
+    assert.deepEqual(switchedTo, []);
+    assert.equal(notifications.length, 1);
+    assert.equal(notifications[0]!.level, "info");
+    assert.match(
+      notifications[0]!.message,
+      /^Smart compact: Generated PI session for thread .+ was not written or reloaded\. Generated-session token count: 1500 \(provider_input_count\/exact\)\. \[GENERATED_SESSION_OVER_LOWER_BOUND\]$/,
+    );
+  });
+});
+
+test("/lh-smart-compact surfaces final generated-session count source and trust when output is blocked", async () => {
+  await withTempFeature3Store(async ({ projectDir }) => {
+    const seeded = await seedMissingDetailedPlaceholderThread(`${projectDir}/.context-steward`);
+    const target = makeThreadTarget({
+      sessionId: "session-thread-view-builder",
+      cwd: projectDir,
+    });
+
+    const { api, commands } = createMockPiApi();
+    registerContextStewardExtension(api, {
+      createStore: () => seeded.threadStore,
+      createThreadViewStore: () => seeded.threadViewStore,
+      openAIInputTokenCounter: fakeBlockedPolicyCounter,
+    });
+
+    const smartCompactCommand = commands.get("lh-smart-compact");
+    assert.ok(smartCompactCommand);
+
+    const { ctx, notifications, replacementNotifications, switchedTo } = createSwitchingCommandContext(target);
+    await smartCompactCommand!.handler(
+      "--lower-bound 2000 --full 60 --smooth 40 --detailed 0 --brief 0 --mode prepare",
+      ctx,
+    );
+
+    assert.deepEqual(replacementNotifications, []);
+    assert.deepEqual(switchedTo, []);
+    assert.equal(notifications.length, 1);
+    assert.equal(notifications[0]!.level, "error");
+    assert.match(
+      notifications[0]!.message,
+      /^Smart compact failed: Thread .+ is blocked before generated output could be written\. Generated-session token count: 100 \(pi_heuristic\/heuristic_estimate\)\. \[TOKEN_COUNT_BLOCKED\]$/,
+    );
+  });
+});
+
+test("pi-extension smart compact failed summaries include generated-session count source and trust", () => {
+  const generatedSessionTokenCountMetadata = {
+    count: 321,
+    scope: "generated_session",
+    source: "provider_input_count",
+    trustClass: "exact",
+    representationHash: "sha256:summary-count",
+    createdAt: DEFAULT_TEST_TIMESTAMP,
+  } as const;
+  const baseResult = {
+    threadId: "thread-summary",
+    requestedLowerBound: 2_000,
+    requestedBandPercentages: { fullFidelity: 60, smooth: 40, detailed: 0, brief: 0 },
+    threadViewId: "thread-view-summary",
+    blockers: [],
+    resultingTokenCount: 1,
+    generatedSessionTokenCount: generatedSessionTokenCountMetadata.count,
+    generatedSessionTokenCountMetadata,
+    generatedSessionCountPolicy: {
+      status: "usable",
+      mode: "strict",
+      requestedScope: "generated_session",
+      recordScope: "generated_session",
+      source: "provider_input_count",
+      count: generatedSessionTokenCountMetadata.count,
+      usableForSmartCompact: true,
+      precedence: 100,
+      reasonCode: "COUNT_SOURCE_PROVIDER_INPUT_USABLE",
+      reason: "Provider input count is usable.",
+    },
+  } satisfies Omit<SmartCompactCommandResult, "compactStatus" | "generatedFilePath">;
+
+  const writeFailed = commandResultFromSmartCompact("thread-summary", {
+    ...baseResult,
+    compactStatus: "write_failed",
+  });
+  assert.equal(
+    writeFailed.summary,
+    "Generated PI session output could not be written for thread thread-summary. Generated-session token count: 321 (provider_input_count/exact).",
+  );
+
+  const reloadFailed = commandResultFromSmartCompact("thread-summary", {
+    ...baseResult,
+    compactStatus: "reload_failed",
+    generatedFilePath: "/tmp/generated-session.jsonl",
+  });
+  assert.equal(
+    reloadFailed.summary,
+    "Generated PI session /tmp/generated-session.jsonl was written for thread thread-summary, but PI reload failed. Generated-session token count: 321 (provider_input_count/exact).",
+  );
 });
 
 test("/lh-smart-compact rejects unknown arguments and invalid mode explicitly on the production command surface", async () => {
@@ -741,6 +902,7 @@ test("/lh-smart-compact rejects unknown arguments and invalid mode explicitly on
     registerContextStewardExtension(api, {
       createStore: () => seeded.threadStore,
       createThreadViewStore: () => seeded.threadViewStore,
+      openAIInputTokenCounter: fakeOpenAICounter,
     });
 
     const smartCompactCommand = commands.get("lh-smart-compact");
@@ -788,6 +950,7 @@ test("/lh-smart-compact reloads through the session-switch path even when PI alr
     registerContextStewardExtension(api, {
       createStore: () => seeded.threadStore,
       createThreadViewStore: () => seeded.threadViewStore,
+      openAIInputTokenCounter: fakeOpenAICounter,
     });
 
     const smartCompactCommand = commands.get("lh-smart-compact");
@@ -795,7 +958,7 @@ test("/lh-smart-compact reloads through the session-switch path even when PI alr
 
     const firstRun = createSwitchingCommandContext(target);
     await smartCompactCommand!.handler(
-      "--lower-bound 120 --full 60 --smooth 40 --detailed 0 --brief 0 --mode strict",
+      "--lower-bound 2000 --full 60 --smooth 40 --detailed 0 --brief 0 --mode prepare",
       firstRun.ctx,
     );
     assert.equal(firstRun.switchedTo.length, 1);
@@ -808,7 +971,7 @@ test("/lh-smart-compact reloads through the session-switch path even when PI alr
     });
     const secondRun = createSwitchingCommandContext(samePathTarget);
     await smartCompactCommand!.handler(
-      "--lower-bound 120 --full 60 --smooth 40 --detailed 0 --brief 0 --mode strict",
+      "--lower-bound 2000 --full 60 --smooth 40 --detailed 0 --brief 0 --mode prepare",
       secondRun.ctx,
     );
 
@@ -818,7 +981,7 @@ test("/lh-smart-compact reloads through the session-switch path even when PI alr
     assert.equal(secondRun.replacementNotifications[0]!.level, "info");
     assert.match(
       secondRun.replacementNotifications[0]!.message,
-      /^Smart compact: Generated PI session .+ for thread .+ and reloaded PI\.$/,
+      /^Smart compact: Generated PI session .+ for thread .+ and reloaded PI\. Generated-session token count: 1 \(provider_input_count\/exact\)\.$/,
     );
   });
 });

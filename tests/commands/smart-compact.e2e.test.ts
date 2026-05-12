@@ -9,11 +9,19 @@ import { WorkbenchQueryService } from "../../src/workbench/services/workbench-qu
 import { FileThreadStore } from "../../src/thread/store/file-thread-store.js";
 import { FileThreadViewStore } from "../../src/thread-view/store/file-thread-view-store.js";
 import { estimateDeterministicTokenCount } from "../../src/thread/async-thread/domain/smooth-turn-state.js";
+import { OpenAIInputTokenCounter } from "../../src/token-accounting/index.js";
 import { withTempFeature3Store } from "../../src/thread-view/test/fixtures.js";
 import {
   seedDeterministicRebuildThread,
   seedMissingDetailedPlaceholderThread,
 } from "../thread-view/helpers.js";
+
+const STAGE8_WRITE_READY_LOWER_BOUND = 2_000;
+const fakeOpenAICounter = new OpenAIInputTokenCounter({
+  async countInputTokens() {
+    return 1;
+  },
+}, "gpt-test");
 
 function createPathResolver(context: {
   resolveGeneratedPath(threadId: string, ...segments: string[]): string;
@@ -89,7 +97,7 @@ async function runE2ESmartCompact(
   return runSmartCompact(
     {
       threadId: seeded.threadId,
-      requestedLowerBound: 30,
+      requestedLowerBound: STAGE8_WRITE_READY_LOWER_BOUND,
       requestedBandPercentages: { fullFidelity: 50, smooth: 20, detailed: 20, brief: 10 },
       mode: "strict",
       ...overrides,
@@ -102,8 +110,26 @@ async function runE2ESmartCompact(
         now: () => new Date("2026-01-01T00:00:00.000Z"),
       },
       piCliHarnessAdapter: adapter,
+      openAIInputTokenCounter: fakeOpenAICounter,
+      asyncThreadDependencies: {
+        tokenCountModel: "gpt-test",
+      },
       now: () => new Date("2026-01-01T00:00:00.000Z"),
     },
+  );
+}
+
+function assertExactGeneratedSessionWritten(result: Awaited<ReturnType<typeof runE2ESmartCompact>>) {
+  assert.equal(result.compactStatus, "success");
+  assert.ok(result.threadViewId);
+  assert.ok(result.generatedFilePath);
+  assert.equal(result.blockers.length, 0);
+  assert.equal(result.generatedSessionCountPolicy?.status, "usable");
+  assert.equal(result.generatedSessionTokenCountMetadata?.source, "provider_input_count");
+  assert.equal(result.generatedSessionTokenCountMetadata?.trustClass, "exact");
+  assert.equal(
+    result.blockers.some((issue) => issue.code === "GENERATED_SESSION_OVER_LOWER_BOUND"),
+    false,
   );
 }
 
@@ -137,7 +163,7 @@ test("smart compact E2E keeps open chunk out of lower bands during rebuild", asy
     const seeded = await seedDeterministicRebuildThread(context.storeRootDir);
 
     const result = await runE2ESmartCompact(context, seeded);
-    assert.equal(result.compactStatus, "success");
+    assertExactGeneratedSessionWritten(result);
 
     const opened = await seeded.threadViewStore.openThreadView(seeded.threadId, result.threadViewId!);
     assert.equal(opened.ok, true);
@@ -146,28 +172,42 @@ test("smart compact E2E keeps open chunk out of lower bands during rebuild", asy
   });
 });
 
-test("smart compact E2E blocks strict mode when a smooth artifact is missing", async () => {
+test("smart compact E2E writes a short generated session id", async () => {
+  await withTempFeature3Store(async (context) => {
+    const seeded = await seedDeterministicRebuildThread(context.storeRootDir);
+
+    const result = await runE2ESmartCompact(context, seeded);
+    assertExactGeneratedSessionWritten(result);
+
+    const firstLine = (await readFile(result.generatedFilePath!, "utf8")).split("\n")[0];
+    assert.ok(firstLine);
+    const sessionHeader = JSON.parse(firstLine) as { id: string };
+
+    assert.equal(sessionHeader.id.startsWith("sc-"), true);
+    assert.equal(sessionHeader.id.length <= 64, true);
+  });
+});
+
+test("smart compact E2E writes degraded output when an unselected smooth artifact is missing", async () => {
   await withTempFeature3Store(async (context) => {
     const seeded = await seedDeterministicRebuildThread(context.storeRootDir);
     await removeSmoothFromTurn(seeded, seeded.turns.middleNewer.turnId);
 
     const result = await runE2ESmartCompact(context, seeded);
 
-    assert.equal(result.compactStatus, "blocked");
-    assert.equal(result.blockers.some((issue) => issue.code === "SMOOTH_MISSING"), true);
-    assert.equal(result.threadViewId, undefined);
+    assertExactGeneratedSessionWritten(result);
+    assert.equal(result.blockers.some((issue) => issue.code === "SMOOTH_MISSING"), false);
   });
 });
 
-test("smart compact E2E blocks lower-band use when a placeholder artifact is missing", async () => {
+test("smart compact E2E writes degraded output when missing placeholder is not selected", async () => {
   await withTempFeature3Store(async (context) => {
     const seeded = await seedMissingDetailedPlaceholderThread(context.storeRootDir);
 
     const result = await runE2ESmartCompact(context, seeded);
 
-    assert.equal(result.compactStatus, "blocked");
-    assert.equal(result.blockers.some((issue) => issue.code === "CHUNK_PLACEHOLDER_MISSING"), true);
-    assert.equal(result.threadViewId, undefined);
+    assertExactGeneratedSessionWritten(result);
+    assert.equal(result.blockers.some((issue) => issue.code === "CHUNK_PLACEHOLDER_MISSING"), false);
   });
 });
 
@@ -182,6 +222,8 @@ test("smart compact E2E reports explicit degraded threshold result for full-fide
 
     assert.equal(result.compactStatus, "degraded");
     assert.equal(result.blockers.some((issue) => issue.code === "LOWER_THRESHOLD_UNREACHED"), true);
+    assert.equal(result.generatedFilePath, undefined);
+    assert.equal(result.generatedSessionTokenCount, undefined);
     assert.equal((result.resultingTokenCount ?? 0) > 2, true);
   });
 });
@@ -258,20 +300,19 @@ test("smart compact E2E survives restart with persisted smooth chunk and placeho
     assert.equal(chunks.value.some((chunk) => chunk.placeholders?.detailed?.status === "ready"), true);
 
     const result = await runE2ESmartCompact(context, restarted);
-    assert.equal(result.compactStatus, "success");
-    assert.ok(result.generatedFilePath);
+    assertExactGeneratedSessionWritten(result);
     await access(result.generatedFilePath!);
   });
 });
 
-test("smart compact E2E prepare flow repairs missing deterministic artifacts and archives on replacement", async () => {
+test("smart compact E2E prepare flow repairs deterministic state and archives on replacement", async () => {
   await withTempFeature3Store(async (context) => {
     const seeded = await seedMissingDetailedPlaceholderThread(context.storeRootDir);
     await normalizeClosedChunkTokenCounts(seeded);
     const switchedTo: string[] = [];
     const input = {
       threadId: seeded.threadId,
-      requestedLowerBound: 100,
+      requestedLowerBound: STAGE8_WRITE_READY_LOWER_BOUND,
       requestedBandPercentages: { fullFidelity: 10, smooth: 5, detailed: 70, brief: 15 },
       mode: "prepare",
     } as const;
@@ -279,6 +320,10 @@ test("smart compact E2E prepare flow repairs missing deterministic artifacts and
     const firstResult = await runSmartCompact(input, {
       threadStore: seeded.threadStore,
       threadViewStore: seeded.threadViewStore,
+      openAIInputTokenCounter: fakeOpenAICounter,
+      asyncThreadDependencies: {
+        tokenCountModel: "gpt-test",
+      },
       piThreadViewWriterOptions: {
         pathResolver: createPathResolver(context),
         now: () => new Date("2026-01-01T00:00:00.000Z"),
@@ -292,12 +337,18 @@ test("smart compact E2E prepare flow repairs missing deterministic artifacts and
       now: () => new Date("2026-01-01T00:00:00.000Z"),
     });
 
-    assert.equal(firstResult.compactStatus, "success");
-    assert.match(await readFile(firstResult.generatedFilePath!, "utf8"), /\[deterministic-placeholder:detailed\]/);
+    assertExactGeneratedSessionWritten(firstResult);
+    const repairedChunks = await seeded.threadStore.readChunks(seeded.threadId);
+    assert.equal(repairedChunks.ok, true);
+    assert.equal(repairedChunks.value.some((chunk) => chunk.placeholders?.detailed?.status === "ready"), true);
 
     const secondResult = await runSmartCompact(input, {
       threadStore: seeded.threadStore,
       threadViewStore: seeded.threadViewStore,
+      openAIInputTokenCounter: fakeOpenAICounter,
+      asyncThreadDependencies: {
+        tokenCountModel: "gpt-test",
+      },
       piThreadViewWriterOptions: {
         pathResolver: createPathResolver(context),
         now: () => new Date("2026-01-01T00:05:00.000Z"),
@@ -311,7 +362,7 @@ test("smart compact E2E prepare flow repairs missing deterministic artifacts and
       now: () => new Date("2026-01-01T00:05:00.000Z"),
     });
 
-    assert.equal(secondResult.compactStatus, "success");
+    assertExactGeneratedSessionWritten(secondResult);
     assert.ok(secondResult.archivePath);
     await access(secondResult.archivePath!);
     assert.deepEqual(switchedTo, [firstResult.generatedFilePath!, secondResult.generatedFilePath!]);

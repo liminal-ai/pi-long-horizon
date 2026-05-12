@@ -1,5 +1,6 @@
 import type { ThreadViewMessageRecord } from "./thread-view-records.js";
 import type { StewardIssue } from "../../thread/domain/errors.js";
+import type { TokenCountSourceDecision, TokenCountRecord } from "../../token-accounting/index.js";
 
 export interface ThreadViewBandPercentages {
   fullFidelity: number;
@@ -40,6 +41,9 @@ export interface PiThreadViewFile {
   sessionId: string;
   cwd: string;
   parentSessionId?: string;
+  modelProvider?: string;
+  modelId?: string;
+  thinkingLevel?: string;
   generatedAt: string;
   placeholderExplicit: boolean;
   fileName: string;
@@ -54,6 +58,9 @@ export interface BuildPiThreadViewFileInput {
   sessionId?: string;
   cwd?: string;
   parentSessionId?: string;
+  modelProvider?: string;
+  modelId?: string;
+  thinkingLevel?: string;
   generatedAt?: string;
   fileName?: string;
 }
@@ -90,6 +97,9 @@ export interface SmartCompactCommandInput {
   requestedLowerBound: number;
   requestedBandPercentages: ThreadViewBandPercentages;
   mode: "strict" | "prepare";
+  modelProvider?: string;
+  modelId?: string;
+  thinkingLevel?: string;
 }
 
 export interface SmartCompactCommandResult {
@@ -102,6 +112,9 @@ export interface SmartCompactCommandResult {
   compactStatus: "success" | "blocked" | "degraded" | "write_failed" | "reload_failed";
   blockers: StewardIssue[];
   resultingTokenCount?: number;
+  generatedSessionTokenCount?: number;
+  generatedSessionTokenCountMetadata?: TokenCountRecord;
+  generatedSessionCountPolicy?: TokenCountSourceDecision;
 }
 
 const BAND_PERCENTAGE_KEYS = ["fullFidelity", "smooth", "detailed", "brief"] as const;

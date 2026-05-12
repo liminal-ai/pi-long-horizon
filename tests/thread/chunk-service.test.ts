@@ -5,6 +5,7 @@ import test from "node:test";
 import { ensureSmoothTurn } from "../../src/thread/async-thread/services/smooth-turn-service.js";
 import { updateChunkState } from "../../src/thread/async-thread/services/chunk-service.js";
 import { estimateDeterministicTokenCount } from "../../src/thread/async-thread/domain/smooth-turn-state.js";
+import { estimateCompactedTextTokenCount } from "../../src/thread-view/services/pi-token-estimator.js";
 import { FileThreadStore } from "../../src/thread/store/file-thread-store.js";
 import { withTempThreadStore } from "../../src/thread/async-thread/test/temp-thread-store.js";
 import type { StewardResult } from "../../src/thread/domain/errors.js";
@@ -250,7 +251,7 @@ test("closed smoothed turn becomes eligible", async () => {
 
     const openChunk = expectSingleOpenChunk(await readChunks(store, "thread-chunk-eligible"));
     assert.deepEqual(openChunk.sourceTurnIds, ["turn-ready"]);
-    assert.equal(openChunk.smoothTokenCount, turn.smooth?.tokenCount);
+    assert.equal(openChunk.smoothTokenCountMetadata?.count, turn.smooth?.tokenCountMetadata?.count);
   });
 });
 
@@ -283,10 +284,10 @@ test("exactly one open chunk exists", async () => {
       {
         store,
         settings: {
-          targetMinSmoothTokens: firstTurn.smooth?.tokenCount ?? 1,
+          targetMinSmoothTokens: firstTurn.smooth?.tokenCountMetadata?.count ?? 1,
           targetSoftMaxSmoothTokens:
-            (firstTurn.smooth?.tokenCount ?? 0) + (secondTurn.smooth?.tokenCount ?? 0) - 1,
-          hardMaxSmoothTokens: (firstTurn.smooth?.tokenCount ?? 0) + (secondTurn.smooth?.tokenCount ?? 0) + 5,
+            (firstTurn.smooth?.tokenCountMetadata?.count ?? 0) + (secondTurn.smooth?.tokenCountMetadata?.count ?? 0) - 1,
+          hardMaxSmoothTokens: (firstTurn.smooth?.tokenCountMetadata?.count ?? 0) + (secondTurn.smooth?.tokenCountMetadata?.count ?? 0) + 5,
         },
         now: () => new Date(DEFAULT_TEST_TIMESTAMP),
       },
@@ -327,10 +328,10 @@ test("closed chunk remains closed", async () => {
       {
         store,
         settings: {
-          targetMinSmoothTokens: firstTurn.smooth?.tokenCount ?? 1,
+          targetMinSmoothTokens: firstTurn.smooth?.tokenCountMetadata?.count ?? 1,
           targetSoftMaxSmoothTokens:
-            (firstTurn.smooth?.tokenCount ?? 0) + (secondTurn.smooth?.tokenCount ?? 0) - 1,
-          hardMaxSmoothTokens: (firstTurn.smooth?.tokenCount ?? 0) + (secondTurn.smooth?.tokenCount ?? 0) + 5,
+            (firstTurn.smooth?.tokenCountMetadata?.count ?? 0) + (secondTurn.smooth?.tokenCountMetadata?.count ?? 0) - 1,
+          hardMaxSmoothTokens: (firstTurn.smooth?.tokenCountMetadata?.count ?? 0) + (secondTurn.smooth?.tokenCountMetadata?.count ?? 0) + 5,
         },
         now: () => new Date(DEFAULT_TEST_TIMESTAMP),
       },
@@ -478,9 +479,9 @@ test("chunk stays open below threshold", async () => {
       {
         store,
         settings: {
-          targetMinSmoothTokens: (turn.smooth?.tokenCount ?? 0) + 1,
-          targetSoftMaxSmoothTokens: (turn.smooth?.tokenCount ?? 0) + 10,
-          hardMaxSmoothTokens: (turn.smooth?.tokenCount ?? 0) + 20,
+          targetMinSmoothTokens: (turn.smooth?.tokenCountMetadata?.count ?? 0) + 1,
+          targetSoftMaxSmoothTokens: (turn.smooth?.tokenCountMetadata?.count ?? 0) + 10,
+          hardMaxSmoothTokens: (turn.smooth?.tokenCountMetadata?.count ?? 0) + 20,
         },
         now: () => new Date(DEFAULT_TEST_TIMESTAMP),
       },
@@ -519,10 +520,10 @@ test("chunk closes on soft threshold condition", async () => {
       {
         store,
         settings: {
-          targetMinSmoothTokens: firstTurn.smooth?.tokenCount ?? 1,
+          targetMinSmoothTokens: firstTurn.smooth?.tokenCountMetadata?.count ?? 1,
           targetSoftMaxSmoothTokens:
-            (firstTurn.smooth?.tokenCount ?? 0) + (secondTurn.smooth?.tokenCount ?? 0) - 1,
-          hardMaxSmoothTokens: (firstTurn.smooth?.tokenCount ?? 0) + (secondTurn.smooth?.tokenCount ?? 0) + 10,
+            (firstTurn.smooth?.tokenCountMetadata?.count ?? 0) + (secondTurn.smooth?.tokenCountMetadata?.count ?? 0) - 1,
+          hardMaxSmoothTokens: (firstTurn.smooth?.tokenCountMetadata?.count ?? 0) + (secondTurn.smooth?.tokenCountMetadata?.count ?? 0) + 10,
         },
         now: () => new Date(DEFAULT_TEST_TIMESTAMP),
       },
@@ -568,8 +569,8 @@ test("hard-cap closure is explicit", async () => {
         settings: {
           targetMinSmoothTokens: 1,
           targetSoftMaxSmoothTokens:
-            (firstTurn.smooth?.tokenCount ?? 0) + (secondTurn.smooth?.tokenCount ?? 0),
-          hardMaxSmoothTokens: (firstTurn.smooth?.tokenCount ?? 0) + (secondTurn.smooth?.tokenCount ?? 0),
+            (firstTurn.smooth?.tokenCountMetadata?.count ?? 0) + (secondTurn.smooth?.tokenCountMetadata?.count ?? 0),
+          hardMaxSmoothTokens: (firstTurn.smooth?.tokenCountMetadata?.count ?? 0) + (secondTurn.smooth?.tokenCountMetadata?.count ?? 0),
         },
         now: () => new Date(DEFAULT_TEST_TIMESTAMP),
       },
@@ -611,8 +612,8 @@ test("closed chunk reports closed state and token size", async () => {
         settings: {
           targetMinSmoothTokens: 1,
           targetSoftMaxSmoothTokens:
-            (firstTurn.smooth?.tokenCount ?? 0) + (secondTurn.smooth?.tokenCount ?? 0),
-          hardMaxSmoothTokens: (firstTurn.smooth?.tokenCount ?? 0) + (secondTurn.smooth?.tokenCount ?? 0),
+            (firstTurn.smooth?.tokenCountMetadata?.count ?? 0) + (secondTurn.smooth?.tokenCountMetadata?.count ?? 0),
+          hardMaxSmoothTokens: (firstTurn.smooth?.tokenCountMetadata?.count ?? 0) + (secondTurn.smooth?.tokenCountMetadata?.count ?? 0),
         },
         now: () => new Date(DEFAULT_TEST_TIMESTAMP),
       },
@@ -625,9 +626,13 @@ test("closed chunk reports closed state and token size", async () => {
     const closedChunk = (await readChunks(reopenedStore, "thread-chunk-inspect-closed"))[0]!;
 
     assert.equal(closedChunk.lifecycleStatus, "closed");
-    assert.ok((closedChunk.smoothTokenCount ?? 0) > 0);
-    assert.equal(closedChunk.smoothTokenCount, estimateDeterministicTokenCount(closedChunk.smoothText ?? ""));
-    assert.equal(persistedJson[0]?.smoothTokenCount, closedChunk.smoothTokenCount);
+    assert.ok((closedChunk.smoothTokenCountMetadata?.count ?? 0) > 0);
+    assert.equal(closedChunk.smoothTokenCountMetadata?.count, estimateCompactedTextTokenCount(closedChunk.smoothText ?? ""));
+    assert.equal(closedChunk.smoothTokenCountMetadata?.scope, "chunk_smooth_materialized");
+    assert.equal(closedChunk.smoothTokenCountMetadata?.sourceRevision, closedChunk.sourceRevision);
+    assert.match(closedChunk.smoothTokenCountMetadata?.representationHash ?? "", /^sha256:/);
+    assert.equal(persistedJson[0]?.smoothTokenCountMetadata?.count, closedChunk.smoothTokenCountMetadata?.count);
+    assert.deepEqual(persistedJson[0]?.smoothTokenCountMetadata, closedChunk.smoothTokenCountMetadata);
   });
 });
 
@@ -650,9 +655,9 @@ test("open chunk reports partial state", async () => {
       {
         store,
         settings: {
-          targetMinSmoothTokens: (turn.smooth?.tokenCount ?? 0) + 10,
-          targetSoftMaxSmoothTokens: (turn.smooth?.tokenCount ?? 0) + 20,
-          hardMaxSmoothTokens: (turn.smooth?.tokenCount ?? 0) + 30,
+          targetMinSmoothTokens: (turn.smooth?.tokenCountMetadata?.count ?? 0) + 10,
+          targetSoftMaxSmoothTokens: (turn.smooth?.tokenCountMetadata?.count ?? 0) + 20,
+          hardMaxSmoothTokens: (turn.smooth?.tokenCountMetadata?.count ?? 0) + 30,
         },
         now: () => new Date(DEFAULT_TEST_TIMESTAMP),
       },
@@ -662,7 +667,7 @@ test("open chunk reports partial state", async () => {
     assert.equal(openChunk.lifecycleStatus, "open");
     assert.equal(openChunk.closedAt, undefined);
     assert.equal(openChunk.closeReason, undefined);
-    assert.equal(openChunk.smoothTokenCount, turn.smooth?.tokenCount);
+    assert.equal(openChunk.smoothTokenCountMetadata?.count, turn.smooth?.tokenCountMetadata?.count);
   });
 });
 
@@ -695,8 +700,8 @@ test("hard-max closure creates the next open chunk in the same update pass", asy
         settings: {
           targetMinSmoothTokens: 1,
           targetSoftMaxSmoothTokens:
-            (firstTurn.smooth?.tokenCount ?? 0) + (secondTurn.smooth?.tokenCount ?? 0),
-          hardMaxSmoothTokens: (firstTurn.smooth?.tokenCount ?? 0) + (secondTurn.smooth?.tokenCount ?? 0),
+            (firstTurn.smooth?.tokenCountMetadata?.count ?? 0) + (secondTurn.smooth?.tokenCountMetadata?.count ?? 0),
+          hardMaxSmoothTokens: (firstTurn.smooth?.tokenCountMetadata?.count ?? 0) + (secondTurn.smooth?.tokenCountMetadata?.count ?? 0),
         },
         now: () => new Date(DEFAULT_TEST_TIMESTAMP),
       },

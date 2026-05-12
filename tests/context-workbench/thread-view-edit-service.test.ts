@@ -666,14 +666,14 @@ test("band updates persist upper-band selections and materialized emitted output
         ...turns.first,
         smooth: {
           text: "[user]\nPlease summarize the migration risks.\n\n[assistant]\nMigration risks center on stale state and activation timing.",
-          tokenCount: 18,
+          tokenCountMetadata: { count: 18, scope: "smooth_turn_materialized", source: "pi_heuristic", trustClass: "heuristic_estimate", representationHash: "sha256:test-smooth-18", createdAt: "2026-01-01T00:00:00.000Z" },
         },
       }),
       makeTurnRecord({
         ...turns.second,
         smooth: {
           text: "[user]\nNow isolate the rollout fallback.\n\n[assistant]\nThe fallback keeps the active context intact while the draft is revised.",
-          tokenCount: 19,
+          tokenCountMetadata: { count: 19, scope: "smooth_turn_materialized", source: "pi_heuristic", trustClass: "heuristic_estimate", representationHash: "sha256:test-smooth-19", createdAt: "2026-01-01T00:00:00.000Z" },
         },
       }),
     ]);

@@ -2,10 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createStewardIssue } from "../../src/thread/domain/errors.js";
-import {
-  estimateMaterializedMessageTokenCount,
-  estimateRawMessageTokenCount,
-} from "../../src/thread-view/services/thread-view-builder.js";
 import { makeBandRecord, makeThreadView, makeThreadViewMessage, withTempFeature3Store } from "../../src/thread-view/test/fixtures.js";
 import { buildCompactionAuditReport } from "../../src/workbench/services/compaction-report-service.js";
 import { seedDeterministicRebuildThread } from "../thread-view/helpers.js";
@@ -122,6 +118,31 @@ async function seedReportView(storeRootDir: string) {
           status: "reload_failed",
           generatedSource: "thread_view",
           placeholderExplicit: true,
+          requestedLowerBound: 500,
+          generatedSessionTokenCount: 612,
+          generatedSessionTokenCountMetadata: {
+            count: 612,
+            scope: "generated_session",
+            source: "provider_input_count",
+            trustClass: "exact",
+            provider: "openai",
+            model: "gpt-test",
+            representationHash: "sha256:test",
+            createdAt: "2026-05-11T00:00:00.000Z",
+            provenance: "test",
+          },
+          generatedSessionCountPolicy: {
+            status: "usable",
+            mode: "strict",
+            requestedScope: "generated_session",
+            recordScope: "generated_session",
+            source: "provider_input_count",
+            count: 612,
+            usableForSmartCompact: true,
+            precedence: 100,
+            reasonCode: "COUNT_SOURCE_PROVIDER_INPUT_USABLE",
+            reason: "Provider input count is exact for generated-session decisions.",
+          },
           issues: [
             createStewardIssue({
               code: "PI_RELOAD_FAILED",
@@ -155,6 +176,10 @@ test("buildCompactionAuditReport reads band data from a seeded thread", async ()
     assert.equal(report.threadId, context.threadId);
     assert.equal(report.threadViewId, context.threadViewId);
     assert.equal(report.compactStatus, "reload_failed");
+    assert.equal(report.generatedSessionTokenCount, 612);
+    assert.equal(report.generatedSessionCountSource, "provider_input_count");
+    assert.equal(report.generatedSessionCountTrustClass, "exact");
+    assert.equal(report.generatedSessionCountPolicyStatus, "usable");
     assert.equal(report.generatedFilePath, "/tmp/generated.jsonl");
     assert.equal(report.archivePath, "/tmp/archive.jsonl");
     assert.deepEqual(report.bands.full_fidelity.selectedIds, [context.turns.oldest.turnId]);
@@ -172,32 +197,12 @@ test("buildCompactionAuditReport computes per-band token accounting", async () =
       { threadId: context.threadId, threadViewId: context.threadViewId },
       { threadStore: context.threadStore, threadViewStore: context.threadViewStore },
     );
-    const expectedFullFidelityTokenCount = context.turns.oldest.messages.reduce(
-      (total, message) =>
-        total +
-        estimateMaterializedMessageTokenCount({
-          messageId: message.messageId,
-          actorId: message.actorId,
-          actorType: message.actorType,
-          messageKind: message.messageKind,
-          capturedAt: message.capturedAt,
-          parts: structuredClone(message.parts),
-          targetMetadata: message.targetMetadata,
-        }),
-      0,
-    );
-    const expectedSmoothTokenCount = estimateMaterializedMessageTokenCount("smooth one two");
-    const expectedDetailedTokenCount = estimateMaterializedMessageTokenCount("detailed one two three four");
-    const expectedBriefTokenCount = estimateMaterializedMessageTokenCount("brief one");
-
-    assert.equal(report.bands.full_fidelity.actualTokenCount, expectedFullFidelityTokenCount);
-    assert.equal(report.bands.smooth.actualTokenCount, expectedSmoothTokenCount);
-    assert.equal(report.bands.detailed.actualTokenCount, expectedDetailedTokenCount);
-    assert.equal(report.bands.brief.actualTokenCount, expectedBriefTokenCount);
-    assert.equal(
-      report.resultingTokenCount,
-      expectedFullFidelityTokenCount + expectedSmoothTokenCount + expectedDetailedTokenCount + expectedBriefTokenCount,
-    );
+    assert.equal(report.bands.full_fidelity.actualTokenCount, 127);
+    assert.equal(report.bands.smooth.actualTokenCount, 7);
+    assert.equal(report.bands.detailed.actualTokenCount, 22);
+    assert.equal(report.bands.brief.actualTokenCount, 17);
+    assert.equal(report.bands.full_fidelity.countPolicyStatus, "usable");
+    assert.equal(report.resultingTokenCount, 173);
   });
 });
 
@@ -213,20 +218,18 @@ test("buildCompactionAuditReport includes turn-level detail for upper bands", as
       {
         turnId: context.turns.oldest.turnId,
         bandType: "full_fidelity",
-        rawTokenCount: context.turns.oldest.messages.reduce(
-          (total, message) => total + estimateRawMessageTokenCount(message),
-          0,
-        ),
-        smoothTokenCount: 4,
+        rawTokenCount: 127,
+        smoothTokenCount: 7,
+        rawCountPolicyStatus: "usable",
+        smoothCountPolicyStatus: "usable",
       },
       {
         turnId: context.turns.middleOlder.turnId,
         bandType: "smooth",
-        rawTokenCount: context.turns.middleOlder.messages.reduce(
-          (total, message) => total + estimateRawMessageTokenCount(message),
-          0,
-        ),
-        smoothTokenCount: 4,
+        rawTokenCount: 135,
+        smoothTokenCount: 7,
+        rawCountPolicyStatus: "usable",
+        smoothCountPolicyStatus: "usable",
       },
     ]);
   });
@@ -244,16 +247,20 @@ test("buildCompactionAuditReport includes chunk-level detail for lower bands", a
       {
         chunkId: context.chunks.oldestClosed,
         bandType: "detailed",
-        smoothTokenCount: 6,
-        detailedTokenCount: 7,
-        briefTokenCount: 4,
+        smoothTokenCount: 8,
+        detailedTokenCount: 22,
+        briefTokenCount: 18,
+        detailedCountPolicyStatus: "usable",
+        briefCountPolicyStatus: "usable",
       },
       {
         chunkId: context.chunks.newerClosed,
         bandType: "brief",
-        smoothTokenCount: 7,
-        detailedTokenCount: 8,
-        briefTokenCount: 4,
+        smoothTokenCount: 8,
+        detailedTokenCount: 22,
+        briefTokenCount: 17,
+        detailedCountPolicyStatus: "usable",
+        briefCountPolicyStatus: "usable",
       },
     ]);
   });

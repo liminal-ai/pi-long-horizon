@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import test from "node:test";
 
@@ -810,6 +810,146 @@ test("keeps the PI target session id separate from the canonical thread id", asy
   });
 });
 
+test("persists threadId-map entries for PI session id and session file identities", async () => {
+  await withTempThreadStore(async ({ storeRootDir, resolveProjectPath, resolveStorePath }) => {
+    const store = new FileThreadStore(storeRootDir);
+    const target = await makeManagedTarget(resolveProjectPath, {
+      sessionId: "session-thread-id-map-001",
+      sessionFilePath: resolveProjectPath("pi-sessions", "session-thread-id-map-001.jsonl"),
+    });
+    const thread = expectOk(await openOrCreateManagedThread({ target }, store));
+    const keySet = deriveTargetSessionKeys(target);
+
+    const map = JSON.parse(await readFile(resolveStorePath("threadId-map.json"), "utf8")) as {
+      threadIdByPiIdentityKey: Record<string, string>;
+    };
+
+    assert.equal(map.threadIdByPiIdentityKey[keySet.canonicalKey], thread.threadId);
+    assert.equal(map.threadIdByPiIdentityKey[keySet.aliasKeys[0] ?? ""], thread.threadId);
+    assert.equal(expectOk(await store.resolveThreadIdMap(target)), thread.threadId);
+  });
+});
+
+test("resolves generated rollout identities through the persisted threadId-map after restart", async () => {
+  await withTempThreadStore(async ({ storeRootDir, resolveProjectPath }) => {
+    const store = new FileThreadStore(storeRootDir);
+    const target = await makeManagedTarget(resolveProjectPath, {
+      sessionId: "session-map-original-001",
+      sessionFilePath: resolveProjectPath("pi-sessions", "session-map-original-001.jsonl"),
+    });
+    const thread = expectOk(await openOrCreateManagedThread({ target }, store));
+    const generatedTarget = makeThreadTarget({
+      sessionId: "session-map-generated-001",
+      sessionFilePath: resolveProjectPath("generated", "session-map-generated-001.jsonl"),
+      cwd: target.cwd,
+    });
+    await mkdir(dirname(generatedTarget.sessionFilePath!), { recursive: true });
+    await writeFile(generatedTarget.sessionFilePath!, '{"type":"generated"}\n');
+
+    expectOk(
+      await store.recordThreadIdMap({
+        threadId: thread.threadId,
+        target: generatedTarget,
+      }),
+    );
+
+    const restartedStore = new FileThreadStore(storeRootDir);
+    const resolvedThreadId = expectOk(await restartedStore.resolveThreadIdMap(generatedTarget));
+    const resolvedThread = expectOk(await restartedStore.findManagedThread(generatedTarget));
+
+    assert.equal(resolvedThreadId, thread.threadId);
+    assert.equal(resolvedThread?.threadId, thread.threadId);
+    assert.deepEqual(resolvedThread?.target, target);
+  });
+});
+
+test("reconciles threadId-map from persisted thread and generated rollout state on restart", async () => {
+  await withTempThreadStore(async ({ storeRootDir, resolveProjectPath, resolveStorePath }) => {
+    const store = new FileThreadStore(storeRootDir);
+    const target = await makeManagedTarget(resolveProjectPath, {
+      sessionId: "session-map-reconcile-001",
+      sessionFilePath: resolveProjectPath("pi-sessions", "session-map-reconcile-001.jsonl"),
+    });
+    const thread = expectOk(await openOrCreateManagedThread({ target }, store));
+    const generatedFilePath = resolveProjectPath("generated", "session-map-reconcile-001.jsonl");
+    await mkdir(dirname(generatedFilePath), { recursive: true });
+    await writeFile(
+      generatedFilePath,
+      [
+        JSON.stringify({ type: "session", version: 3, id: "sc-session-map-reconcile-001", timestamp: "2026-05-12T00:00:00.000Z", cwd: target.cwd }),
+        JSON.stringify({ type: "custom", customType: "pi-long-horizon.thread-view.output", data: { threadId: thread.threadId } }),
+      ].join("\n") + "\n",
+    );
+
+    expectOk(
+      await updateGeneratedThreadViewOutputMetadata({
+        store,
+        threadId: thread.threadId,
+        generatedFilePath,
+      }),
+    );
+
+    await rm(resolveStorePath("threadId-map.json"), { force: true });
+
+    const restartedStore = new FileThreadStore(storeRootDir);
+    const originalThread = expectOk(await restartedStore.findManagedThread(target));
+    const generatedThread = expectOk(
+      await restartedStore.findManagedThread({
+        runtime: "pi",
+        sessionId: "sc-session-map-reconcile-001",
+        sessionFilePath: generatedFilePath,
+        cwd: target.cwd,
+      }),
+    );
+    const reconciledMap = JSON.parse(await readFile(resolveStorePath("threadId-map.json"), "utf8")) as {
+      threadIdByPiIdentityKey: Record<string, string>;
+    };
+    const generatedKeySet = deriveTargetSessionKeys({
+      runtime: "pi",
+      sessionId: "sc-session-map-reconcile-001",
+      sessionFilePath: generatedFilePath,
+    });
+
+    assert.equal(originalThread?.threadId, thread.threadId);
+    assert.equal(generatedThread?.threadId, thread.threadId);
+    assert.equal(
+      reconciledMap.threadIdByPiIdentityKey[generatedKeySet.canonicalKey],
+      thread.threadId,
+    );
+    assert.equal(
+      reconciledMap.threadIdByPiIdentityKey[generatedKeySet.aliasKeys[0] ?? ""],
+      thread.threadId,
+    );
+  });
+});
+
+test("rejects duplicate threadId-map bindings for the same PI identity", async () => {
+  await withTempThreadStore(async ({ storeRootDir, resolveProjectPath }) => {
+    const store = new FileThreadStore(storeRootDir);
+    const firstTarget = await makeManagedTarget(resolveProjectPath, {
+      sessionId: "session-map-duplicate-a",
+      sessionFilePath: resolveProjectPath("pi-sessions", "session-map-duplicate-a.jsonl"),
+    });
+    const secondTarget = await makeManagedTarget(resolveProjectPath, {
+      sessionId: "session-map-duplicate-b",
+      sessionFilePath: resolveProjectPath("pi-sessions", "session-map-duplicate-b.jsonl"),
+    });
+    const firstThread = expectOk(await openOrCreateManagedThread({ target: firstTarget }, store));
+    const secondThread = expectOk(await openOrCreateManagedThread({ target: secondTarget }, store));
+
+    const result = await store.recordThreadIdMap({
+      threadId: secondThread.threadId,
+      target: {
+        runtime: "pi",
+        sessionId: firstTarget.sessionId,
+      },
+    });
+
+    expectIssueCode(result, "TARGET_ASSOCIATION_CONFLICT");
+    assert.equal(expectOk(await store.resolveThreadIdMap({ runtime: "pi", sessionId: firstTarget.sessionId })), firstThread.threadId);
+  });
+});
+
 test("reads canonical source ordering instead of any generated file ordering", async () => {
   await withTempThreadStore(async ({ storeRootDir, resolveProjectPath }) => {
     const store = new FileThreadStore(storeRootDir);
@@ -1069,38 +1209,6 @@ test("leaves the last committed metadata file intact when a temp metadata write 
 
     expectIssueCode(result, "STORE_UNAVAILABLE");
     assert.equal(after, before);
-  });
-});
-
-test("writes thread view output summary with legacy projection summary read compatibility", async () => {
-  await withTempThreadStore(async ({ storeRootDir, resolveProjectPath, resolveStorePath }) => {
-    const store = new FileThreadStore(storeRootDir);
-    const thread = expectOk(await openOrCreateManagedThread({ target: await makeManagedTarget(resolveProjectPath) }, store));
-    const threadJsonPath = resolveStorePath("threads", thread.threadId, "thread.json");
-    const generatedFilePath = resolveProjectPath("generated", "thread-view-output.jsonl");
-
-    expectOk(
-      await updateGeneratedThreadViewOutputMetadata({
-        store,
-        threadId: thread.threadId,
-        generatedFilePath,
-      }),
-    );
-
-    const legacyThreadViewOutputSummaryField = `projection${"Summary"}`;
-    const persisted = JSON.parse(await readFile(threadJsonPath, "utf8")) as {
-      threadViewOutputSummary?: ThreadRecord["threadViewOutputSummary"];
-      [key: string]: unknown;
-    };
-    assert.equal(persisted[legacyThreadViewOutputSummaryField], undefined);
-    assert.equal(persisted.threadViewOutputSummary?.currentGeneratedFilePath, generatedFilePath);
-
-    persisted[legacyThreadViewOutputSummaryField] = persisted.threadViewOutputSummary;
-    delete persisted.threadViewOutputSummary;
-    await writeFile(threadJsonPath, `${JSON.stringify(persisted, null, 2)}\n`);
-
-    const reopened = expectOk(await store.openThread(thread.threadId));
-    assert.equal(reopened.thread.threadViewOutputSummary.currentGeneratedFilePath, generatedFilePath);
   });
 });
 

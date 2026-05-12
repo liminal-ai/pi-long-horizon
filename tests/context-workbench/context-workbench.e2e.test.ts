@@ -225,7 +225,7 @@ async function seedWorkbenchFlow(storeRootDir: string) {
       closedAt: alphaTool.capturedAt,
       smooth: {
         text: formatSmoothTurnFromMessages([alphaPrompt, alphaResponse, alphaTool]),
-        tokenCount: 20,
+        tokenCountMetadata: { count: 20, scope: "smooth_turn_materialized", source: "pi_heuristic", trustClass: "heuristic_estimate", representationHash: "sha256:test-smooth-20", createdAt: "2026-01-01T00:00:00.000Z" },
       },
     }),
     makeTurnRecord({
@@ -245,7 +245,7 @@ async function seedWorkbenchFlow(storeRootDir: string) {
       closedAt: betaResponse.capturedAt,
       smooth: {
         text: formatSmoothTurnFromMessages([betaPrompt, betaResponse]),
-        tokenCount: 12,
+        tokenCountMetadata: { count: 12, scope: "smooth_turn_materialized", source: "pi_heuristic", trustClass: "heuristic_estimate", representationHash: "sha256:test-smooth-12", createdAt: "2026-01-01T00:00:00.000Z" },
       },
     }),
   ]);

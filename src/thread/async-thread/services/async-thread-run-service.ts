@@ -4,23 +4,38 @@ import {
   type PrepareAsyncThreadResult,
 } from "../domain/async-thread-status.js";
 import type { ThreadViewBandPercentages } from "../../../thread-view/domain/pi-thread-view-file.js";
+import {
+  estimateRawMessageTokenCount,
+} from "../../../thread-view/services/pi-token-estimator.js";
+import {
+  resolveChunkPlaceholderTokenAccounting,
+  resolveChunkSmoothTokenAccounting,
+  resolveRawTurnTokenAccounting,
+  resolveSmoothTurnTokenAccounting,
+} from "../../../thread-view/services/thread-view-builder.js";
 import type { ThreadStore } from "../../store/thread-store.js";
 import type { MessageRecord, TurnRecord } from "../../domain/records.js";
 import { createStewardIssue, StewardResultError, type StewardIssue } from "../../domain/errors.js";
 import type { ChunkState } from "../domain/chunk-state.js";
-import { getPlaceholderArtifactMarker } from "../domain/placeholder-artifact-state.js";
-import { DEFAULT_PLACEHOLDER_BUILD_SETTINGS } from "../domain/settings.js";
-import {
-  estimateDeterministicTokenCount,
-  normalizeDeterministicText,
-} from "../domain/smooth-turn-state.js";
 import { ensurePlaceholderArtifacts } from "./placeholder-artifact-service.js";
 import { ensureSmoothTurn } from "./smooth-turn-service.js";
-import { buildSmoothTurnText } from "./smooth-turn-format.js";
 import { updateChunkState } from "./chunk-service.js";
+import {
+  OpenAIInputTokenCounter,
+  type TokenCountRecord,
+} from "../../../token-accounting/index.js";
 
 export interface AsyncThreadRunDependencies {
   store: ThreadStore;
+  openAIInputTokenCounter?: Pick<
+    OpenAIInputTokenCounter,
+    | "countRawTurnMaterialized"
+    | "countSmoothTurnMaterialized"
+    | "countChunkSmoothMaterialized"
+    | "countDetailedChunkMaterialized"
+    | "countBriefChunkMaterialized"
+  >;
+  tokenCountModel?: string;
   now?: () => Date;
 }
 
@@ -72,31 +87,6 @@ function issuesFromUnknownError(error: unknown, threadId: string): StewardIssue[
       cause: error instanceof Error ? error.message : String(error),
     }),
   ];
-}
-
-function stringifyPartContent(content: string | Record<string, unknown>): string {
-  if (typeof content === "string") {
-    return content;
-  }
-
-  if (typeof content.text === "string" && content.text.trim().length > 0) {
-    return content.text;
-  }
-
-  return JSON.stringify(content);
-}
-
-function estimateRawMessageTokenCount(message: MessageRecord): number {
-  const parts = [...message.parts]
-    .sort((left, right) => left.partOrder - right.partOrder)
-    .flatMap((part) => [`part:${part.partType}`, stringifyPartContent(part.content)]);
-  const metadata = [
-    `actor:${message.actorType}`,
-    `kind:${message.messageKind}`,
-    message.targetMetadata?.piRole ? `piRole:${message.targetMetadata.piRole}` : undefined,
-  ].filter((value): value is string => value !== undefined);
-
-  return estimateDeterministicTokenCount([...metadata, ...parts].join(" "));
 }
 
 function sortTurnsInSourceOrder(turns: readonly TurnRecord[]): TurnRecord[] {
@@ -251,50 +241,6 @@ function buildOrderedChunkCandidates(
   });
 }
 
-function previewPlaceholderTokenCount(
-  kind: "detailed" | "brief",
-  smoothText: string,
-): number {
-  const normalizedText = normalizeDeterministicText(smoothText);
-  const smoothTokens = normalizedText.length === 0 ? [] : normalizedText.split(" ");
-  const marker = getPlaceholderArtifactMarker(kind);
-  const markerTokenCount = estimateDeterministicTokenCount(marker);
-  const ratio =
-    kind === "detailed"
-      ? DEFAULT_PLACEHOLDER_BUILD_SETTINGS.detailedRatio
-      : DEFAULT_PLACEHOLDER_BUILD_SETTINGS.briefRatio;
-  const targetArtifactTokenCount = Math.max(1, Math.round(smoothTokens.length * ratio));
-  const preservedTokenCount =
-    smoothTokens.length === 0
-      ? 0
-      : Math.min(smoothTokens.length, Math.max(1, targetArtifactTokenCount - markerTokenCount));
-  const preservedText = smoothTokens.slice(0, preservedTokenCount).join(" ");
-  const text = preservedText.length > 0 ? `${preservedText}\n\n${marker}` : marker;
-
-  return estimateDeterministicTokenCount(text);
-}
-
-function readPlaceholderTokenCount(
-  chunk: ChunkState,
-  bandType: "detailed" | "brief",
-): number | undefined {
-  const placeholder = bandType === "detailed" ? chunk.placeholders?.detailed : chunk.placeholders?.brief;
-  if (
-    placeholder?.status === "ready" &&
-    typeof placeholder.text === "string" &&
-    typeof placeholder.tokenCount === "number"
-  ) {
-    return placeholder.tokenCount;
-  }
-
-  const smoothText = normalizeDeterministicText(chunk.smoothText ?? "");
-  if (smoothText.length === 0) {
-    return undefined;
-  }
-
-  return previewPlaceholderTokenCount(bandType, smoothText);
-}
-
 function selectLowerBandChunkIds(
   candidates: readonly OrderedChunkCandidate[],
   budget: number,
@@ -312,21 +258,36 @@ function selectLowerBandChunkIds(
   let consumedCandidateCount = 0;
 
   for (const candidate of candidates) {
-    const tokenCount = readPlaceholderTokenCount(candidate.chunk, bandType);
+    const placeholder = bandType === "detailed"
+      ? candidate.chunk.placeholders?.detailed
+      : candidate.chunk.placeholders?.brief;
+    const accounting = resolveChunkPlaceholderTokenAccounting({
+      chunk: candidate.chunk,
+      bandType,
+      policyMode: "prepare",
+    });
 
     if (selectedChunkIds.length === 0) {
+      if (!placeholder?.text || !accounting) {
+        break;
+      }
+
       selectedChunkIds.push(candidate.chunk.chunkId);
-      consumedTokenCount += tokenCount ?? 0;
+      consumedTokenCount += accounting.count;
       consumedCandidateCount += 1;
       continue;
     }
 
-    if (tokenCount === undefined || consumedTokenCount + tokenCount > budget) {
+    if (!placeholder?.text || !accounting) {
+      break;
+    }
+
+    if (consumedTokenCount + accounting.count > budget) {
       break;
     }
 
     selectedChunkIds.push(candidate.chunk.chunkId);
-    consumedTokenCount += tokenCount;
+    consumedTokenCount += accounting.count;
     consumedCandidateCount += 1;
   }
 
@@ -342,7 +303,7 @@ function isSmoothTurnReady(turn: {
   smooth?: {
     status?: string;
     text?: string;
-    tokenCount?: number;
+    tokenCountMetadata?: { count?: number };
     sourceRevision?: number;
   };
 }): boolean {
@@ -355,33 +316,63 @@ function isSmoothTurnReady(turn: {
   return (
     (smooth?.status === undefined || smooth?.status === "ready") &&
     typeof smooth?.text === "string" &&
-    typeof smooth?.tokenCount === "number" &&
+    typeof smooth?.tokenCountMetadata?.count === "number" &&
     smooth.sourceRevision === turn.sourceRevision
   );
 }
 
 function resolveSmoothTokenCount(
   turn: TurnRecord,
-  messagesById: ReadonlyMap<string, MessageRecord>,
 ): number {
   if (isSmoothTurnReady(turn)) {
-    return turn.smooth?.tokenCount ?? 0;
+    return resolveSmoothTurnTokenAccounting({
+      turn,
+      policyMode: "prepare",
+    })?.count ?? 0;
   }
 
-  if (turn.lifecycleStatus !== "closed") {
-    return 0;
+  return 0;
+}
+
+function tokenCountBlockedIssue(input: {
+  threadId: string;
+  message: string;
+  cause?: string;
+}): StewardIssue {
+  return createStewardIssue({
+    code: "TOKEN_COUNT_BLOCKED",
+    message: input.message,
+    threadId: input.threadId,
+    cause: input.cause,
+  });
+}
+
+function isOpenAIProviderInputCount(input: {
+  record: TokenCountRecord | undefined;
+  expected: TokenCountRecord | undefined;
+  model?: string;
+}): boolean {
+  if (!input.record || !input.expected) {
+    return false;
   }
 
-  const messages = sortMessagesInSourceOrder(
-    turn.messageIds
-      .map((messageId) => messagesById.get(messageId))
-      .filter((message): message is MessageRecord => message !== undefined),
+  return (
+    input.record.scope === input.expected.scope &&
+    input.record.source === "provider_input_count" &&
+    input.record.trustClass === "exact" &&
+    input.record.provider === "openai" &&
+    (input.model === undefined || input.record.model === input.model) &&
+    input.record.representationHash === input.expected.representationHash &&
+    input.record.sourceRevision === input.expected.sourceRevision
   );
-  if (messages.length !== turn.messageIds.length) {
-    return 0;
-  }
+}
 
-  return buildSmoothTurnText(messages).tokenCount;
+function tokenCountIssueFromError(error: unknown, threadId: string, message: string): StewardIssue {
+  return tokenCountBlockedIssue({
+    threadId,
+    message,
+    cause: error instanceof Error ? error.message : String(error),
+  });
 }
 
 function buildSelectionAwareReadinessPlan(input: {
@@ -405,15 +396,18 @@ function buildSelectionAwareReadinessPlan(input: {
   const turnsById = new Map(orderedTurns.map((turn) => [turn.turnId, turn]));
   const messagesById = new Map(input.messages.map((message) => [message.messageId, message]));
   const tokenizedTurns = [...orderedTurns]
-    .map((turn) => ({
-      turn,
-      rawTokenCount: sortMessagesInSourceOrder(
+    .map((turn) => {
+      const rawTokenCount = sortMessagesInSourceOrder(
         turn.messageIds
           .map((messageId) => messagesById.get(messageId))
           .filter((message): message is MessageRecord => message !== undefined),
-      ).reduce((total, message) => total + estimateRawMessageTokenCount(message), 0),
-      smoothTokenCount: resolveSmoothTokenCount(turn, messagesById),
-    }))
+      ).reduce((total, message) => total + estimateRawMessageTokenCount(message), 0);
+      return {
+        turn,
+        rawTokenCount,
+        smoothTokenCount: resolveSmoothTokenCount(turn) || rawTokenCount,
+      };
+    })
     .sort((left, right) => right.turn.turnOrder - left.turn.turnOrder);
 
   const fullFidelityTurnIds = selectTurnIds(
@@ -469,6 +463,7 @@ function buildSelectionAwareReadinessPlan(input: {
 
 function buildReadinessBlockers(input: {
   threadId: string;
+  tokenCountModel?: string;
   requiredPlaceholderBands?: {
     detailed: boolean;
     brief: boolean;
@@ -522,6 +517,59 @@ function buildReadinessBlockers(input: {
     );
   }
 
+  for (const turn of input.turns) {
+    const messages = sortMessagesInSourceOrder(
+      turn.messageIds
+        .map((messageId) => messagesById.get(messageId))
+        .filter((message): message is MessageRecord => message !== undefined),
+    );
+
+    const expected = resolveRawTurnTokenAccounting({
+      turn,
+      messages,
+      policyMode: "prepare",
+    }).record;
+    if (
+      !isOpenAIProviderInputCount({
+        record: turn.rawTokenCountMetadata,
+        expected,
+        model: input.tokenCountModel,
+      })
+    ) {
+      blockers.push(
+        tokenCountBlockedIssue({
+          threadId: input.threadId,
+          message:
+            `Turn ${turn.turnId} (order ${turn.turnOrder}, lifecycle ${turn.lifecycleStatus}) is missing current OpenAI raw materialized token count required for strict smart compact allocation.` +
+            (turn.lifecycleStatus === "open"
+              ? " The newest open turn cannot fall back to heuristic raw sizing in strict mode."
+              : ""),
+        }),
+      );
+    }
+
+    if (requiredSmoothTurnIds?.has(turn.turnId)) {
+      const expected = resolveSmoothTurnTokenAccounting({
+        turn,
+        policyMode: "prepare",
+      })?.record;
+      if (
+        !isOpenAIProviderInputCount({
+          record: turn.smooth?.tokenCountMetadata,
+          expected,
+          model: input.tokenCountModel,
+        })
+      ) {
+        blockers.push(
+          tokenCountBlockedIssue({
+            threadId: input.threadId,
+            message: `Turn ${turn.turnId} is missing current OpenAI smooth materialized token count required for strict smart compact allocation.`,
+          }),
+        );
+      }
+    }
+  }
+
   const turnIds = new Set(input.turns.map((turn) => turn.turnId));
   const openChunks = input.chunks.filter((chunk) => chunk.lifecycleStatus === "open");
   if (openChunks.length > 1) {
@@ -559,7 +607,7 @@ function buildReadinessBlockers(input: {
 
     if (
       !chunk.smoothText ||
-      chunk.smoothTokenCount <= 0
+      (chunk.smoothTokenCountMetadata?.count ?? 0) <= 0
     ) {
       blockers.push(
         createAsyncThreadBlocker({
@@ -571,16 +619,37 @@ function buildReadinessBlockers(input: {
       continue;
     }
 
+    if (requiredChunkIds?.has(chunk.chunkId)) {
+      const expected = resolveChunkSmoothTokenAccounting({
+        chunk,
+        policyMode: "prepare",
+      })?.record;
+      if (
+        !isOpenAIProviderInputCount({
+          record: chunk.smoothTokenCountMetadata,
+          expected,
+          model: input.tokenCountModel,
+        })
+      ) {
+        blockers.push(
+          tokenCountBlockedIssue({
+            threadId: input.threadId,
+            message: `Chunk ${chunk.chunkId} is missing current OpenAI smooth materialized token count required for strict smart compact allocation.`,
+          }),
+        );
+      }
+    }
+
     const detailed = chunk.placeholders?.detailed;
     const brief = chunk.placeholders?.brief;
     const missingDetailed =
       (requiredDetailedChunkIds?.has(chunk.chunkId) ?? true) &&
       requiredPlaceholderBands.detailed &&
-      (detailed?.status !== "ready" || !detailed.text || typeof detailed.tokenCount !== "number");
+      (detailed?.status !== "ready" || !detailed.text || typeof detailed.tokenCountMetadata?.count !== "number");
     const missingBrief =
       (requiredBriefChunkIds?.has(chunk.chunkId) ?? true) &&
       requiredPlaceholderBands.brief &&
-      (brief?.status !== "ready" || !brief.text || typeof brief.tokenCount !== "number");
+      (brief?.status !== "ready" || !brief.text || typeof brief.tokenCountMetadata?.count !== "number");
 
     if (missingDetailed || missingBrief) {
       const requiredBands = [
@@ -598,6 +667,50 @@ function buildReadinessBlockers(input: {
           threadId: input.threadId,
         }),
       );
+    }
+
+    if (requiredDetailedChunkIds?.has(chunk.chunkId)) {
+      const expected = resolveChunkPlaceholderTokenAccounting({
+        chunk,
+        bandType: "detailed",
+        policyMode: "prepare",
+      })?.record;
+      if (
+        !isOpenAIProviderInputCount({
+          record: detailed?.tokenCountMetadata,
+          expected,
+          model: input.tokenCountModel,
+        })
+      ) {
+        blockers.push(
+          tokenCountBlockedIssue({
+            threadId: input.threadId,
+            message: `Chunk ${chunk.chunkId} is missing current OpenAI detailed placeholder token count required for strict smart compact allocation.`,
+          }),
+        );
+      }
+    }
+
+    if (requiredBriefChunkIds?.has(chunk.chunkId)) {
+      const expected = resolveChunkPlaceholderTokenAccounting({
+        chunk,
+        bandType: "brief",
+        policyMode: "prepare",
+      })?.record;
+      if (
+        !isOpenAIProviderInputCount({
+          record: brief?.tokenCountMetadata,
+          expected,
+          model: input.tokenCountModel,
+        })
+      ) {
+        blockers.push(
+          tokenCountBlockedIssue({
+            threadId: input.threadId,
+            message: `Chunk ${chunk.chunkId} is missing current OpenAI brief placeholder token count required for strict smart compact allocation.`,
+          }),
+        );
+      }
     }
   }
 
@@ -642,6 +755,7 @@ async function readReadiness(
 
   return buildReadinessBlockers({
     threadId: input.threadId,
+    tokenCountModel: dependencies.tokenCountModel,
     requiredPlaceholderBands: input.requiredPlaceholderBands,
     selectionPlan: buildSelectionAwareReadinessPlan({
       requestedLowerBound: input.requestedLowerBound,
@@ -729,6 +843,222 @@ async function repairMissingArtifacts(
   return [];
 }
 
+async function repairOpenAITokenCounts(
+  threadId: string,
+  dependencies: AsyncThreadRunDependencies,
+): Promise<StewardIssue[]> {
+  const counter = dependencies.openAIInputTokenCounter;
+  if (!counter) {
+    return [
+      tokenCountBlockedIssue({
+        threadId,
+        message: "OpenAI materialized token counter is not configured; strict smart compact cannot use heuristic token counts as success.",
+      }),
+    ];
+  }
+
+  const snapshot = await dependencies.store.openThread(threadId);
+  if (!snapshot.ok) {
+    return snapshot.issues;
+  }
+
+  const messagesById = new Map(snapshot.value.messages.map((message) => [message.messageId, message]));
+  const nextTurns = structuredClone(snapshot.value.turns);
+  let turnsChanged = false;
+
+  try {
+    for (const turn of nextTurns) {
+      const messages = sortMessagesInSourceOrder(
+        turn.messageIds
+          .map((messageId) => messagesById.get(messageId))
+          .filter((message): message is MessageRecord => message !== undefined),
+      );
+      if (messages.length !== turn.messageIds.length) {
+        continue;
+      }
+      const expectedRaw = resolveRawTurnTokenAccounting({
+        turn,
+        messages,
+        policyMode: "prepare",
+      }).record;
+      if (
+        !isOpenAIProviderInputCount({
+          record: turn.rawTokenCountMetadata,
+          expected: expectedRaw,
+          model: dependencies.tokenCountModel,
+        })
+      ) {
+        turn.rawTokenCountMetadata = await counter.countRawTurnMaterialized({
+          turn,
+          messages,
+          model: dependencies.tokenCountModel,
+          now: dependencies.now,
+        });
+        turnsChanged = true;
+      }
+
+      if (turn.lifecycleStatus !== "closed") {
+        continue;
+      }
+
+      if (!turn.smooth?.text) {
+        continue;
+      }
+
+      const expectedSmooth = resolveSmoothTurnTokenAccounting({
+        turn,
+        policyMode: "prepare",
+      })?.record;
+      if (
+        !isOpenAIProviderInputCount({
+          record: turn.smooth.tokenCountMetadata,
+          expected: expectedSmooth,
+          model: dependencies.tokenCountModel,
+        })
+      ) {
+        turn.smooth = {
+          ...turn.smooth,
+          tokenCountMetadata: await counter.countSmoothTurnMaterialized(turn, {
+            model: dependencies.tokenCountModel,
+            now: dependencies.now,
+          }),
+        };
+        turnsChanged = true;
+      }
+    }
+  } catch (error) {
+    return [
+      tokenCountIssueFromError(
+        error,
+        threadId,
+        "OpenAI raw or smooth turn token counting failed during async preparation; strict smart compact cannot use heuristic token counts as success.",
+      ),
+    ];
+  }
+
+  if (turnsChanged) {
+    const writeTurnsResult = await dependencies.store.writeTurns({
+      threadId,
+      expectedSourceRevision: snapshot.value.thread.sourceRevision,
+      expectedMessageHighWatermark: snapshot.value.thread.messageHighWatermark,
+      expectedTurnsRevision: snapshot.value.thread.turnsRevision,
+      turns: nextTurns,
+      turnState: snapshot.value.thread.status.turnState,
+    });
+    if (!writeTurnsResult.ok) {
+      return writeTurnsResult.issues;
+    }
+  }
+
+  const latestSnapshot = await dependencies.store.openThread(threadId);
+  if (!latestSnapshot.ok) {
+    return latestSnapshot.issues;
+  }
+
+  const chunksSnapshot = await dependencies.store.readChunks(threadId);
+  if (!chunksSnapshot.ok) {
+    return chunksSnapshot.issues;
+  }
+
+  const nextChunks = structuredClone(chunksSnapshot.value);
+  let chunksChanged = false;
+  try {
+    for (const chunk of nextChunks) {
+      if (chunk.lifecycleStatus !== "closed" || !chunk.smoothText) {
+        continue;
+      }
+
+      const expectedSmooth = resolveChunkSmoothTokenAccounting({
+        chunk,
+        policyMode: "prepare",
+      })?.record;
+      if (
+        !isOpenAIProviderInputCount({
+          record: chunk.smoothTokenCountMetadata,
+          expected: expectedSmooth,
+          model: dependencies.tokenCountModel,
+        })
+      ) {
+        chunk.smoothTokenCountMetadata = await counter.countChunkSmoothMaterialized(chunk, {
+          model: dependencies.tokenCountModel,
+          now: dependencies.now,
+        });
+        chunksChanged = true;
+      }
+
+      if (chunk.placeholders?.detailed?.text) {
+        const expectedDetailed = resolveChunkPlaceholderTokenAccounting({
+          chunk,
+          bandType: "detailed",
+          policyMode: "prepare",
+        })?.record;
+        if (
+          !isOpenAIProviderInputCount({
+            record: chunk.placeholders.detailed.tokenCountMetadata,
+            expected: expectedDetailed,
+            model: dependencies.tokenCountModel,
+          })
+        ) {
+          chunk.placeholders.detailed = {
+            ...chunk.placeholders.detailed,
+            tokenCountMetadata: await counter.countDetailedChunkMaterialized(chunk, {
+              model: dependencies.tokenCountModel,
+              now: dependencies.now,
+            }),
+          };
+          chunksChanged = true;
+        }
+      }
+
+      if (chunk.placeholders?.brief?.text) {
+        const expectedBrief = resolveChunkPlaceholderTokenAccounting({
+          chunk,
+          bandType: "brief",
+          policyMode: "prepare",
+        })?.record;
+        if (
+          !isOpenAIProviderInputCount({
+            record: chunk.placeholders.brief.tokenCountMetadata,
+            expected: expectedBrief,
+            model: dependencies.tokenCountModel,
+          })
+        ) {
+          chunk.placeholders.brief = {
+            ...chunk.placeholders.brief,
+            tokenCountMetadata: await counter.countBriefChunkMaterialized(chunk, {
+              model: dependencies.tokenCountModel,
+              now: dependencies.now,
+            }),
+          };
+          chunksChanged = true;
+        }
+      }
+    }
+  } catch (error) {
+    return [
+      tokenCountIssueFromError(
+        error,
+        threadId,
+        "OpenAI chunk or placeholder token counting failed during async preparation; strict smart compact cannot use heuristic token counts as success.",
+      ),
+    ];
+  }
+
+  if (!chunksChanged) {
+    return [];
+  }
+
+  const writeChunksResult = await dependencies.store.writeChunks({
+    threadId,
+    expectedSourceRevision: latestSnapshot.value.thread.sourceRevision,
+    expectedMessageHighWatermark: latestSnapshot.value.thread.messageHighWatermark,
+    expectedTurnsRevision: latestSnapshot.value.thread.turnsRevision,
+    chunks: nextChunks,
+  });
+
+  return writeChunksResult.ok ? [] : writeChunksResult.issues;
+}
+
 export async function prepareAsyncThread(
   input: PrepareAsyncThreadInput,
   dependencies?: AsyncThreadRunDependencies,
@@ -743,14 +1073,22 @@ export async function prepareAsyncThread(
     ]);
   }
 
+  if (input.mode === "strict") {
+    return readReadiness(input, dependencies);
+  }
+
   const initialReadiness = await readReadiness(input, dependencies);
-  if (input.mode === "strict" || initialReadiness.blockers.length === 0) {
+  if (initialReadiness.blockers.some((issue) => issue.code === "THREAD_VIEW_STATE_CONFLICT")) {
     return initialReadiness;
   }
 
   const repairIssues = await repairMissingArtifacts(input.threadId, dependencies);
   if (repairIssues.length > 0) {
     return blockedReadiness(input.threadId, repairIssues);
+  }
+  const tokenCountRepairIssues = await repairOpenAITokenCounts(input.threadId, dependencies);
+  if (tokenCountRepairIssues.length > 0) {
+    return blockedReadiness(input.threadId, tokenCountRepairIssues);
   }
   return readReadiness(input, dependencies);
 }

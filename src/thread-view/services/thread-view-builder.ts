@@ -1,10 +1,16 @@
 import { createStewardIssue, type StewardIssue, type StewardResult } from "../../thread/domain/errors.js";
-import { getPlaceholderArtifactMarker } from "../../thread/async-thread/domain/placeholder-artifact-state.js";
-import { DEFAULT_PLACEHOLDER_BUILD_SETTINGS } from "../../thread/async-thread/domain/settings.js";
 import {
-  estimateDeterministicTokenCount,
-  normalizeDeterministicText,
-} from "../../thread/async-thread/domain/smooth-turn-state.js";
+  countBriefChunkMaterialized,
+  countChunkSmoothMaterialized,
+  countDetailedChunkMaterialized,
+  countRawTurnMaterialized,
+  countSmoothTurnMaterialized,
+  selectTokenCountRecordForScope,
+  type CounterSourcePolicyMode,
+  type MaterializedOrGeneratedTokenCountScope,
+  type TokenCountRecord,
+  type TokenCountSourceDecision,
+} from "../../token-accounting/index.js";
 import type { ChunkState } from "../../thread/async-thread/domain/chunk-state.js";
 import type { MessageRecord, ThreadRecord, TurnRecord } from "../../thread/domain/records.js";
 import type { ThreadStore } from "../../thread/store/thread-store.js";
@@ -23,6 +29,13 @@ import {
 } from "../domain/pi-thread-view-file.js";
 import type { ThreadViewStore } from "../store/thread-view-store.js";
 import { ThreadViewMaterializer } from "./thread-view-materializer.js";
+export {
+  estimateCompactedTextTokenCount,
+} from "./pi-token-estimator.js";
+import {
+  estimateMaterializedMessageTokenCount as estimatePiMaterializedMessageTokenCount,
+} from "./pi-token-estimator.js";
+export { estimateRawMessageTokenCount } from "./pi-token-estimator.js";
 
 const BAND_ALLOCATION_KEYS = ["fullFidelity", "smooth", "detailed", "brief"] as const;
 const BAND_STATUS_BY_RESULT = {
@@ -30,6 +43,10 @@ const BAND_STATUS_BY_RESULT = {
   blocked: "blocked",
   degraded: "incomplete",
 } as const;
+const DEGRADED_RESULT_ISSUE_CODES = new Set([
+  "LOWER_THRESHOLD_UNREACHED",
+  "TOKEN_COUNT_DEGRADED",
+]);
 
 type BandAllocationKey = (typeof BAND_ALLOCATION_KEYS)[number];
 
@@ -42,8 +59,8 @@ interface BandBudgets {
 
 interface TokenizedTurn {
   turn: TurnRecord;
-  rawTokenCount: number;
-  smoothTokenCount: number;
+  rawAccounting: SelectedTokenAccounting;
+  smoothAccounting?: SelectedTokenAccounting;
 }
 
 interface OrderedChunkCandidate {
@@ -56,6 +73,13 @@ interface LowerBandSelectionResult {
   consumedTokenCount: number;
   blockers: StewardIssue[];
   remainingCandidates: OrderedChunkCandidate[];
+  selectedAccounting: Map<string, SelectedTokenAccounting>;
+}
+
+export interface SelectedTokenAccounting {
+  count: number;
+  record: TokenCountRecord;
+  decision: TokenCountSourceDecision;
 }
 
 export interface ThreadViewBuilderDependencies {
@@ -66,72 +90,8 @@ export interface ThreadViewBuilderDependencies {
   createDraftThreadViewId?: () => string;
 }
 
-function stringifyPartContent(content: string | Record<string, unknown>): string {
-  if (typeof content === "string") {
-    return content;
-  }
-
-  if (typeof content.text === "string" && content.text.trim().length > 0) {
-    return content.text;
-  }
-
-  return JSON.stringify(content);
-}
-
-export function estimateRawMessageTokenCount(message: MessageRecord): number {
-  const parts = [...message.parts]
-    .sort((left, right) => left.partOrder - right.partOrder)
-    .flatMap((part) => [`part:${part.partType}`, stringifyPartContent(part.content)]);
-  const metadata = [
-    `actor:${message.actorType}`,
-    `kind:${message.messageKind}`,
-    message.targetMetadata?.piRole ? `piRole:${message.targetMetadata.piRole}` : undefined,
-  ].filter((value): value is string => value !== undefined);
-
-  return estimateDeterministicTokenCount([...metadata, ...parts].join(" "));
-}
-
-function isMaterializedRawMessageContent(
-  content: string | Record<string, unknown>,
-): content is {
-  actorType?: string;
-  messageKind?: string;
-  parts: Array<{
-    partType?: string;
-    partOrder?: number;
-    content: string | Record<string, unknown>;
-  }>;
-  targetMetadata?: {
-    piRole?: string;
-  };
-} {
-  return typeof content !== "string" && Array.isArray(content.parts);
-}
-
 export function estimateMaterializedMessageTokenCount(content: string | Record<string, unknown>): number {
-  if (typeof content === "string") {
-    return estimateDeterministicTokenCount(content);
-  }
-
-  if (isMaterializedRawMessageContent(content)) {
-    const parts = [...content.parts]
-      .sort((left, right) => (left.partOrder ?? 0) - (right.partOrder ?? 0))
-      .flatMap((part) => [
-        `part:${part.partType ?? "unknown"}`,
-        stringifyPartContent(part.content),
-      ]);
-    const metadata = [
-      content.actorType ? `actor:${content.actorType}` : undefined,
-      content.messageKind ? `kind:${content.messageKind}` : undefined,
-      content.targetMetadata?.piRole ? `piRole:${content.targetMetadata.piRole}` : undefined,
-    ].filter((value): value is string => value !== undefined);
-
-    return estimateDeterministicTokenCount([...metadata, ...parts].join(" "));
-  }
-
-  return estimateDeterministicTokenCount(
-    JSON.stringify(content).replace(/[^a-zA-Z0-9]+/g, " "),
-  );
+  return estimatePiMaterializedMessageTokenCount(content);
 }
 
 function sortTurnsInSourceOrder(turns: readonly TurnRecord[]): TurnRecord[] {
@@ -155,6 +115,183 @@ function sortMessagesInSourceOrder(messages: readonly MessageRecord[]): MessageR
     }
 
     return left.messageId.localeCompare(right.messageId);
+  });
+}
+
+function accountingPolicyModeForAllocation(inputMode: ThreadViewBuildInputs["mode"]): CounterSourcePolicyMode {
+  return inputMode;
+}
+
+function isFreshTokenCountRecord(record: TokenCountRecord | undefined, expectedSourceRevision?: number): record is TokenCountRecord {
+  if (!record) {
+    return false;
+  }
+
+  return expectedSourceRevision === undefined || record.sourceRevision === expectedSourceRevision;
+}
+
+function selectAccounting(input: {
+  records: readonly TokenCountRecord[];
+  requestedScope: MaterializedOrGeneratedTokenCountScope;
+  policyMode: CounterSourcePolicyMode;
+}): SelectedTokenAccounting | undefined {
+  const result = selectTokenCountRecordForScope({
+    records: input.records,
+    requestedScope: input.requestedScope,
+    mode: input.policyMode,
+  });
+
+  if (!result.selected || !result.decision) {
+    return undefined;
+  }
+
+  return {
+    count: result.selected.count,
+    record: result.selected,
+    decision: result.decision,
+  };
+}
+
+export function resolveRawTurnTokenAccounting(input: {
+  turn: TurnRecord;
+  messages: readonly MessageRecord[];
+  policyMode?: CounterSourcePolicyMode;
+  now?: () => Date;
+}): SelectedTokenAccounting {
+  const policyMode = input.policyMode ?? "prepare";
+  const persistedRecord = isFreshTokenCountRecord(
+    (input.turn as TurnRecord & { rawTokenCountMetadata?: TokenCountRecord }).rawTokenCountMetadata,
+    input.turn.sourceRevision,
+  )
+    ? (input.turn as TurnRecord & { rawTokenCountMetadata?: TokenCountRecord }).rawTokenCountMetadata
+    : undefined;
+  const selectedPersisted = selectAccounting({
+    records: persistedRecord ? [persistedRecord] : [],
+    requestedScope: "raw_turn_materialized",
+    policyMode,
+  });
+
+  if (selectedPersisted) {
+    return selectedPersisted;
+  }
+
+  const computedRecord = countRawTurnMaterialized({
+    turn: input.turn,
+    messages: input.messages,
+    now: input.now,
+  });
+  const selectedComputed = selectAccounting({
+    records: [computedRecord],
+    requestedScope: "raw_turn_materialized",
+    policyMode,
+  });
+
+  if (!selectedComputed) {
+    throw new Error(`Raw turn materialized token count for ${input.turn.turnId} was blocked by source policy.`);
+  }
+
+  return selectedComputed;
+}
+
+export function resolveSmoothTurnTokenAccounting(input: {
+  turn: TurnRecord;
+  policyMode?: CounterSourcePolicyMode;
+  now?: () => Date;
+}): SelectedTokenAccounting | undefined {
+  if (!input.turn.smooth?.text) {
+    return undefined;
+  }
+
+  const policyMode = input.policyMode ?? "prepare";
+  const expectedSourceRevision = input.turn.smooth.sourceRevision ?? input.turn.sourceRevision;
+  const persistedRecord = isFreshTokenCountRecord(input.turn.smooth.tokenCountMetadata, expectedSourceRevision)
+    ? input.turn.smooth.tokenCountMetadata
+    : undefined;
+  const selectedPersisted = selectAccounting({
+    records: persistedRecord ? [persistedRecord] : [],
+    requestedScope: "smooth_turn_materialized",
+    policyMode,
+  });
+
+  if (selectedPersisted) {
+    return selectedPersisted;
+  }
+
+  const computedRecord = countSmoothTurnMaterialized(input.turn, { now: input.now });
+  return selectAccounting({
+    records: [computedRecord],
+    requestedScope: "smooth_turn_materialized",
+    policyMode,
+  });
+}
+
+export function resolveChunkSmoothTokenAccounting(input: {
+  chunk: ChunkState;
+  policyMode?: CounterSourcePolicyMode;
+  now?: () => Date;
+}): SelectedTokenAccounting | undefined {
+  if (!input.chunk.smoothText) {
+    return undefined;
+  }
+
+  const policyMode = input.policyMode ?? "prepare";
+  const persistedRecord = isFreshTokenCountRecord(input.chunk.smoothTokenCountMetadata, input.chunk.sourceRevision)
+    ? input.chunk.smoothTokenCountMetadata
+    : undefined;
+  const selectedPersisted = selectAccounting({
+    records: persistedRecord ? [persistedRecord] : [],
+    requestedScope: "chunk_smooth_materialized",
+    policyMode,
+  });
+
+  if (selectedPersisted) {
+    return selectedPersisted;
+  }
+
+  const computedRecord = countChunkSmoothMaterialized(input.chunk, { now: input.now });
+  return selectAccounting({
+    records: [computedRecord],
+    requestedScope: "chunk_smooth_materialized",
+    policyMode,
+  });
+}
+
+export function resolveChunkPlaceholderTokenAccounting(input: {
+  chunk: ChunkState;
+  bandType: "detailed" | "brief";
+  policyMode?: CounterSourcePolicyMode;
+  now?: () => Date;
+}): SelectedTokenAccounting | undefined {
+  const policyMode = input.policyMode ?? "prepare";
+  const placeholder = input.bandType === "detailed"
+    ? input.chunk.placeholders?.detailed
+    : input.chunk.placeholders?.brief;
+
+  if (!placeholder?.text) {
+    return undefined;
+  }
+
+  const persistedRecord = isFreshTokenCountRecord(placeholder.tokenCountMetadata, input.chunk.sourceRevision)
+    ? placeholder.tokenCountMetadata
+    : undefined;
+  const selectedPersisted = selectAccounting({
+    records: persistedRecord ? [persistedRecord] : [],
+    requestedScope: input.bandType === "detailed" ? "detailed_chunk_materialized" : "brief_chunk_materialized",
+    policyMode,
+  });
+
+  if (selectedPersisted) {
+    return selectedPersisted;
+  }
+
+  const computedRecord = input.bandType === "detailed"
+    ? countDetailedChunkMaterialized(input.chunk, { now: input.now })
+    : countBriefChunkMaterialized(input.chunk, { now: input.now });
+
+  return selectAccounting({
+    records: [computedRecord],
+    requestedScope: input.bandType === "detailed" ? "detailed_chunk_materialized" : "brief_chunk_materialized",
+    policyMode,
   });
 }
 
@@ -208,41 +345,46 @@ function allocateBandBudgets(
 function selectTurnIds(
   candidates: readonly TokenizedTurn[],
   budget: number,
-  tokenCountSelector: (candidate: TokenizedTurn) => number,
-): { selectedTurnIds: string[]; consumedTokenCount: number } {
+  accountingSelector: (candidate: TokenizedTurn) => SelectedTokenAccounting | undefined,
+): { selectedTurnIds: string[]; consumedTokenCount: number; selectedAccounting: Map<string, SelectedTokenAccounting> } {
   if (budget <= 0 || candidates.length === 0) {
     return {
       selectedTurnIds: [],
       consumedTokenCount: 0,
+      selectedAccounting: new Map(),
     };
   }
 
   const selectedTurnIds: string[] = [];
+  const selectedAccounting = new Map<string, SelectedTokenAccounting>();
   let consumedTokenCount = 0;
 
   for (const candidate of candidates) {
-    const tokenCount = tokenCountSelector(candidate);
-    if (tokenCount <= 0) {
+    const accounting = accountingSelector(candidate);
+    if (!accounting || accounting.count <= 0) {
       continue;
     }
 
     if (selectedTurnIds.length === 0) {
       selectedTurnIds.push(candidate.turn.turnId);
-      consumedTokenCount += tokenCount;
+      selectedAccounting.set(candidate.turn.turnId, accounting);
+      consumedTokenCount += accounting.count;
       continue;
     }
 
-    if (consumedTokenCount + tokenCount > budget) {
+    if (consumedTokenCount + accounting.count > budget) {
       break;
     }
 
     selectedTurnIds.push(candidate.turn.turnId);
-    consumedTokenCount += tokenCount;
+    selectedAccounting.set(candidate.turn.turnId, accounting);
+    consumedTokenCount += accounting.count;
   }
 
   return {
     selectedTurnIds,
     consumedTokenCount,
+    selectedAccounting,
   };
 }
 
@@ -300,6 +442,8 @@ function selectLowerBandChunkIds(
   candidates: readonly OrderedChunkCandidate[],
   budget: number,
   bandType: "detailed" | "brief",
+  policyMode: CounterSourcePolicyMode,
+  now?: () => Date,
 ): LowerBandSelectionResult {
   if (budget <= 0 || candidates.length === 0) {
     return {
@@ -307,10 +451,12 @@ function selectLowerBandChunkIds(
       consumedTokenCount: 0,
       blockers: [],
       remainingCandidates: [...candidates],
+      selectedAccounting: new Map(),
     };
   }
 
   const selectedChunkIds: string[] = [];
+  const selectedAccounting = new Map<string, SelectedTokenAccounting>();
   const blockers: StewardIssue[] = [];
   let consumedTokenCount = 0;
   let consumedCandidateCount = 0;
@@ -319,44 +465,37 @@ function selectLowerBandChunkIds(
     const placeholder = bandType === "detailed"
       ? candidate.chunk.placeholders?.detailed
       : candidate.chunk.placeholders?.brief;
-    const placeholderTokenCount = resolvePlaceholderTokenCount(candidate.chunk, bandType);
+    const accounting = resolveChunkPlaceholderTokenAccounting({
+      chunk: candidate.chunk,
+      bandType,
+      policyMode,
+      now,
+    });
 
     if (selectedChunkIds.length === 0) {
-      if (!placeholder?.text || !placeholder.tokenCount) {
-        blockers.push(
-          createStewardIssue({
-            code: "CHUNK_PLACEHOLDER_MISSING",
-            message: `Chunk ${candidate.chunk.chunkId} is missing the ${bandType} placeholder artifact required for deterministic rebuild.`,
-            threadId: candidate.chunk.threadId,
-          }),
-        );
+      if (!placeholder?.text || !accounting) {
         break;
       }
 
       consumedCandidateCount += 1;
       selectedChunkIds.push(candidate.chunk.chunkId);
-      consumedTokenCount += placeholder.tokenCount;
+      selectedAccounting.set(candidate.chunk.chunkId, accounting);
+      consumedTokenCount += accounting.count;
       continue;
     }
 
-    if (placeholderTokenCount === undefined || consumedTokenCount + placeholderTokenCount > budget) {
+    if (!placeholder?.text || !accounting) {
       break;
     }
 
-    if (!placeholder?.text || !placeholder.tokenCount) {
-      blockers.push(
-        createStewardIssue({
-          code: "CHUNK_PLACEHOLDER_MISSING",
-          message: `Chunk ${candidate.chunk.chunkId} is missing the ${bandType} placeholder artifact required for deterministic rebuild.`,
-          threadId: candidate.chunk.threadId,
-        }),
-      );
+    if (consumedTokenCount + accounting.count > budget) {
       break;
     }
 
     consumedCandidateCount += 1;
     selectedChunkIds.push(candidate.chunk.chunkId);
-    consumedTokenCount += placeholder.tokenCount;
+    selectedAccounting.set(candidate.chunk.chunkId, accounting);
+    consumedTokenCount += accounting.count;
   }
 
   return {
@@ -364,51 +503,36 @@ function selectLowerBandChunkIds(
     consumedTokenCount,
     blockers,
     remainingCandidates: candidates.slice(consumedCandidateCount),
+    selectedAccounting,
   };
 }
 
-function previewPlaceholderTokenCount(
-  bandType: "detailed" | "brief",
-  smoothText: string,
-): number {
-  const normalizedText = normalizeDeterministicText(smoothText);
-  const smoothTokens = normalizedText.length === 0 ? [] : normalizedText.split(" ");
-  const marker = getPlaceholderArtifactMarker(bandType);
-  const markerTokenCount = estimateDeterministicTokenCount(marker);
-  const ratio =
-    bandType === "detailed"
-      ? DEFAULT_PLACEHOLDER_BUILD_SETTINGS.detailedRatio
-      : DEFAULT_PLACEHOLDER_BUILD_SETTINGS.briefRatio;
-  const targetArtifactTokenCount = Math.max(1, Math.round(smoothTokens.length * ratio));
-  const preservedTokenCount =
-    smoothTokens.length === 0
-      ? 0
-      : Math.min(smoothTokens.length, Math.max(1, targetArtifactTokenCount - markerTokenCount));
-  const preservedText = smoothTokens.slice(0, preservedTokenCount).join(" ");
-  const text = preservedText.length > 0 ? `${preservedText}\n\n${marker}` : marker;
+function buildDegradedAccountingIssues(input: {
+  threadId: string;
+  selections: readonly {
+    bandLabel: string;
+    selectedAccounting: ReadonlyMap<string, SelectedTokenAccounting>;
+  }[];
+}): StewardIssue[] {
+  const issues: StewardIssue[] = [];
 
-  return estimateDeterministicTokenCount(text);
-}
+  for (const selection of input.selections) {
+    for (const [sourceUnitId, accounting] of selection.selectedAccounting) {
+      if (accounting.decision.status !== "degraded") {
+        continue;
+      }
 
-function resolvePlaceholderTokenCount(
-  chunk: ChunkState,
-  bandType: "detailed" | "brief",
-): number | undefined {
-  const placeholder = bandType === "detailed" ? chunk.placeholders?.detailed : chunk.placeholders?.brief;
-  if (
-    placeholder?.status === "ready" &&
-    typeof placeholder.text === "string" &&
-    typeof placeholder.tokenCount === "number"
-  ) {
-    return placeholder.tokenCount;
+      issues.push(
+        createStewardIssue({
+          code: "TOKEN_COUNT_DEGRADED",
+          message: `${selection.bandLabel} selection ${sourceUnitId} used degraded ${accounting.decision.source} token accounting: ${accounting.decision.reason}`,
+          threadId: input.threadId,
+        }),
+      );
+    }
   }
 
-  const smoothText = normalizeDeterministicText(chunk.smoothText ?? "");
-  if (smoothText.length === 0) {
-    return undefined;
-  }
-
-  return previewPlaceholderTokenCount(bandType, smoothText);
+  return issues;
 }
 
 function buildBandRecord(
@@ -478,7 +602,7 @@ function inferResultStatus(
   resultingTokenCount: number,
   requestedLowerBound: number,
 ): ThreadViewBuildResult["status"] {
-  if (blockers.some((issue) => issue.code !== "LOWER_THRESHOLD_UNREACHED")) {
+  if (blockers.some((issue) => !DEGRADED_RESULT_ISSUE_CODES.has(issue.code))) {
     return "blocked";
   }
 
@@ -553,18 +677,28 @@ export async function buildDraftThreadView(
   const orderedTurns = sortTurnsInSourceOrder(threadSnapshot.turns);
   const turnsById = new Map(orderedTurns.map((turn) => [turn.turnId, turn]));
   const messagesById = new Map(threadSnapshot.messages.map((message) => [message.messageId, message]));
+  const accountingPolicyMode = accountingPolicyModeForAllocation(input.mode);
   const tokenizedTurns = [...orderedTurns]
     .map((turn) => {
-      const rawTokenCount = sortMessagesInSourceOrder(
+      const messages = sortMessagesInSourceOrder(
         turn.messageIds
           .map((messageId) => messagesById.get(messageId))
           .filter((message): message is MessageRecord => message !== undefined),
-      ).reduce((total, message) => total + estimateRawMessageTokenCount(message), 0);
+      );
 
       return {
         turn,
-        rawTokenCount,
-        smoothTokenCount: turn.smooth?.tokenCount ?? 0,
+        rawAccounting: resolveRawTurnTokenAccounting({
+          turn,
+          messages,
+          policyMode: accountingPolicyMode,
+          now: dependencies.now,
+        }),
+        smoothAccounting: resolveSmoothTurnTokenAccounting({
+          turn,
+          policyMode: accountingPolicyMode,
+          now: dependencies.now,
+        }),
       } satisfies TokenizedTurn;
     })
     .sort((left, right) => right.turn.turnOrder - left.turn.turnOrder);
@@ -572,7 +706,7 @@ export async function buildDraftThreadView(
   const fullFidelitySelection = selectTurnIds(
     tokenizedTurns,
     budgets.fullFidelity,
-    (candidate) => candidate.rawTokenCount,
+    (candidate) => candidate.rawAccounting,
   );
   const oldestFullFidelityTurnOrder = fullFidelitySelection.selectedTurnIds.length > 0
     ? Math.min(
@@ -583,13 +717,14 @@ export async function buildDraftThreadView(
     (candidate) =>
       !fullFidelitySelection.selectedTurnIds.includes(candidate.turn.turnId) &&
       candidate.turn.turnOrder < oldestFullFidelityTurnOrder &&
-      candidate.smoothTokenCount > 0 &&
+      candidate.smoothAccounting !== undefined &&
+      candidate.smoothAccounting.count > 0 &&
       candidate.turn.smooth?.text,
   );
   const smoothSelection = selectTurnIds(
     smoothCandidates,
     budgets.smooth,
-    (candidate) => candidate.smoothTokenCount,
+    (candidate) => candidate.smoothAccounting,
   );
   const selectedUpperTurnOrders = [...fullFidelitySelection.selectedTurnIds, ...smoothSelection.selectedTurnIds]
     .map((turnId) => turnsById.get(turnId)?.turnOrder)
@@ -606,17 +741,23 @@ export async function buildDraftThreadView(
     orderedChunkCandidates.candidates,
     budgets.detailed,
     "detailed",
+    accountingPolicyMode,
+    dependencies.now,
   );
   const briefSelection = detailedSelection.blockers.length > 0
     ? {
         selectedChunkIds: [],
         consumedTokenCount: 0,
         blockers: [] as StewardIssue[],
+        remainingCandidates: detailedSelection.remainingCandidates,
+        selectedAccounting: new Map<string, SelectedTokenAccounting>(),
       }
     : selectLowerBandChunkIds(
         detailedSelection.remainingCandidates,
         budgets.brief,
         "brief",
+        accountingPolicyMode,
+        dependencies.now,
       );
   const selectedDetailedChunkIds = orderSelectedChunks(
     detailedSelection.selectedChunkIds,
@@ -631,6 +772,15 @@ export async function buildDraftThreadView(
     ...detailedSelection.blockers,
     ...briefSelection.blockers,
   ];
+  const degradedAccountingIssues = buildDegradedAccountingIssues({
+    threadId: input.threadId,
+    selections: [
+      { bandLabel: "Full-fidelity", selectedAccounting: fullFidelitySelection.selectedAccounting },
+      { bandLabel: "Smooth", selectedAccounting: smoothSelection.selectedAccounting },
+      { bandLabel: "Detailed", selectedAccounting: detailedSelection.selectedAccounting },
+      { bandLabel: "Brief", selectedAccounting: briefSelection.selectedAccounting },
+    ],
+  });
 
   const draftView = await openOrCreateDraftView(input, threadSnapshot.thread, budgets, dependencies);
   const orderedFullFidelityTurnIds = orderSelectedTurns(fullFidelitySelection.selectedTurnIds, orderedTurns);
@@ -655,10 +805,11 @@ export async function buildDraftThreadView(
     }),
     `Failed to materialize draft Thread View for ${input.threadId}`,
   );
-  const resultingTokenCount = materialized.emittedMessages.reduce(
-    (total, message) => total + estimateMaterializedMessageTokenCount(message.content),
-    0,
-  );
+  const resultingTokenCount =
+    fullFidelitySelection.consumedTokenCount +
+    smoothSelection.consumedTokenCount +
+    detailedSelection.consumedTokenCount +
+    briefSelection.consumedTokenCount;
   const thresholdBlockers: StewardIssue[] = [];
   if (fullFidelitySelection.consumedTokenCount > input.requestedLowerBound) {
     thresholdBlockers.push(
@@ -678,7 +829,12 @@ export async function buildDraftThreadView(
     );
   }
 
-  const blockers = [...selectionBlockers, ...materialized.issues, ...thresholdBlockers];
+  const blockers = [
+    ...selectionBlockers,
+    ...materialized.issues,
+    ...thresholdBlockers,
+    ...degradedAccountingIssues,
+  ];
   const resultStatus = inferResultStatus(blockers, resultingTokenCount, input.requestedLowerBound);
   const updatedAt = (dependencies.now ?? (() => new Date()))().toISOString();
   unwrapOrThrow(

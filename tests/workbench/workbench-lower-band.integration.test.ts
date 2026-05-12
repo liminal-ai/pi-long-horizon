@@ -6,6 +6,9 @@ import { withTempFeature3Store } from "../../src/thread-view/test/fixtures.js";
 import { buildDraftThreadView } from "../../src/thread-view/services/thread-view-builder.js";
 import { seedDeterministicRebuildThread } from "../thread-view/helpers.js";
 
+const STAGE7_READY_LOWER_BOUND = 180;
+const STAGE7_READY_BAND_PERCENTAGES = { fullFidelity: 50, smooth: 4, detailed: 13, brief: 33 } as const;
+
 function expectOk<T>(result: { ok: true; value: T } | { ok: false; issues: unknown[] }): T {
   assert.equal(result.ok, true);
   return result.value;
@@ -18,8 +21,8 @@ test("workbench lower-band inspection reads real persisted chunk-backed readines
     const buildResult = await buildDraftThreadView(
       {
         threadId: context.threadId,
-        requestedLowerBound: 30,
-        requestedBandPercentages: { fullFidelity: 50, smooth: 20, detailed: 20, brief: 10 },
+        requestedLowerBound: STAGE7_READY_LOWER_BOUND,
+        requestedBandPercentages: STAGE7_READY_BAND_PERCENTAGES,
         mode: "strict",
       },
       {

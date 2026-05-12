@@ -20,6 +20,11 @@ export interface CreateThreadInput {
   targetRef: ThreadTargetRef;
 }
 
+export interface RecordThreadIdMapInput {
+  threadId: string;
+  target: ThreadTargetRef;
+}
+
 export interface ThreadSnapshot {
   thread: ThreadRecord;
   actors: ActorRecord[];
@@ -77,6 +82,8 @@ export interface ThreadStore {
   createThread(input: CreateThreadInput): Promise<StewardResult<ThreadRecord>>;
   openThread(threadId: string): Promise<StewardResult<ThreadSnapshot>>;
   openFixture(fixtureId: string): Promise<StewardResult<FixtureSnapshot>>;
+  recordThreadIdMap(input: RecordThreadIdMapInput): Promise<StewardResult<void>>;
+  resolveThreadIdMap(target: ThreadTargetRef): Promise<StewardResult<string | undefined>>;
   findThreadByTarget(target: ThreadTargetRef): Promise<StewardResult<ThreadRecord | undefined>>;
   findManagedThread(target: ThreadTargetMetadata): Promise<StewardResult<ThreadRecord | undefined>>;
   assertCanMutate(threadId: string): Promise<StewardResult<ThreadRecord>>;

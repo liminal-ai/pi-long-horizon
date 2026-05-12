@@ -10,6 +10,7 @@ import { prepareAsyncThread } from "../src/thread/async-thread/services/async-th
 import { estimateDeterministicTokenCount } from "../src/thread/async-thread/domain/smooth-turn-state.js";
 import { FileThreadStore } from "../src/thread/store/file-thread-store.js";
 import { FileThreadViewStore } from "../src/thread-view/store/file-thread-view-store.js";
+import { OpenAIInputTokenCounter } from "../src/token-accounting/index.js";
 
 export interface SeedLargeSessionOptions {
   targetTokenCount: number;
@@ -29,6 +30,12 @@ export interface LargeSessionSummary {
   smoothTurns: number;
   closedTurns: number;
 }
+
+const fakeOpenAICounter = new OpenAIInputTokenCounter({
+  async countInputTokens() {
+    return 1;
+  },
+}, "gpt-test");
 
 export interface SeedLargeSessionResult extends LargeSessionSummary {
   threadStore: FileThreadStore;
@@ -332,7 +339,12 @@ export async function seedLargeSession(options: SeedLargeSessionOptions): Promis
       requestedBandPercentages: { fullFidelity: 20, smooth: 30, detailed: 30, brief: 20 },
       requiredPlaceholderBands: { detailed: true, brief: true },
     },
-    { store: threadStore, now: () => now },
+    {
+      store: threadStore,
+      openAIInputTokenCounter: fakeOpenAICounter,
+      tokenCountModel: "gpt-test",
+      now: () => now,
+    },
   );
   if (readiness.blockers.length > 0) {
     throw new Error(`prepareAsyncThread blockers for ${thread.threadId}:\n${formatBlockers(readiness.blockers)}`);

@@ -13,8 +13,16 @@ import type {
 
 import { ok, type StewardIssue, type StewardResult } from "../domain/errors.js";
 import { createContentFingerprint, createPartId, createStableId } from "../domain/ids.js";
-import type { ActorRecord, MessageKind, PartRecord, PiTargetMetadata } from "../domain/records.js";
+import type {
+  ActorRecord,
+  MessageKind,
+  MessageRecord,
+  PartRecord,
+  PiTargetMetadata,
+} from "../domain/records.js";
 import type { CanonicalActivity } from "../services/capture-service.js";
+import type { TokenCountRecord } from "../../token-accounting/token-count-metadata.js";
+import { createProviderUsageTelemetryTokenCountRecord } from "../../token-accounting/token-count-metadata.js";
 
 type PiExtensionContext = Pick<ExtensionContext, "cwd" | "sessionManager">;
 
@@ -31,15 +39,6 @@ export interface PiMessageEndInput {
   ctx: PiExtensionContext;
   imported?: boolean;
   sessionEntryId?: string;
-}
-
-export interface PiRuntimeNoteInput {
-  ctx: PiExtensionContext;
-  note: string | Record<string, unknown>;
-  createdAt?: string;
-  targetEventKey?: string;
-  sessionEntryId?: string;
-  metadata?: Partial<PiTargetMetadata>;
 }
 
 function messageTimestampToIso(timestamp: number | undefined): string | undefined {
@@ -195,6 +194,60 @@ function makeTargetMetadata(input: PiMessageEndInput): PiTargetMetadata {
 
   metadata.targetEventKey = createTargetEventKey(input.message, metadata);
   return metadata;
+}
+
+function isProviderUsageTotalTokens(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
+
+function omitUndefinedProperties<T extends object>(record: T): T {
+  return Object.fromEntries(
+    Object.entries(record as Record<string, unknown>).filter(([, value]) => value !== undefined),
+  ) as T;
+}
+
+function makeProviderUsageTelemetry(
+  message: AssistantMessage,
+): MessageRecord["tokenTelemetry"] | undefined {
+  const rawUsage = (message as { usage?: unknown }).usage;
+  if (typeof rawUsage !== "object" || rawUsage === null) {
+    return undefined;
+  }
+
+  const usage = structuredClone(rawUsage) as Record<string, unknown>;
+  const capturedAt = messageTimestampToIso(message.timestamp) ?? new Date().toISOString();
+  const totalTokens = usage.totalTokens;
+  const tokenCountResult = isProviderUsageTotalTokens(totalTokens)
+    ? createProviderUsageTelemetryTokenCountRecord({
+        count: totalTokens,
+        source: "provider_usage",
+        trustClass: "provider_reported",
+        provider: message.provider,
+        model: message.model,
+        createdAt: capturedAt,
+        note: "PI assistant message usage.totalTokens; provider usage telemetry only.",
+      })
+    : undefined;
+  const tokenCountRecord: TokenCountRecord | undefined = tokenCountResult?.ok
+    ? omitUndefinedProperties(tokenCountResult.value)
+    : undefined;
+
+  const providerUsage = omitUndefinedProperties({
+    source: "pi_assistant_message_usage" as const,
+    provider: message.provider,
+    model: message.model,
+    api: message.api,
+    responseId: message.responseId,
+    responseModel: message.responseModel,
+    stopReason: message.stopReason,
+    usage,
+    tokenCountRecord,
+    capturedAt,
+  });
+
+  return {
+    providerUsage,
+  };
 }
 
 function messageKindForPiMessage(message: Message): MessageKind {
@@ -436,55 +489,8 @@ export function mapPiMessageEnd(input: PiMessageEndInput): StewardResult<Canonic
       parts: parts.parts,
       targetMetadata,
       targetEventKey: targetMetadata.targetEventKey,
+      tokenTelemetry: input.message.role === "assistant" ? makeProviderUsageTelemetry(input.message) : undefined,
     },
     parts.issues,
   );
-}
-
-export function createPiRuntimeNoteActivity(input: PiRuntimeNoteInput): CanonicalActivity {
-  const createdAt = input.createdAt ?? new Date().toISOString();
-  const sessionId = input.ctx.sessionManager.getSessionId() || undefined;
-  const sessionFilePath = input.ctx.sessionManager.getSessionFile();
-  const targetMetadata: PiTargetMetadata = {
-    runtime: "pi",
-    sessionId,
-    sessionFilePath,
-    sessionEntryId: input.sessionEntryId,
-    rawType: "runtime_note",
-    piRole: "assistant",
-    ...structuredClone(input.metadata),
-  };
-  const targetEventKey =
-    input.targetEventKey ??
-    targetMetadata.targetEventKey ??
-    `pi:${sessionId ?? sessionFilePath ?? "unknown-session"}:runtime-note:${createContentFingerprint({
-      note: input.note,
-      createdAt,
-      sessionEntryId: input.sessionEntryId,
-    }).slice(0, 16)}`;
-
-  targetMetadata.targetEventKey = targetEventKey;
-
-  return {
-    actor: {
-      actorId: createStableId("actor", { runtime: "pi", role: "runtime_note" }),
-      actorType: "runtime",
-      displayName: "PI Runtime",
-      targetMetadata: {
-        runtime: "pi",
-        rawType: "runtime_note",
-      },
-    },
-    messageKind: "runtime_event",
-    createdAt,
-    parts: [
-      buildPart(
-        1,
-        "runtime_note",
-        typeof input.note === "string" ? { note: input.note } : structuredClone(input.note),
-      ),
-    ],
-    targetMetadata,
-    targetEventKey,
-  };
 }

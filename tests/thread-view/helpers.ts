@@ -1,10 +1,22 @@
 import assert from "node:assert/strict";
 
 import type { StewardResult } from "../../src/thread/domain/errors.js";
-import type { MessageRecord } from "../../src/thread/domain/records.js";
+import type { MessageRecord, TurnRecord } from "../../src/thread/domain/records.js";
+import {
+  assertTokenCountRecord,
+  countBriefChunkMaterialized,
+  countChunkSmoothMaterialized,
+  countDetailedChunkMaterialized,
+  countRawTurnMaterialized,
+  countSmoothTurnMaterialized,
+  type TokenCountRecord,
+  type TokenCountScope,
+} from "../../src/token-accounting/index.js";
+import type { ChunkState } from "../../src/thread/async-thread/domain/chunk-state.js";
 import { appendSourceMessage, openOrCreateManagedThread } from "../../src/thread/services/thread-service.js";
 import { FileThreadStore } from "../../src/thread/store/file-thread-store.js";
 import { FileThreadViewStore } from "../../src/thread-view/store/file-thread-view-store.js";
+import { estimateCompactedTextTokenCount } from "../../src/thread-view/services/pi-token-estimator.js";
 import { DEFAULT_TEST_TIMESTAMP, makeBandRecord, makeThreadView } from "../../src/thread-view/test/fixtures.js";
 import { makeChunkState, makePlaceholderArtifactState } from "../../src/thread/async-thread/test/fixtures.js";
 import {
@@ -55,7 +67,89 @@ function makePendingMessage(overrides: Partial<MessageRecord> = {}) {
 }
 
 function buildTokenText(prefix: string, tokenCount: number): string {
-  return Array.from({ length: tokenCount }, (_, index) => `${prefix}${index + 1}`).join(" ");
+  return Array.from({ length: tokenCount }, (_, index) => `${index % 10}`).join(" ");
+}
+
+function estimatedTokenCount(text: string): number {
+  return estimateCompactedTextTokenCount(text);
+}
+
+function testTokenCountMetadata(count: number, scope: TokenCountScope, sourceRevision = 1) {
+  return {
+    count,
+    scope,
+    source: "pi_heuristic" as const,
+    trustClass: "heuristic_estimate" as const,
+    representationHash: `sha256:test-${scope}-${count}`,
+    sourceRevision,
+    createdAt: "2026-01-01T00:00:00.000Z",
+  };
+}
+
+function providerInputCountFromExpected(expected: TokenCountRecord): TokenCountRecord {
+  return assertTokenCountRecord({
+    count: expected.count,
+    scope: expected.scope,
+    source: "provider_input_count",
+    trustClass: "exact",
+    provider: "openai",
+    model: "gpt-test",
+    representationHash: expected.representationHash,
+    sourceRevision: expected.sourceRevision,
+    createdAt: expected.createdAt,
+    provenance: "tests.thread-view.helpers.provider-input-count",
+  });
+}
+
+function withProviderInputCounts(
+  turn: TurnRecord,
+  messages: readonly MessageRecord[],
+): TurnRecord {
+  const raw = providerInputCountFromExpected(countRawTurnMaterialized({ turn, messages }));
+  const smooth = turn.smooth
+    ? {
+        ...turn.smooth,
+        tokenCountMetadata: providerInputCountFromExpected(countSmoothTurnMaterialized(turn)),
+      }
+    : undefined;
+
+  return {
+    ...turn,
+    rawTokenCountMetadata: raw,
+    smooth,
+  };
+}
+
+function withProviderInputChunkCounts(chunk: ChunkState): ChunkState {
+  const placeholders = chunk.placeholders
+    ? {
+        ...chunk.placeholders,
+        detailed: chunk.placeholders.detailed
+          ? {
+              ...chunk.placeholders.detailed,
+              tokenCountMetadata: providerInputCountFromExpected(countDetailedChunkMaterialized(chunk)),
+            }
+          : undefined,
+        brief: chunk.placeholders.brief
+          ? {
+              ...chunk.placeholders.brief,
+              tokenCountMetadata: providerInputCountFromExpected(countBriefChunkMaterialized(chunk)),
+            }
+          : undefined,
+      }
+    : undefined;
+
+  const nextChunk = {
+    ...chunk,
+    placeholders,
+  };
+
+  return {
+    ...nextChunk,
+    smoothTokenCountMetadata: chunk.smoothText
+      ? providerInputCountFromExpected(countChunkSmoothMaterialized(nextChunk))
+      : chunk.smoothTokenCountMetadata,
+  };
 }
 
 async function appendThreadMessage(input: {
@@ -189,7 +283,7 @@ export async function seedDeterministicRebuildThread(storeRootDir: string): Prom
       expectedSourceRevision: initialSnapshot.thread.sourceRevision,
       expectedMessageHighWatermark: initialSnapshot.thread.messageHighWatermark,
       expectedTurnsRevision: initialSnapshot.thread.turnsRevision,
-      turns: [
+      turns: ([
         makeTurnRecord({
           threadId: thread.threadId,
           turnId: oldest.turnId,
@@ -202,15 +296,15 @@ export async function seedDeterministicRebuildThread(storeRootDir: string): Prom
             fromSourceOrder: oldest.messages[0].sourceOrder,
             toSourceOrder: oldest.messages[1].sourceOrder,
           },
-          sourceRevision: newest.messages[1].sourceRevision,
+          sourceRevision: 1,
           openedAt: oldest.messages[0].capturedAt,
           closedAt: oldest.messages[1].capturedAt,
           smooth: {
             text: formatSmoothTurnFromMessages(oldest.messages),
-            tokenCount: 4,
+            tokenCountMetadata: testTokenCountMetadata(estimatedTokenCount(formatSmoothTurnFromMessages(oldest.messages)), "smooth_turn_materialized", 1),
             strategy: "deterministic_marker_sections_v1",
             generatedAt: DEFAULT_TEST_TIMESTAMP,
-            sourceRevision: newest.messages[1].sourceRevision,
+            sourceRevision: 1,
           },
         }),
         makeTurnRecord({
@@ -225,15 +319,15 @@ export async function seedDeterministicRebuildThread(storeRootDir: string): Prom
             fromSourceOrder: middleOlder.messages[0].sourceOrder,
             toSourceOrder: middleOlder.messages[1].sourceOrder,
           },
-          sourceRevision: newest.messages[1].sourceRevision,
+          sourceRevision: 1,
           openedAt: middleOlder.messages[0].capturedAt,
           closedAt: middleOlder.messages[1].capturedAt,
           smooth: {
             text: "middle older smooth compact",
-            tokenCount: 4,
+            tokenCountMetadata: testTokenCountMetadata(estimatedTokenCount("middle older smooth compact"), "smooth_turn_materialized", 1),
             strategy: "deterministic_marker_sections_v1",
             generatedAt: DEFAULT_TEST_TIMESTAMP,
-            sourceRevision: newest.messages[1].sourceRevision,
+            sourceRevision: 1,
           },
         }),
         makeTurnRecord({
@@ -248,15 +342,15 @@ export async function seedDeterministicRebuildThread(storeRootDir: string): Prom
             fromSourceOrder: middleNewer.messages[0].sourceOrder,
             toSourceOrder: middleNewer.messages[1].sourceOrder,
           },
-          sourceRevision: newest.messages[1].sourceRevision,
+          sourceRevision: 1,
           openedAt: middleNewer.messages[0].capturedAt,
           closedAt: middleNewer.messages[1].capturedAt,
           smooth: {
             text: "middle newer smooth compact",
-            tokenCount: 3,
+            tokenCountMetadata: testTokenCountMetadata(estimatedTokenCount("middle newer smooth compact"), "smooth_turn_materialized", 1),
             strategy: "deterministic_marker_sections_v1",
             generatedAt: DEFAULT_TEST_TIMESTAMP,
-            sourceRevision: newest.messages[1].sourceRevision,
+            sourceRevision: 1,
           },
         }),
         makeTurnRecord({
@@ -271,18 +365,28 @@ export async function seedDeterministicRebuildThread(storeRootDir: string): Prom
             fromSourceOrder: newest.messages[0].sourceOrder,
             toSourceOrder: newest.messages[1].sourceOrder,
           },
-          sourceRevision: newest.messages[1].sourceRevision,
+          sourceRevision: 1,
           openedAt: newest.messages[0].capturedAt,
           closedAt: newest.messages[1].capturedAt,
           smooth: {
             text: "newest smooth compact",
-            tokenCount: 3,
+            tokenCountMetadata: testTokenCountMetadata(estimatedTokenCount("newest smooth compact"), "smooth_turn_materialized", 1),
             strategy: "deterministic_marker_sections_v1",
             generatedAt: DEFAULT_TEST_TIMESTAMP,
-            sourceRevision: newest.messages[1].sourceRevision,
+            sourceRevision: 1,
           },
         }),
-      ],
+      ] as TurnRecord[]).map((turn) => {
+        const seededTurn =
+          turn.turnId === oldest.turnId
+            ? oldest
+            : turn.turnId === middleOlder.turnId
+              ? middleOlder
+              : turn.turnId === middleNewer.turnId
+                ? middleNewer
+                : newest;
+        return withProviderInputCounts(turn, seededTurn.messages);
+      }),
       turnState: "ready",
     }),
   );
@@ -294,13 +398,13 @@ export async function seedDeterministicRebuildThread(storeRootDir: string): Prom
       expectedSourceRevision: postTurnsSnapshot.thread.sourceRevision,
       expectedMessageHighWatermark: postTurnsSnapshot.thread.messageHighWatermark,
       expectedTurnsRevision: postTurnsSnapshot.thread.turnsRevision,
-      chunks: [
+      chunks: ([
         makeChunkState({
           chunkId: "chunk-oldest-closed",
           threadId: thread.threadId,
           sourceTurnIds: [oldest.turnId],
           smoothText: "oldest closed chunk smooth text",
-          smoothTokenCount: 6,
+          smoothTokenCountMetadata: testTokenCountMetadata(estimatedTokenCount("oldest closed chunk smooth text"), "chunk_smooth_materialized", 1),
           placeholders: makePlaceholderArtifactState({
             threadId: thread.threadId,
             chunkId: "chunk-oldest-closed",
@@ -308,7 +412,11 @@ export async function seedDeterministicRebuildThread(storeRootDir: string): Prom
               kind: "detailed",
               status: "ready",
               text: "oldest detailed placeholder [deterministic-placeholder:detailed] [not-semantic-summary]",
-              tokenCount: 7,
+              tokenCountMetadata: testTokenCountMetadata(
+                estimatedTokenCount("oldest detailed placeholder [deterministic-placeholder:detailed] [not-semantic-summary]"),
+                "detailed_chunk_materialized",
+                1,
+              ),
               strategy: "deterministic_truncate_30",
               generatedAt: DEFAULT_TEST_TIMESTAMP,
             },
@@ -316,7 +424,7 @@ export async function seedDeterministicRebuildThread(storeRootDir: string): Prom
               kind: "brief",
               status: "ready",
               text: "oldest brief [deterministic-placeholder:brief] [not-semantic-summary]",
-              tokenCount: 4,
+              tokenCountMetadata: testTokenCountMetadata(estimatedTokenCount("oldest brief [deterministic-placeholder:brief] [not-semantic-summary]"), "brief_chunk_materialized", 1),
               strategy: "deterministic_truncate_5",
               generatedAt: DEFAULT_TEST_TIMESTAMP,
             },
@@ -327,7 +435,7 @@ export async function seedDeterministicRebuildThread(storeRootDir: string): Prom
           threadId: thread.threadId,
           sourceTurnIds: [middleOlder.turnId],
           smoothText: "newer closed chunk smooth text",
-          smoothTokenCount: 7,
+          smoothTokenCountMetadata: testTokenCountMetadata(estimatedTokenCount("newer closed chunk smooth text"), "chunk_smooth_materialized", 1),
           placeholders: makePlaceholderArtifactState({
             threadId: thread.threadId,
             chunkId: "chunk-newer-closed",
@@ -335,7 +443,11 @@ export async function seedDeterministicRebuildThread(storeRootDir: string): Prom
               kind: "detailed",
               status: "ready",
               text: "newer detailed placeholder [deterministic-placeholder:detailed] [not-semantic-summary]",
-              tokenCount: 8,
+              tokenCountMetadata: testTokenCountMetadata(
+                estimatedTokenCount("newer detailed placeholder [deterministic-placeholder:detailed] [not-semantic-summary]"),
+                "detailed_chunk_materialized",
+                1,
+              ),
               strategy: "deterministic_truncate_30",
               generatedAt: DEFAULT_TEST_TIMESTAMP,
             },
@@ -343,7 +455,7 @@ export async function seedDeterministicRebuildThread(storeRootDir: string): Prom
               kind: "brief",
               status: "ready",
               text: "newer brief [deterministic-placeholder:brief] [not-semantic-summary]",
-              tokenCount: 4,
+              tokenCountMetadata: testTokenCountMetadata(estimatedTokenCount("newer brief [deterministic-placeholder:brief] [not-semantic-summary]"), "brief_chunk_materialized", 1),
               strategy: "deterministic_truncate_5",
               generatedAt: DEFAULT_TEST_TIMESTAMP,
             },
@@ -355,10 +467,10 @@ export async function seedDeterministicRebuildThread(storeRootDir: string): Prom
           lifecycleStatus: "open",
           sourceTurnIds: [middleNewer.turnId],
           smoothText: "open recent chunk smooth text",
-          smoothTokenCount: 5,
+          smoothTokenCountMetadata: testTokenCountMetadata(estimatedTokenCount("open recent chunk smooth text"), "chunk_smooth_materialized", 1),
           placeholders: undefined,
         }),
-      ],
+      ] as ChunkState[]).map(withProviderInputChunkCounts),
     }),
   );
 
@@ -396,7 +508,7 @@ export async function seedNoClosedChunkThread(storeRootDir: string) {
           lifecycleStatus: "open",
           sourceTurnIds: [context.turns.middleOlder.turnId],
           smoothText: "open only chunk",
-          smoothTokenCount: 4,
+          smoothTokenCountMetadata: testTokenCountMetadata(estimatedTokenCount("open only chunk"), "chunk_smooth_materialized", 1),
           placeholders: undefined,
         }),
       ],
@@ -421,14 +533,14 @@ export async function seedMissingDetailedPlaceholderThread(storeRootDir: string)
           threadId: context.threadId,
           sourceTurnIds: [context.turns.oldest.turnId],
           smoothText: "oldest closed chunk smooth text",
-          smoothTokenCount: 6,
+          smoothTokenCountMetadata: testTokenCountMetadata(estimatedTokenCount("oldest closed chunk smooth text"), "chunk_smooth_materialized", 1),
         }),
         makeChunkState({
           chunkId: context.chunks.newerClosed,
           threadId: context.threadId,
           sourceTurnIds: [context.turns.middleOlder.turnId],
           smoothText: "newer closed chunk smooth text",
-          smoothTokenCount: 7,
+          smoothTokenCountMetadata: testTokenCountMetadata(estimatedTokenCount("newer closed chunk smooth text"), "chunk_smooth_materialized"),
           placeholders: {
             chunkId: context.chunks.newerClosed,
             threadId: context.threadId,
@@ -441,7 +553,7 @@ export async function seedMissingDetailedPlaceholderThread(storeRootDir: string)
               kind: "brief",
               status: "ready",
               text: "newer brief [deterministic-placeholder:brief] [not-semantic-summary]",
-              tokenCount: 4,
+              tokenCountMetadata: testTokenCountMetadata(estimatedTokenCount("newer brief [deterministic-placeholder:brief] [not-semantic-summary]"), "brief_chunk_materialized"),
               strategy: "deterministic_truncate_5",
               generatedAt: DEFAULT_TEST_TIMESTAMP,
             },
@@ -453,7 +565,7 @@ export async function seedMissingDetailedPlaceholderThread(storeRootDir: string)
           lifecycleStatus: "open",
           sourceTurnIds: [context.turns.middleNewer.turnId],
           smoothText: "open recent chunk smooth text",
-          smoothTokenCount: 5,
+          smoothTokenCountMetadata: testTokenCountMetadata(estimatedTokenCount("open recent chunk smooth text"), "chunk_smooth_materialized", 1),
           placeholders: undefined,
         }),
       ],

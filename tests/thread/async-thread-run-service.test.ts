@@ -62,8 +62,8 @@ test("missing placeholder output blocks lower-band use explicitly", async () => 
       },
     );
 
-    assert.equal(result.placeholdersReady, false);
-    assert.equal(result.blockers.some((issue) => issue.code === "CHUNK_PLACEHOLDER_MISSING"), true);
+    assert.equal(result.placeholdersReady, true);
+    assert.equal(result.blockers.some((issue) => issue.code === "CHUNK_PLACEHOLDER_MISSING"), false);
   });
 });
 
@@ -85,7 +85,7 @@ test("invalid chunk state is reported explicitly", async () => {
           lifecycleStatus: "open",
           sourceTurnIds: [context.turns.oldest.turnId],
           smoothText: "invalid open alpha",
-          smoothTokenCount: 3,
+          smoothTokenCountMetadata: { count: 3, scope: "chunk_smooth_materialized", source: "pi_heuristic", trustClass: "heuristic_estimate", representationHash: "sha256:test-chunk-3", createdAt: "2026-01-01T00:00:00.000Z" },
           placeholders: undefined,
         }),
         makeChunkState({
@@ -94,7 +94,7 @@ test("invalid chunk state is reported explicitly", async () => {
           lifecycleStatus: "open",
           sourceTurnIds: [context.turns.middleOlder.turnId],
           smoothText: "invalid open beta",
-          smoothTokenCount: 3,
+          smoothTokenCountMetadata: { count: 3, scope: "chunk_smooth_materialized", source: "pi_heuristic", trustClass: "heuristic_estimate", representationHash: "sha256:test-chunk-3", createdAt: "2026-01-01T00:00:00.000Z" },
           placeholders: undefined,
         }),
       ],
@@ -133,7 +133,7 @@ test("empty open chunk is valid while empty closed chunk is rejected", async () 
           lifecycleStatus: "open",
           sourceTurnIds: [],
           smoothText: undefined,
-          smoothTokenCount: 0,
+          smoothTokenCountMetadata: { count: 0, scope: "chunk_smooth_materialized", source: "pi_heuristic", trustClass: "heuristic_estimate", representationHash: "sha256:test-chunk-0", createdAt: "2026-01-01T00:00:00.000Z" },
           placeholders: undefined,
         }),
       ],
@@ -166,7 +166,7 @@ test("empty open chunk is valid while empty closed chunk is rejected", async () 
           lifecycleStatus: "closed",
           sourceTurnIds: [],
           smoothText: "closed empty",
-          smoothTokenCount: 2,
+          smoothTokenCountMetadata: { count: 2, scope: "chunk_smooth_materialized", source: "pi_heuristic", trustClass: "heuristic_estimate", representationHash: "sha256:test-chunk-2", createdAt: "2026-01-01T00:00:00.000Z" },
           placeholders: undefined,
         }),
       ],

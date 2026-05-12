@@ -121,6 +121,7 @@ const THREAD_VIEW_STATE_ORDER: Record<ThreadViewState, number> = {
 
 const DEGRADED_BLOCKER_CODES = new Set([
   "THREAD_VIEW_STATE_CONFLICT",
+  "TOKEN_COUNT_DEGRADED",
   "LOWER_THRESHOLD_UNREACHED",
   "GENERATED_WRITE_FAILED",
   "PI_RELOAD_FAILED",
@@ -146,7 +147,7 @@ function buildChunkIssues(
 ): StewardIssue[] {
   const issues: StewardIssue[] = [];
 
-  if (chunk.lifecycleStatus === "closed" && (!chunk.smoothText || chunk.smoothTokenCount <= 0)) {
+  if (chunk.lifecycleStatus === "closed" && (!chunk.smoothText || (chunk.smoothTokenCountMetadata?.count ?? 0) <= 0)) {
     issues.push(
       createStewardIssue({
         code: "CHUNK_STATE_INVALID",
@@ -205,12 +206,12 @@ function toWorkbenchChunkRead(
     lifecycleStatus: chunk.lifecycleStatus,
     sourceTurnIds: [...chunk.sourceTurnIds],
     smoothText: chunk.smoothText,
-    smoothTokenCount: chunk.smoothTokenCount,
+    smoothTokenCount: chunk.smoothTokenCountMetadata?.count,
     detailedSummary: detailed?.status === "ready" ? detailed.text : undefined,
-    detailedSummaryTokenCount: detailed?.status === "ready" ? detailed.tokenCount : undefined,
+    detailedSummaryTokenCount: detailed?.status === "ready" ? detailed.tokenCountMetadata?.count : undefined,
     detailedSummaryStrategy: detailed?.status === "ready" ? detailed.strategy : undefined,
     briefSummary: brief?.status === "ready" ? brief.text : undefined,
-    briefSummaryTokenCount: brief?.status === "ready" ? brief.tokenCount : undefined,
+    briefSummaryTokenCount: brief?.status === "ready" ? brief.tokenCountMetadata?.count : undefined,
     briefSummaryStrategy: brief?.status === "ready" ? brief.strategy : undefined,
     placeholderExplicit: hasReadyPlaceholder ? true : undefined,
     summaryQuality: hasReadyPlaceholder ? "deterministic_placeholder_not_semantic" : undefined,

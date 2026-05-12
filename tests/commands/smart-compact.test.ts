@@ -3,11 +3,54 @@ import { readFile } from "node:fs/promises";
 import { basename } from "node:path";
 import test from "node:test";
 
-import { runSmartCompact } from "../../src/commands/smart-compact.js";
+import { isOpenAIInputTokenCountProvider, runSmartCompact } from "../../src/commands/smart-compact.js";
 import { createPiCliHarnessAdapter } from "../../src/harness-adapter/pi-cli-ha/pi-cli-ha.js";
 import { estimateDeterministicTokenCount } from "../../src/thread/async-thread/domain/smooth-turn-state.js";
+import { OpenAIInputTokenCounter, type TokenCountRecord } from "../../src/token-accounting/index.js";
 import { withTempFeature3Store } from "../../src/thread-view/test/fixtures.js";
 import { seedDeterministicRebuildThread, seedMissingDetailedPlaceholderThread } from "../thread-view/helpers.js";
+
+const STAGE7_READY_LOWER_BOUND = 2_000;
+const STAGE7_READY_BAND_PERCENTAGES = { fullFidelity: 50, smooth: 4, detailed: 13, brief: 33 } as const;
+const fakeOpenAICounter = new OpenAIInputTokenCounter({
+  async countInputTokens() {
+    return 1;
+  },
+}, "gpt-test");
+const fakeOverTargetOpenAICounter = new OpenAIInputTokenCounter({
+  async countInputTokens(request) {
+    return request.input.length === 1 ? 1 : 1_500;
+  },
+}, "gpt-test");
+const failingFinalOpenAICounter = new OpenAIInputTokenCounter({
+  async countInputTokens(request) {
+    if (request.input.length === 1) {
+      return 1;
+    }
+
+    throw new Error("final count failed");
+  },
+}, "gpt-test");
+
+test("openai-codex provider is eligible for OpenAI input token counting", () => {
+  assert.equal(isOpenAIInputTokenCountProvider("openai"), true);
+  assert.equal(isOpenAIInputTokenCountProvider("openai-codex"), true);
+  assert.equal(isOpenAIInputTokenCountProvider("anthropic"), false);
+  assert.equal(isOpenAIInputTokenCountProvider(undefined), false);
+});
+
+function createRetryingGeneratedSessionCounter(counts: number[]): OpenAIInputTokenCounter {
+  const generatedCounts = [...counts];
+  return new OpenAIInputTokenCounter({
+    async countInputTokens(request) {
+      if (request.input.length === 1) {
+        return 1;
+      }
+
+      return generatedCounts.shift() ?? counts.at(-1) ?? 1;
+    },
+  }, "gpt-test");
+}
 
 function createPathResolver(context: {
   resolveGeneratedPath(threadId: string, ...segments: string[]): string;
@@ -94,6 +137,74 @@ async function normalizeClosedChunkTokenCounts(
   });
 }
 
+function heuristicOnly(record: TokenCountRecord | undefined): TokenCountRecord | undefined {
+  if (!record) {
+    return undefined;
+  }
+
+  return {
+    ...record,
+    source: "pi_heuristic",
+    trustClass: "heuristic_estimate",
+    provider: undefined,
+    model: undefined,
+  };
+}
+
+async function forceHeuristicOnlyCounts(context: Awaited<ReturnType<typeof seedDeterministicRebuildThread>>) {
+  const snapshot = await context.threadStore.openThread(context.threadId);
+  assert.equal(snapshot.ok, true);
+  await context.threadStore.writeTurns({
+    threadId: context.threadId,
+    expectedSourceRevision: snapshot.value.thread.sourceRevision,
+    expectedMessageHighWatermark: snapshot.value.thread.messageHighWatermark,
+    expectedTurnsRevision: snapshot.value.thread.turnsRevision,
+    turns: snapshot.value.turns.map((turn) => ({
+      ...turn,
+      rawTokenCountMetadata: heuristicOnly(turn.rawTokenCountMetadata),
+      smooth: turn.smooth
+        ? {
+            ...turn.smooth,
+            tokenCountMetadata: heuristicOnly(turn.smooth.tokenCountMetadata),
+          }
+        : undefined,
+    })),
+    turnState: snapshot.value.thread.status.turnState,
+  });
+
+  const updated = await context.threadStore.openThread(context.threadId);
+  assert.equal(updated.ok, true);
+  const chunks = await context.threadStore.readChunks(context.threadId);
+  assert.equal(chunks.ok, true);
+  await context.threadStore.writeChunks({
+    threadId: context.threadId,
+    expectedSourceRevision: updated.value.thread.sourceRevision,
+    expectedMessageHighWatermark: updated.value.thread.messageHighWatermark,
+    expectedTurnsRevision: updated.value.thread.turnsRevision,
+    chunks: chunks.value.map((chunk) => ({
+      ...chunk,
+      smoothTokenCountMetadata: heuristicOnly(chunk.smoothTokenCountMetadata),
+      placeholders: chunk.placeholders
+        ? {
+            ...chunk.placeholders,
+            detailed: chunk.placeholders.detailed
+              ? {
+                  ...chunk.placeholders.detailed,
+                  tokenCountMetadata: heuristicOnly(chunk.placeholders.detailed.tokenCountMetadata),
+                }
+              : undefined,
+            brief: chunk.placeholders.brief
+              ? {
+                  ...chunk.placeholders.brief,
+                  tokenCountMetadata: heuristicOnly(chunk.placeholders.brief.tokenCountMetadata),
+                }
+              : undefined,
+          }
+        : undefined,
+    })),
+  });
+}
+
 test("command accepts explicit per-run inputs, writes a generated PI file, and reloads PI", async () => {
   await withTempFeature3Store(async (context) => {
     const seeded = await seedDeterministicRebuildThread(context.storeRootDir);
@@ -105,13 +216,14 @@ test("command accepts explicit per-run inputs, writes a generated PI file, and r
     const result = await runSmartCompact(
       {
         threadId: seeded.threadId,
-        requestedLowerBound: 30,
-        requestedBandPercentages: { fullFidelity: 50, smooth: 20, detailed: 20, brief: 10 },
+        requestedLowerBound: 1_600,
+        requestedBandPercentages: STAGE7_READY_BAND_PERCENTAGES,
         mode: "strict",
       },
       {
         threadStore: seeded.threadStore,
         threadViewStore: seeded.threadViewStore,
+        openAIInputTokenCounter: fakeOpenAICounter,
         piThreadViewWriterOptions: {
           pathResolver: createPathResolver(context),
           now: () => new Date("2026-01-01T00:00:00.000Z"),
@@ -133,7 +245,6 @@ test("command accepts explicit per-run inputs, writes a generated PI file, and r
 
     const fileContent = await readFile(result.generatedFilePath!, "utf8");
     assert.match(fileContent, /pi-long-horizon\.thread-view\.output/);
-    assert.match(fileContent, /\[deterministic-placeholder:detailed\]/);
 
     const after = await seeded.threadStore.openThread(seeded.threadId);
     assert.equal(after.ok, true);
@@ -141,6 +252,103 @@ test("command accepts explicit per-run inputs, writes a generated PI file, and r
     assert.deepEqual(after.value.turns, before.value.turns);
     assert.equal(after.value.thread.target.currentGeneratedFilePath, result.generatedFilePath);
     assert.equal(after.value.projections.at(-1)?.status, "available");
+  });
+});
+
+test("generated session over requested lower bound stops before write or reload", async () => {
+  await withTempFeature3Store(async (context) => {
+    const seeded = await seedDeterministicRebuildThread(context.storeRootDir);
+    const switchedTo: string[] = [];
+
+    const result = await runSmartCompact(
+      {
+        threadId: seeded.threadId,
+        requestedLowerBound: 1_000,
+        requestedBandPercentages: STAGE7_READY_BAND_PERCENTAGES,
+        mode: "strict",
+      },
+      {
+        threadStore: seeded.threadStore,
+        threadViewStore: seeded.threadViewStore,
+        openAIInputTokenCounter: fakeOverTargetOpenAICounter,
+        piThreadViewWriterOptions: {
+          pathResolver: createPathResolver(context),
+          now: () => new Date("2026-01-01T00:00:00.000Z"),
+        },
+        piCliHarnessAdapter: createPiCliHarnessAdapter({
+          switchSession: async (sessionPath) => {
+            switchedTo.push(sessionPath);
+            return { cancelled: false };
+          },
+        }),
+        now: () => new Date("2026-01-01T00:00:00.000Z"),
+      },
+    );
+
+    assert.equal(result.compactStatus, "degraded");
+    assert.equal(result.generatedFilePath, undefined);
+    assert.equal((result.generatedSessionTokenCount ?? 0) > 1_000, true);
+    assert.equal(result.generatedSessionTokenCountMetadata?.scope, "generated_session");
+    assert.equal(result.generatedSessionCountPolicy?.status, "usable");
+    assert.equal(result.generatedSessionTokenCountMetadata?.source, "provider_input_count");
+    assert.equal(result.generatedSessionTokenCountMetadata?.trustClass, "exact");
+    assert.equal(result.blockers.some((issue) => issue.code === "GENERATED_SESSION_OVER_LOWER_BOUND"), true);
+    assert.deepEqual(switchedTo, []);
+
+    const thread = await seeded.threadStore.openThread(seeded.threadId);
+    assert.equal(thread.ok, true);
+    assert.equal(thread.value.thread.target.currentGeneratedFilePath, undefined);
+    assert.equal(
+      thread.value.thread.threadViewOutputSummary.generatedOutput?.generatedSessionTokenCount,
+      result.generatedSessionTokenCount,
+    );
+    assert.equal(
+      thread.value.thread.threadViewOutputSummary.generatedOutput?.issues?.some(
+        (issue) => issue.code === "GENERATED_SESSION_OVER_LOWER_BOUND",
+      ),
+      true,
+    );
+  });
+});
+
+test("generated session over target retries by reducing lower-fidelity content and then writes", async () => {
+  await withTempFeature3Store(async (context) => {
+    const seeded = await seedDeterministicRebuildThread(context.storeRootDir);
+    const switchedTo: string[] = [];
+    const retryingCounter = createRetryingGeneratedSessionCounter([1_100, 900]);
+
+    const result = await runSmartCompact(
+      {
+        threadId: seeded.threadId,
+        requestedLowerBound: 1_000,
+        requestedBandPercentages: STAGE7_READY_BAND_PERCENTAGES,
+        mode: "strict",
+      },
+      {
+        threadStore: seeded.threadStore,
+        threadViewStore: seeded.threadViewStore,
+        openAIInputTokenCounter: retryingCounter,
+        piThreadViewWriterOptions: {
+          pathResolver: createPathResolver(context),
+          now: () => new Date("2026-01-01T00:00:00.000Z"),
+        },
+        piCliHarnessAdapter: createPiCliHarnessAdapter({
+          switchSession: async (sessionPath) => {
+            switchedTo.push(sessionPath);
+            return { cancelled: false };
+          },
+        }),
+        now: () => new Date("2026-01-01T00:00:00.000Z"),
+      },
+    );
+
+    assert.equal(result.compactStatus, "success");
+    assert.equal(result.generatedSessionTokenCount, 900);
+    assert.equal(result.generatedSessionTokenCountMetadata?.source, "provider_input_count");
+    assert.equal(result.generatedSessionTokenCountMetadata?.trustClass, "exact");
+    assert.deepEqual(switchedTo, [result.generatedFilePath!]);
+    const fileContent = await readFile(result.generatedFilePath!, "utf8");
+    assert.equal(countGeneratedSourceEntries(fileContent, "brief_chunk_summary"), 0);
   });
 });
 
@@ -152,13 +360,14 @@ test("command default reload path uses the configured PI session switch dependen
     const result = await runSmartCompact(
       {
         threadId: seeded.threadId,
-        requestedLowerBound: 30,
-        requestedBandPercentages: { fullFidelity: 50, smooth: 20, detailed: 20, brief: 10 },
+        requestedLowerBound: STAGE7_READY_LOWER_BOUND,
+        requestedBandPercentages: STAGE7_READY_BAND_PERCENTAGES,
         mode: "strict",
       },
       {
         threadStore: seeded.threadStore,
         threadViewStore: seeded.threadViewStore,
+        openAIInputTokenCounter: fakeOpenAICounter,
         piThreadViewWriterOptions: {
           pathResolver: createPathResolver(context),
           now: () => new Date("2026-01-01T00:00:00.000Z"),
@@ -178,7 +387,7 @@ test("command default reload path uses the configured PI session switch dependen
   });
 });
 
-test("zero-percent smooth allocation writes no smooth_turn entries to the PI session file", async () => {
+test("zero-percent smooth allocation materializes no smooth_turn entries", async () => {
   await withTempFeature3Store(async (context) => {
     const seeded = await seedDeterministicRebuildThread(context.storeRootDir);
 
@@ -192,6 +401,7 @@ test("zero-percent smooth allocation writes no smooth_turn entries to the PI ses
       {
         threadStore: seeded.threadStore,
         threadViewStore: seeded.threadViewStore,
+        openAIInputTokenCounter: fakeOpenAICounter,
         piThreadViewWriterOptions: {
           pathResolver: createPathResolver(context),
           now: () => new Date("2026-01-01T00:00:00.000Z"),
@@ -203,11 +413,16 @@ test("zero-percent smooth allocation writes no smooth_turn entries to the PI ses
       },
     );
 
-    assert.equal(result.compactStatus, "success");
-    assert.ok(result.generatedFilePath);
+    assert.equal(result.compactStatus, "degraded");
+    assert.ok(result.threadViewId);
+    assert.equal(result.blockers.some((issue) => issue.code === "LOWER_THRESHOLD_UNREACHED"), true);
 
-    const fileContent = await readFile(result.generatedFilePath!, "utf8");
-    assert.equal(countGeneratedSourceEntries(fileContent, "smooth_turn"), 0);
+    const opened = await seeded.threadViewStore.openThreadView(seeded.threadId, result.threadViewId);
+    assert.equal(opened.ok, true);
+    assert.equal(
+      opened.value.view.emittedMessages.some((message) => message.sourceKind === "smooth_turn"),
+      false,
+    );
   });
 });
 
@@ -233,14 +448,15 @@ test("default command path roots generated and archived output under the active 
     const secondNow = () => new Date("2026-01-01T00:05:00.000Z");
     const commandInput = {
       threadId: seeded.threadId,
-      requestedLowerBound: 30,
-      requestedBandPercentages: { fullFidelity: 50, smooth: 20, detailed: 20, brief: 10 },
+      requestedLowerBound: STAGE7_READY_LOWER_BOUND,
+      requestedBandPercentages: STAGE7_READY_BAND_PERCENTAGES,
       mode: "strict",
     } as const;
 
     const firstResult = await runSmartCompact(commandInput, {
       threadStore: seeded.threadStore,
       threadViewStore: seeded.threadViewStore,
+      openAIInputTokenCounter: fakeOpenAICounter,
       piThreadViewWriterOptions: {
         now: firstNow,
       },
@@ -265,6 +481,7 @@ test("default command path roots generated and archived output under the active 
     const secondResult = await runSmartCompact(commandInput, {
       threadStore: seeded.threadStore,
       threadViewStore: seeded.threadViewStore,
+      openAIInputTokenCounter: fakeOpenAICounter,
       piThreadViewWriterOptions: {
         now: secondNow,
       },
@@ -288,6 +505,14 @@ test("default command path roots generated and archived output under the active 
     assert.equal(secondResult.archivePath, expectedArchivePath);
     assert.equal(await readFile(secondResult.archivePath!, "utf8"), firstContent);
     assert.deepEqual(switchedTo, [expectedGeneratedPath, expectedGeneratedPath]);
+    const mappedThreadId = await seeded.threadStore.resolveThreadIdMap({
+      runtime: "pi",
+      sessionFilePath: expectedGeneratedPath,
+    });
+    if (!mappedThreadId.ok) {
+      assert.fail(mappedThreadId.issues.map((issue) => issue.message).join("; "));
+    }
+    assert.equal(mappedThreadId.value, seeded.threadId);
   });
 });
 
@@ -296,7 +521,7 @@ test("command rejects invalid per-run inputs", async () => {
     {
       threadId: "thread-invalid-smart-compact",
       requestedLowerBound: 0,
-      requestedBandPercentages: { fullFidelity: 50, smooth: 20, detailed: 20, brief: 10 },
+      requestedBandPercentages: STAGE7_READY_BAND_PERCENTAGES,
       mode: "strict",
     },
     {
@@ -310,7 +535,7 @@ test("command rejects invalid per-run inputs", async () => {
   assert.match(result.blockers[0]?.message ?? "", /requestedLowerBound must be greater than 0/);
 });
 
-test("strict mode reports missing smooth output explicitly", async () => {
+test("strict mode skips missing smooth output when allocation selects an alternative", async () => {
   await withTempFeature3Store(async (context) => {
     const seeded = await seedDeterministicRebuildThread(context.storeRootDir);
     const snapshot = await seeded.threadStore.openThread(seeded.threadId);
@@ -334,21 +559,31 @@ test("strict mode reports missing smooth output explicitly", async () => {
     const result = await runSmartCompact(
       {
         threadId: seeded.threadId,
-        requestedLowerBound: 30,
-        requestedBandPercentages: { fullFidelity: 50, smooth: 20, detailed: 20, brief: 10 },
+        requestedLowerBound: STAGE7_READY_LOWER_BOUND,
+        requestedBandPercentages: STAGE7_READY_BAND_PERCENTAGES,
         mode: "strict",
       },
       {
         threadStore: seeded.threadStore,
         threadViewStore: seeded.threadViewStore,
+        openAIInputTokenCounter: fakeOpenAICounter,
+        asyncThreadDependencies: {
+          tokenCountModel: "gpt-test",
+        },
         piThreadViewWriterOptions: {
           pathResolver: createPathResolver(context),
+        },
+        piSessionSwitch: {
+          switchSession: async () => ({ cancelled: false }),
         },
       },
     );
 
-    assert.equal(result.compactStatus, "blocked");
-    assert.equal(result.blockers.some((issue) => issue.code === "SMOOTH_MISSING"), true);
+    assert.equal(result.compactStatus, "success");
+    assert.deepEqual(
+      result.blockers.filter((issue) => issue.code === "SMOOTH_MISSING"),
+      [],
+    );
   });
 });
 
@@ -377,13 +612,17 @@ test("strict mode ignores missing smooth output on older turns the selected proj
     const result = await runSmartCompact(
       {
         threadId: seeded.threadId,
-        requestedLowerBound: 30,
-        requestedBandPercentages: { fullFidelity: 50, smooth: 20, detailed: 20, brief: 10 },
+        requestedLowerBound: STAGE7_READY_LOWER_BOUND,
+        requestedBandPercentages: STAGE7_READY_BAND_PERCENTAGES,
         mode: "strict",
       },
       {
         threadStore: seeded.threadStore,
         threadViewStore: seeded.threadViewStore,
+        openAIInputTokenCounter: fakeOpenAICounter,
+        asyncThreadDependencies: {
+          tokenCountModel: "gpt-test",
+        },
         piThreadViewWriterOptions: {
           pathResolver: createPathResolver(context),
         },
@@ -405,36 +644,49 @@ test("strict mode ignores missing smooth output on older turns the selected proj
   });
 });
 
-test("strict mode reports blockers without mutating draft or output state", async () => {
+test("strict mode skips unselected missing placeholders without writing placeholder blockers", async () => {
   await withTempFeature3Store(async (context) => {
     const seeded = await seedMissingDetailedPlaceholderThread(context.storeRootDir);
+    const switchedTo: string[] = [];
 
     const result = await runSmartCompact(
       {
         threadId: seeded.threadId,
-        requestedLowerBound: 30,
-        requestedBandPercentages: { fullFidelity: 50, smooth: 20, detailed: 20, brief: 10 },
+        requestedLowerBound: STAGE7_READY_LOWER_BOUND,
+        requestedBandPercentages: STAGE7_READY_BAND_PERCENTAGES,
         mode: "strict",
       },
       {
         threadStore: seeded.threadStore,
         threadViewStore: seeded.threadViewStore,
+        openAIInputTokenCounter: fakeOpenAICounter,
+        asyncThreadDependencies: {
+          tokenCountModel: "gpt-test",
+        },
         piThreadViewWriterOptions: {
           pathResolver: createPathResolver(context),
         },
+        piCliHarnessAdapter: createPiCliHarnessAdapter({
+          switchSession: async (sessionPath) => {
+            switchedTo.push(sessionPath);
+            return { cancelled: false };
+          },
+        }),
       },
     );
 
-    assert.equal(result.compactStatus, "blocked");
-    assert.equal(result.blockers.some((issue) => issue.code === "CHUNK_PLACEHOLDER_MISSING"), true);
+    assert.equal(result.compactStatus, "success");
+    assert.equal(result.blockers.some((issue) => issue.code === "CHUNK_PLACEHOLDER_MISSING"), false);
+    assert.equal(switchedTo.length, 1);
 
     const views = await seeded.threadViewStore.listThreadViews(seeded.threadId);
     assert.equal(views.ok, true);
-    assert.deepEqual(views.value, []);
+    assert.equal(views.value.length, 1);
+    assert.equal(views.value[0]?.status, "ready");
 
     const thread = await seeded.threadStore.openThread(seeded.threadId);
     assert.equal(thread.ok, true);
-    assert.equal(thread.value.thread.target.currentGeneratedFilePath, undefined);
+    assert.equal(thread.value.thread.target.currentGeneratedFilePath, result.generatedFilePath);
   });
 });
 
@@ -473,13 +725,17 @@ test("strict mode ignores missing detailed placeholders on chunks only selected 
     const result = await runSmartCompact(
       {
         threadId: seeded.threadId,
-        requestedLowerBound: 30,
-        requestedBandPercentages: { fullFidelity: 50, smooth: 20, detailed: 20, brief: 10 },
+        requestedLowerBound: STAGE7_READY_LOWER_BOUND,
+        requestedBandPercentages: STAGE7_READY_BAND_PERCENTAGES,
         mode: "strict",
       },
       {
         threadStore: seeded.threadStore,
         threadViewStore: seeded.threadViewStore,
+        openAIInputTokenCounter: fakeOpenAICounter,
+        asyncThreadDependencies: {
+          tokenCountModel: "gpt-test",
+        },
         piThreadViewWriterOptions: {
           pathResolver: createPathResolver(context),
         },
@@ -509,13 +765,17 @@ test("strict mode ignores missing placeholders when lower bands are not requeste
     const result = await runSmartCompact(
       {
         threadId: seeded.threadId,
-        requestedLowerBound: 120,
+        requestedLowerBound: STAGE7_READY_LOWER_BOUND,
         requestedBandPercentages: { fullFidelity: 60, smooth: 40, detailed: 0, brief: 0 },
         mode: "strict",
       },
       {
         threadStore: seeded.threadStore,
         threadViewStore: seeded.threadViewStore,
+        openAIInputTokenCounter: fakeOpenAICounter,
+        asyncThreadDependencies: {
+          tokenCountModel: "gpt-test",
+        },
         piThreadViewWriterOptions: {
           pathResolver: createPathResolver(context),
         },
@@ -546,13 +806,17 @@ test("prepare mode repairs missing deterministic artifacts then continues", asyn
     const result = await runSmartCompact(
       {
         threadId: seeded.threadId,
-        requestedLowerBound: 100,
+        requestedLowerBound: STAGE7_READY_LOWER_BOUND,
         requestedBandPercentages: { fullFidelity: 10, smooth: 5, detailed: 70, brief: 15 },
         mode: "prepare",
       },
       {
         threadStore: seeded.threadStore,
         threadViewStore: seeded.threadViewStore,
+        openAIInputTokenCounter: fakeOpenAICounter,
+        asyncThreadDependencies: {
+          tokenCountModel: "gpt-test",
+        },
         piThreadViewWriterOptions: {
           pathResolver: createPathResolver(context),
         },
@@ -584,13 +848,17 @@ test("first smart compact can bootstrap deterministic artifacts", async () => {
     const result = await runSmartCompact(
       {
         threadId: seeded.threadId,
-        requestedLowerBound: 120,
+        requestedLowerBound: STAGE7_READY_LOWER_BOUND,
         requestedBandPercentages: { fullFidelity: 60, smooth: 40, detailed: 0, brief: 0 },
         mode: "prepare",
       },
       {
         threadStore: seeded.threadStore,
         threadViewStore: seeded.threadViewStore,
+        openAIInputTokenCounter: fakeOpenAICounter,
+        asyncThreadDependencies: {
+          tokenCountModel: "gpt-test",
+        },
         piThreadViewWriterOptions: {
           pathResolver: createPathResolver(context),
         },
@@ -608,6 +876,113 @@ test("first smart compact can bootstrap deterministic artifacts", async () => {
   });
 });
 
+test("strict smart compact blocks heuristic-only materialized counts before write or reload", async () => {
+  await withTempFeature3Store(async (context) => {
+    const seeded = await seedDeterministicRebuildThread(context.storeRootDir);
+    await forceHeuristicOnlyCounts(seeded);
+    const switchedTo: string[] = [];
+
+    const result = await runSmartCompact(
+      {
+        threadId: seeded.threadId,
+        requestedLowerBound: STAGE7_READY_LOWER_BOUND,
+        requestedBandPercentages: STAGE7_READY_BAND_PERCENTAGES,
+        mode: "strict",
+      },
+      {
+        threadStore: seeded.threadStore,
+        threadViewStore: seeded.threadViewStore,
+        piThreadViewWriterOptions: {
+          pathResolver: createPathResolver(context),
+        },
+        piCliHarnessAdapter: createPiCliHarnessAdapter({
+          switchSession: async (sessionPath) => {
+            switchedTo.push(sessionPath);
+            return { cancelled: false };
+          },
+        }),
+      },
+    );
+
+    assert.equal(result.compactStatus, "blocked");
+    assert.equal(result.generatedFilePath, undefined);
+    assert.equal(result.blockers.some((issue) => issue.code === "TOKEN_COUNT_BLOCKED"), true);
+    assert.deepEqual(switchedTo, []);
+  });
+});
+
+test("prepare smart compact blocks missing OpenAI counter without writing or reloading success", async () => {
+  await withTempFeature3Store(async (context) => {
+    const seeded = await seedDeterministicRebuildThread(context.storeRootDir);
+    await forceHeuristicOnlyCounts(seeded);
+    const switchedTo: string[] = [];
+
+    const result = await runSmartCompact(
+      {
+        threadId: seeded.threadId,
+        requestedLowerBound: STAGE7_READY_LOWER_BOUND,
+        requestedBandPercentages: STAGE7_READY_BAND_PERCENTAGES,
+        mode: "prepare",
+      },
+      {
+        threadStore: seeded.threadStore,
+        threadViewStore: seeded.threadViewStore,
+        piThreadViewWriterOptions: {
+          pathResolver: createPathResolver(context),
+        },
+        piCliHarnessAdapter: createPiCliHarnessAdapter({
+          switchSession: async (sessionPath) => {
+            switchedTo.push(sessionPath);
+            return { cancelled: false };
+          },
+        }),
+      },
+    );
+
+    assert.equal(result.compactStatus, "blocked");
+    assert.equal(result.generatedFilePath, undefined);
+    assert.equal(result.blockers.some((issue) => issue.code === "TOKEN_COUNT_BLOCKED"), true);
+    assert.deepEqual(switchedTo, []);
+  });
+});
+
+test("smart compact blocks failed final OpenAI generated-session count without writing or reloading", async () => {
+  await withTempFeature3Store(async (context) => {
+    const seeded = await seedDeterministicRebuildThread(context.storeRootDir);
+    const switchedTo: string[] = [];
+
+    const result = await runSmartCompact(
+      {
+        threadId: seeded.threadId,
+        requestedLowerBound: STAGE7_READY_LOWER_BOUND,
+        requestedBandPercentages: STAGE7_READY_BAND_PERCENTAGES,
+        mode: "strict",
+      },
+      {
+        threadStore: seeded.threadStore,
+        threadViewStore: seeded.threadViewStore,
+        openAIInputTokenCounter: failingFinalOpenAICounter,
+        piThreadViewWriterOptions: {
+          pathResolver: createPathResolver(context),
+        },
+        piCliHarnessAdapter: createPiCliHarnessAdapter({
+          switchSession: async (sessionPath) => {
+            switchedTo.push(sessionPath);
+            return { cancelled: false };
+          },
+        }),
+      },
+    );
+
+    assert.equal(result.compactStatus, "blocked");
+    assert.equal(result.generatedFilePath, undefined);
+    assert.equal(result.generatedSessionTokenCount, undefined);
+    assert.equal(result.blockers.some((issue) => issue.code === "TOKEN_COUNT_BLOCKED"), true);
+    assert.match(result.blockers.find((issue) => issue.code === "TOKEN_COUNT_BLOCKED")?.cause ?? "", /final count failed/);
+    assert.deepEqual(switchedTo, []);
+  });
+});
+
 test("above-target draft reports degraded threshold result explicitly", async () => {
   await withTempFeature3Store(async (context) => {
     const seeded = await seedDeterministicRebuildThread(context.storeRootDir);
@@ -622,6 +997,7 @@ test("above-target draft reports degraded threshold result explicitly", async ()
       {
         threadStore: seeded.threadStore,
         threadViewStore: seeded.threadViewStore,
+        openAIInputTokenCounter: fakeOpenAICounter,
         piThreadViewWriterOptions: {
           pathResolver: createPathResolver(context),
         },
@@ -660,6 +1036,7 @@ test("compaction stops explicitly on threshold failure without writing or reload
       {
         threadStore: seeded.threadStore,
         threadViewStore: seeded.threadViewStore,
+        openAIInputTokenCounter: fakeOpenAICounter,
         piThreadViewWriterOptions: {
           pathResolver: createPathResolver(context),
         },
@@ -689,13 +1066,14 @@ test("reload failure is explicit while preserving the generated output", async (
     const result = await runSmartCompact(
       {
         threadId: seeded.threadId,
-        requestedLowerBound: 30,
-        requestedBandPercentages: { fullFidelity: 50, smooth: 20, detailed: 20, brief: 10 },
+        requestedLowerBound: STAGE7_READY_LOWER_BOUND,
+        requestedBandPercentages: STAGE7_READY_BAND_PERCENTAGES,
         mode: "strict",
       },
       {
         threadStore: seeded.threadStore,
         threadViewStore: seeded.threadViewStore,
+        openAIInputTokenCounter: fakeOpenAICounter,
         piThreadViewWriterOptions: {
           pathResolver: createPathResolver(context),
         },

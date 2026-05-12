@@ -17,11 +17,18 @@ import {
 } from "../thread-view/targets/pi/pi-thread-view-writer.js";
 import type {
   PiCliHarnessAdapter,
+  PiThreadViewFile,
   SmartCompactCommandInput,
   SmartCompactCommandResult,
 } from "../thread-view/domain/pi-thread-view-file.js";
 import { validateSmartCompactCommandInput } from "../thread-view/domain/pi-thread-view-file.js";
 import type { GeneratedOutputMetadata } from "../thread/domain/output-metadata.js";
+import {
+  evaluateTokenCountRecordForScope,
+  OpenAIInputTokenCounter,
+  type GeneratedSessionTokenCountRecord,
+  type TokenCountSourceDecision,
+} from "../token-accounting/index.js";
 
 export interface SmartCompactCommandDependencies {
   threadStore: ThreadStore;
@@ -30,6 +37,8 @@ export interface SmartCompactCommandDependencies {
   piCliHarnessAdapter?: PiCliHarnessAdapter;
   piSessionSwitch?: PiCliHarnessAdapterDependencies;
   piThreadViewWriterOptions?: PiThreadViewWriterOptions;
+  openAIInputTokenCounter?: AsyncThreadRunDependencies["openAIInputTokenCounter"] &
+    Pick<OpenAIInputTokenCounter, "countGeneratedSession">;
   asyncThreadDependencies?: Omit<AsyncThreadRunDependencies, "store">;
   now?: () => Date;
 }
@@ -37,7 +46,7 @@ export interface SmartCompactCommandDependencies {
 function buildThreadViewOutputRevisionStatus(
   compactStatus: SmartCompactCommandResult["compactStatus"],
 ): "available" | "failed" {
-  return compactStatus === "success" ? "available" : "failed";
+  return compactStatus === "success" || compactStatus === "degraded" ? "available" : "failed";
 }
 
 function buildBlockedSmartCompactResult(
@@ -63,6 +72,10 @@ function compactStatusFromBuildStatus(
   return status;
 }
 
+export function isOpenAIInputTokenCountProvider(provider: string | undefined): boolean {
+  return provider === "openai" || provider === "openai-codex";
+}
+
 function buildGeneratedOutputMetadata(input: {
   threadId: string;
   threadViewId?: string;
@@ -71,6 +84,9 @@ function buildGeneratedOutputMetadata(input: {
   generatedAt: string;
   status: GeneratedOutputMetadata["status"];
   placeholderExplicit: boolean;
+  requestedLowerBound?: number;
+  generatedSessionTokenCountMetadata?: GeneratedSessionTokenCountRecord;
+  generatedSessionCountPolicy?: TokenCountSourceDecision;
   issues?: GeneratedOutputMetadata["issues"];
 }): GeneratedOutputMetadata {
   return {
@@ -82,8 +98,193 @@ function buildGeneratedOutputMetadata(input: {
     status: input.status,
     generatedSource: "thread_view",
     placeholderExplicit: input.placeholderExplicit,
+    requestedLowerBound: input.requestedLowerBound,
+    generatedSessionTokenCount: input.generatedSessionTokenCountMetadata?.count,
+    generatedSessionTokenCountMetadata: input.generatedSessionTokenCountMetadata,
+    generatedSessionCountPolicy: input.generatedSessionCountPolicy,
     issues: input.issues?.map((issue) => createStewardIssue(issue)),
   };
+}
+
+type FinalGeneratedSessionCountResult =
+  | {
+      ok: true;
+      piFile: PiThreadViewFile;
+      generatedSessionTokenCountMetadata: GeneratedSessionTokenCountRecord;
+      generatedSessionCountPolicy: TokenCountSourceDecision;
+      reductions: string[];
+    }
+  | {
+      ok: false;
+      piFile: PiThreadViewFile;
+      generatedSessionTokenCountMetadata?: GeneratedSessionTokenCountRecord;
+      generatedSessionCountPolicy?: TokenCountSourceDecision;
+      reductions: string[];
+      issues: Parameters<typeof createStewardIssue>[0][];
+      outputStatus: "blocked" | "degraded";
+    };
+
+const REDUCIBLE_GENERATED_SOURCE_ORDER: PiThreadViewFile["entries"][number]["generatedSource"][] = [
+  "brief_chunk_summary",
+  "detailed_chunk_summary",
+  "smooth_turn",
+];
+
+function removeReducibleEntry(piFile: PiThreadViewFile): { piFile: PiThreadViewFile; reduction: string } | undefined {
+  for (const generatedSource of REDUCIBLE_GENERATED_SOURCE_ORDER) {
+    const entryIndex = piFile.entries.findIndex((entry) => entry.generatedSource === generatedSource);
+
+    if (entryIndex === -1) {
+      continue;
+    }
+
+    const removedEntry = piFile.entries[entryIndex]!;
+    const nextEntries = piFile.entries.filter((_, index) => index !== entryIndex);
+    const reduction =
+      `${removedEntry.generatedSource}:${removedEntry.metadata?.sourceReference ?? removedEntry.metadata?.threadViewMessageId ?? entryIndex}`;
+
+    return {
+      piFile: {
+        ...piFile,
+        entries: nextEntries,
+        entryCount: nextEntries.length,
+        placeholderExplicit: nextEntries.some(
+          (entry) =>
+            entry.generatedSource === "detailed_chunk_summary" ||
+            entry.generatedSource === "brief_chunk_summary",
+        ),
+      },
+      reduction,
+    };
+  }
+
+  return undefined;
+}
+
+async function countFinalGeneratedSessionUntilUnderTarget(input: {
+  threadId: string;
+  requestedLowerBound: number;
+  initialPiFile: PiThreadViewFile;
+  openAIInputTokenCounter?: AsyncThreadRunDependencies["openAIInputTokenCounter"] &
+    Pick<OpenAIInputTokenCounter, "countGeneratedSession">;
+  threadViewId: string;
+  sourceRevision: number;
+  writeTimestamp: string;
+}): Promise<FinalGeneratedSessionCountResult> {
+  if (!input.openAIInputTokenCounter) {
+    return {
+      ok: false,
+      piFile: input.initialPiFile,
+      reductions: [],
+      outputStatus: "blocked",
+      issues: [
+        {
+          code: "TOKEN_COUNT_BLOCKED",
+          message:
+            "OpenAI provider_input_count is not configured; smart compact cannot write or reload without an exact generated-session count.",
+          threadId: input.threadId,
+        },
+      ],
+    };
+  }
+
+  let piFile = input.initialPiFile;
+  const reductions: string[] = [];
+
+  while (true) {
+    let generatedSessionTokenCountMetadata: GeneratedSessionTokenCountRecord;
+    try {
+      generatedSessionTokenCountMetadata = await input.openAIInputTokenCounter.countGeneratedSession({
+        input: {
+          threadId: input.threadId,
+          threadViewId: input.threadViewId,
+          file: piFile,
+        },
+        model: isOpenAIInputTokenCountProvider(piFile.modelProvider) ? piFile.modelId : undefined,
+        createdAt: input.writeTimestamp,
+        sourceRevision: input.sourceRevision,
+        now: () => new Date(input.writeTimestamp),
+      });
+    } catch (error) {
+      const reductionSummary =
+        reductions.length > 0
+          ? ` after ${reductions.length} reduction attempts (${reductions.join(" -> ")})`
+          : "";
+      return {
+        ok: false,
+        piFile,
+        reductions,
+        outputStatus: "blocked",
+        issues: [
+          {
+            code: "TOKEN_COUNT_BLOCKED",
+            message:
+              `OpenAI provider_input_count failed for the final generated-session representation${reductionSummary}; smart compact did not write or reload.`,
+            threadId: input.threadId,
+            cause: error instanceof Error ? error.message : String(error),
+          },
+        ],
+      };
+    }
+
+    const generatedSessionCountPolicy = evaluateTokenCountRecordForScope({
+      record: generatedSessionTokenCountMetadata,
+      requestedScope: "generated_session",
+      mode: "strict",
+    });
+
+    if (!generatedSessionCountPolicy.usableForSmartCompact) {
+      return {
+        ok: false,
+        piFile,
+        generatedSessionTokenCountMetadata,
+        generatedSessionCountPolicy,
+        reductions,
+        outputStatus: "blocked",
+        issues: [
+          {
+            code: "TOKEN_COUNT_BLOCKED",
+            message: `Final generated-session token accounting was blocked by source policy: ${generatedSessionCountPolicy.reason}`,
+            threadId: input.threadId,
+          },
+        ],
+      };
+    }
+
+    if (generatedSessionTokenCountMetadata.count <= input.requestedLowerBound) {
+      return {
+        ok: true,
+        piFile,
+        generatedSessionTokenCountMetadata,
+        generatedSessionCountPolicy,
+        reductions,
+      };
+    }
+
+    const reduction = removeReducibleEntry(piFile);
+    if (!reduction) {
+      return {
+        ok: false,
+        piFile,
+        generatedSessionTokenCountMetadata,
+        generatedSessionCountPolicy,
+        reductions,
+        outputStatus: "degraded",
+        issues: [
+          {
+            code: "GENERATED_SESSION_OVER_LOWER_BOUND",
+            message:
+              `Final OpenAI provider_input_count ${generatedSessionTokenCountMetadata.count} exceeds requested lower bound ${input.requestedLowerBound}; ` +
+              "all reducible older/lower-fidelity content has already been removed, so smart compact did not write or reload.",
+            threadId: input.threadId,
+          },
+        ],
+      };
+    }
+
+    reductions.push(reduction.reduction);
+    piFile = reduction.piFile;
+  }
 }
 
 export async function runSmartCompact(
@@ -128,6 +329,20 @@ export async function runSmartCompact(
     threadId: input.threadId,
     expectedSourceRevision: threadSnapshotResult.value.thread.sourceRevision,
   });
+  const openAIInputTokenCounterForReadiness =
+    dependencies.openAIInputTokenCounter ??
+    dependencies.asyncThreadDependencies?.openAIInputTokenCounter ??
+    (isOpenAIInputTokenCountProvider(input.modelProvider) && input.modelId
+      ? new OpenAIInputTokenCounter(undefined, input.modelId)
+      : undefined);
+  const openAIInputTokenCounterForFinalCount =
+    dependencies.openAIInputTokenCounter ??
+    (isOpenAIInputTokenCountProvider(input.modelProvider) && input.modelId
+      ? new OpenAIInputTokenCounter(undefined, input.modelId)
+      : undefined);
+  const tokenCountModel =
+    dependencies.asyncThreadDependencies?.tokenCountModel ??
+    (isOpenAIInputTokenCountProvider(input.modelProvider) ? input.modelId : undefined);
 
   try {
     const readiness = await prepareAsyncThread(
@@ -143,6 +358,8 @@ export async function runSmartCompact(
       },
       {
         store: dependencies.threadStore,
+        openAIInputTokenCounter: openAIInputTokenCounterForReadiness,
+        tokenCountModel,
         now: dependencies.asyncThreadDependencies?.now ?? dependencies.now,
       },
     );
@@ -163,7 +380,8 @@ export async function runSmartCompact(
       now: dependencies.now,
     });
     const compactStatus = compactStatusFromBuildStatus(buildResult.status);
-    if (compactStatus !== "success") {
+    const hasThresholdIssue = buildResult.blockers.some((issue) => issue.code === "LOWER_THRESHOLD_UNREACHED");
+    if (compactStatus === "blocked" || hasThresholdIssue) {
       if (compactStatus === "degraded") {
         await updateGeneratedThreadViewOutputMetadata({
           store: dependencies.threadStore,
@@ -175,6 +393,7 @@ export async function runSmartCompact(
             status: "degraded",
             placeholderExplicit:
               input.requestedBandPercentages.detailed > 0 || input.requestedBandPercentages.brief > 0,
+            requestedLowerBound: input.requestedLowerBound,
             issues: buildResult.blockers,
           }),
           now: dependencies.now,
@@ -191,6 +410,7 @@ export async function runSmartCompact(
         resultingTokenCount: buildResult.resultingTokenCount,
       };
     }
+    const buildIssues = compactStatus === "degraded" ? buildResult.blockers : [];
 
     const threadViewSnapshot = await dependencies.threadViewStore.openThreadView(
       input.threadId,
@@ -225,11 +445,65 @@ export async function runSmartCompact(
       threadId: input.threadId,
       threadViewId: buildResult.draftThreadViewId,
       emittedMessages: threadViewSnapshot.value.view.emittedMessages,
-      sessionId: `${input.threadId}-${buildResult.draftThreadViewId}`,
+      sessionId: `sc-${input.threadId.replace("thread_", "").slice(0, 8)}-${buildResult.draftThreadViewId.replace("thread_view_", "").slice(0, 8)}-${Date.now().toString(36)}`,
       cwd: threadSnapshot.value.thread.target.cwd ?? process.cwd(),
       parentSessionId: threadSnapshot.value.thread.target.sessionId,
+      modelProvider: input.modelProvider,
+      modelId: input.modelId,
+      thinkingLevel: input.thinkingLevel,
       generatedAt: (dependencies.now ?? (() => new Date()))().toISOString(),
     });
+    const writeTimestamp = (
+      dependencies.piThreadViewWriterOptions?.now ??
+      dependencies.now ??
+      (() => new Date())
+    )().toISOString();
+    const finalCountResult = await countFinalGeneratedSessionUntilUnderTarget({
+      threadId: input.threadId,
+      requestedLowerBound: input.requestedLowerBound,
+      initialPiFile: piFile,
+      openAIInputTokenCounter: openAIInputTokenCounterForFinalCount,
+      threadViewId: buildResult.draftThreadViewId,
+      sourceRevision: threadSnapshot.value.thread.sourceRevision,
+      writeTimestamp,
+    });
+
+    if (!finalCountResult.ok) {
+      const finalIssues = [...buildIssues, ...finalCountResult.issues.map((issue) => createStewardIssue(issue))];
+      await updateGeneratedThreadViewOutputMetadata({
+        store: dependencies.threadStore,
+        threadId: input.threadId,
+        generatedOutput: buildGeneratedOutputMetadata({
+          threadId: input.threadId,
+          threadViewId: buildResult.draftThreadViewId,
+          generatedAt: writeTimestamp,
+          status: finalCountResult.outputStatus,
+          placeholderExplicit: finalCountResult.piFile.placeholderExplicit,
+          requestedLowerBound: input.requestedLowerBound,
+          generatedSessionTokenCountMetadata: finalCountResult.generatedSessionTokenCountMetadata,
+          generatedSessionCountPolicy: finalCountResult.generatedSessionCountPolicy,
+          issues: finalIssues,
+        }),
+        now: dependencies.now,
+      });
+
+      return {
+        threadId: input.threadId,
+        requestedLowerBound: input.requestedLowerBound,
+        requestedBandPercentages: input.requestedBandPercentages,
+        threadViewId: buildResult.draftThreadViewId,
+        compactStatus: finalCountResult.outputStatus,
+        blockers: finalIssues,
+        resultingTokenCount: buildResult.resultingTokenCount,
+        generatedSessionTokenCount: finalCountResult.generatedSessionTokenCountMetadata?.count,
+        generatedSessionTokenCountMetadata: finalCountResult.generatedSessionTokenCountMetadata,
+        generatedSessionCountPolicy: finalCountResult.generatedSessionCountPolicy,
+      };
+    }
+
+    const countedPiFile = finalCountResult.piFile;
+    const generatedSessionTokenCountMetadata = finalCountResult.generatedSessionTokenCountMetadata;
+    const generatedSessionCountPolicy = finalCountResult.generatedSessionCountPolicy;
 
     let writeResult;
     try {
@@ -237,9 +511,12 @@ export async function runSmartCompact(
         {
           threadId: input.threadId,
           threadViewId: buildResult.draftThreadViewId,
-          file: piFile,
+          file: countedPiFile,
         },
-        dependencies.piThreadViewWriterOptions,
+        {
+          ...dependencies.piThreadViewWriterOptions,
+          now: () => new Date(writeTimestamp),
+        },
       );
     } catch (error) {
       const writeFailedResult: SmartCompactCommandResult = {
@@ -257,6 +534,9 @@ export async function runSmartCompact(
           }),
         ],
         resultingTokenCount: buildResult.resultingTokenCount,
+        generatedSessionTokenCount: generatedSessionTokenCountMetadata.count,
+        generatedSessionTokenCountMetadata,
+        generatedSessionCountPolicy,
       };
       await updateGeneratedThreadViewOutputMetadata({
         store: dependencies.threadStore,
@@ -266,13 +546,59 @@ export async function runSmartCompact(
           threadViewId: buildResult.draftThreadViewId,
           generatedAt: (dependencies.now ?? (() => new Date()))().toISOString(),
           status: "write_failed",
-          placeholderExplicit: piFile.placeholderExplicit,
+          placeholderExplicit: countedPiFile.placeholderExplicit,
+          requestedLowerBound: input.requestedLowerBound,
+          generatedSessionTokenCountMetadata,
+          generatedSessionCountPolicy,
           issues: writeFailedResult.blockers,
         }),
         now: dependencies.now,
       });
 
       return writeFailedResult;
+    }
+
+    const mappedGeneratedPiIdentities = await dependencies.threadStore.recordThreadIdMap({
+      threadId: input.threadId,
+      target: {
+        runtime: "pi",
+        sessionId: countedPiFile.sessionId,
+        sessionFilePath: writeResult.generatedFilePath,
+      },
+    });
+    if (!mappedGeneratedPiIdentities.ok) {
+      const blockedResult: SmartCompactCommandResult = {
+        threadId: input.threadId,
+        requestedLowerBound: input.requestedLowerBound,
+        requestedBandPercentages: input.requestedBandPercentages,
+        threadViewId: buildResult.draftThreadViewId,
+        compactStatus: "blocked",
+        blockers: mappedGeneratedPiIdentities.issues,
+        resultingTokenCount: buildResult.resultingTokenCount,
+        generatedSessionTokenCount: generatedSessionTokenCountMetadata.count,
+        generatedSessionTokenCountMetadata,
+        generatedSessionCountPolicy,
+      };
+      await updateGeneratedThreadViewOutputMetadata({
+        store: dependencies.threadStore,
+        threadId: input.threadId,
+        generatedOutput: buildGeneratedOutputMetadata({
+          threadId: input.threadId,
+          threadViewId: buildResult.draftThreadViewId,
+          generatedFilePath: writeResult.generatedFilePath,
+          archivePath: writeResult.archivePath,
+          generatedAt: (dependencies.now ?? (() => new Date()))().toISOString(),
+          status: "blocked",
+          placeholderExplicit: countedPiFile.placeholderExplicit,
+          requestedLowerBound: input.requestedLowerBound,
+          generatedSessionTokenCountMetadata,
+          generatedSessionCountPolicy,
+          issues: blockedResult.blockers,
+        }),
+        now: dependencies.now,
+      });
+
+      return blockedResult;
     }
 
     const piCliHarnessAdapter =
@@ -283,8 +609,9 @@ export async function runSmartCompact(
       filePath: writeResult.generatedFilePath,
     });
     const finalCompactStatus: SmartCompactCommandResult["compactStatus"] = loadResult.ok
-      ? "success"
+      ? compactStatus
       : "reload_failed";
+    const finalIssues = loadResult.ok ? buildIssues : [...loadResult.issues, ...buildIssues];
 
     await updateGeneratedThreadViewOutputMetadata({
       store: dependencies.threadStore,
@@ -296,9 +623,16 @@ export async function runSmartCompact(
         generatedFilePath: writeResult.generatedFilePath,
         archivePath: writeResult.archivePath,
         generatedAt: (dependencies.now ?? (() => new Date()))().toISOString(),
-        status: finalCompactStatus === "success" ? "available" : "reload_failed",
-        placeholderExplicit: piFile.placeholderExplicit,
-        issues: loadResult.ok ? [] : loadResult.issues,
+        status: finalCompactStatus === "success"
+          ? "available"
+          : finalCompactStatus === "degraded"
+            ? "degraded"
+            : "reload_failed",
+        placeholderExplicit: countedPiFile.placeholderExplicit,
+        requestedLowerBound: input.requestedLowerBound,
+        generatedSessionTokenCountMetadata,
+        generatedSessionCountPolicy,
+        issues: finalIssues,
       }),
       revision: {
         revisionId: createThreadViewOutputRevisionId(),
@@ -321,8 +655,11 @@ export async function runSmartCompact(
       generatedFilePath: writeResult.generatedFilePath,
       archivePath: writeResult.archivePath,
       compactStatus: finalCompactStatus,
-      blockers: loadResult.ok ? [] : loadResult.issues,
+      blockers: finalIssues,
       resultingTokenCount: buildResult.resultingTokenCount,
+      generatedSessionTokenCount: generatedSessionTokenCountMetadata.count,
+      generatedSessionTokenCountMetadata,
+      generatedSessionCountPolicy,
     };
   } finally {
     await lease.release();

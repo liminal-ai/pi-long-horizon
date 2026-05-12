@@ -11,10 +11,11 @@ import {
   mapPiCaptureEventToActivity,
   registerContextStewardExtension,
 } from "../../src/context-steward/pi/pi-extension.js";
-import { createPiRuntimeNoteActivity, mapPiMessageEnd } from "../../src/context-steward/pi/pi-message-mapper.js";
+import { mapPiMessageEnd } from "../../src/context-steward/pi/pi-message-mapper.js";
 import { captureFinalizedActivity } from "../../src/context-steward/services/capture-service.js";
 import { checkTurnHealth } from "../../src/context-steward/services/turn-service.js";
 import {
+  DEFAULT_PI_USAGE,
   makePiAssistantMessage,
   makePiExtensionContext,
   makePiSessionEntries,
@@ -191,6 +192,7 @@ test("captures a finalized PI prompt with actor identity, source order, parts, a
     assert.equal(captured.message.parts[1]?.partType, "image_ref");
     assert.equal(captured.message.targetMetadata?.sessionId, target.sessionId);
     assert.equal(captured.message.targetMetadata?.sessionFilePath, target.sessionFilePath);
+    assert.equal(captured.message.tokenTelemetry, undefined);
     assert.equal(messages.length, 1);
   });
 });
@@ -262,6 +264,59 @@ test("captures a finalized PI agent response with ordered text, reasoning, and t
   });
 });
 
+test("captures provider usage telemetry from finalized PI assistant responses", async () => {
+  await withTempThreadStore(async ({ storeRootDir }) => {
+    const { store, thread, ctx } = await createManagedThread(storeRootDir);
+    const usage = {
+      ...DEFAULT_PI_USAGE,
+      input: 400,
+      output: 125,
+      cacheRead: 32,
+      cacheWrite: 8,
+      totalTokens: 565,
+      cost: {
+        input: 0.004,
+        output: 0.0025,
+        cacheRead: 0.0001,
+        cacheWrite: 0.0002,
+        total: 0.0068,
+      },
+    };
+    const activity = expectOk(
+      mapPiMessageEnd({
+        message: makePiAssistantMessage({
+          api: "openai-codex-responses",
+          provider: "openai-codex",
+          model: "gpt-5.4-mini",
+          responseId: "response-usage-001",
+          usage,
+          content: [{ type: "text", text: "Usage should persist as telemetry." }],
+        }),
+        ctx,
+      }),
+    );
+
+    const captured = expectOk(await captureFinalizedActivity({ store, threadId: thread.threadId, activity }));
+    const persisted = expectOk(await store.readMessages(thread.threadId))[0];
+    const providerUsage = captured.message.tokenTelemetry?.providerUsage;
+
+    assert.deepEqual(providerUsage, persisted?.tokenTelemetry?.providerUsage);
+    assert.equal(providerUsage?.source, "pi_assistant_message_usage");
+    assert.equal(providerUsage?.provider, "openai-codex");
+    assert.equal(providerUsage?.model, "gpt-5.4-mini");
+    assert.equal(providerUsage?.api, "openai-codex-responses");
+    assert.equal(providerUsage?.responseId, "response-usage-001");
+    assert.deepEqual(providerUsage?.usage, usage);
+    assert.deepEqual(Object.keys(captured.message.tokenTelemetry ?? {}), ["providerUsage"]);
+    assert.equal(providerUsage?.tokenCountRecord?.scope, "provider_usage_telemetry");
+    assert.equal(providerUsage?.tokenCountRecord?.source, "provider_usage");
+    assert.equal(providerUsage?.tokenCountRecord?.trustClass, "provider_reported");
+    assert.equal(providerUsage?.tokenCountRecord?.count, 565);
+    assert.equal(providerUsage?.tokenCountRecord?.provider, "openai-codex");
+    assert.equal(providerUsage?.tokenCountRecord?.model, "gpt-5.4-mini");
+  });
+});
+
 test("captures a finalized PI tool result with tool metadata and typed parts", async () => {
   await withTempThreadStore(async ({ storeRootDir }) => {
     const { store, thread, ctx } = await createManagedThread(storeRootDir);
@@ -294,32 +349,7 @@ test("captures a finalized PI tool result with tool metadata and typed parts", a
     });
     assert.equal(captured.message.targetMetadata?.toolCallId, "call-777");
     assert.equal(captured.message.targetMetadata?.toolName, "bash");
-  });
-});
-
-test("captures a runtime note as a canonical runtime-event message", async () => {
-  await withTempThreadStore(async ({ storeRootDir }) => {
-    const target = makeThreadTarget();
-    const { store, thread, ctx } = await createManagedThread(storeRootDir, target);
-    const activity = createPiRuntimeNoteActivity({
-      ctx,
-      createdAt: "2026-05-09T12:00:00.000Z",
-      note: {
-        note: "session_start",
-        status: "capture_ready",
-      },
-    });
-
-    const captured = expectOk(await captureFinalizedActivity({ store, threadId: thread.threadId, activity }));
-
-    assert.equal(captured.message.messageKind, "runtime_event");
-    assert.equal(captured.message.actorType, "runtime");
-    assert.equal(captured.message.parts[0]?.partType, "runtime_note");
-    assert.deepEqual(captured.message.parts[0]?.content, {
-      note: "session_start",
-      status: "capture_ready",
-    });
-    assert.equal(captured.message.targetMetadata?.sessionId, target.sessionId);
+    assert.equal(captured.message.tokenTelemetry, undefined);
   });
 });
 
@@ -628,7 +658,7 @@ test("serializes overlapping finalized prompt and response capture through defau
   });
 });
 
-test("ignores tool execution lifecycle events until they become finalized messages or runtime notes", async () => {
+test("ignores tool execution lifecycle events until they become finalized messages", async () => {
   await withTempThreadStore(async ({ storeRootDir }) => {
     const target = makeThreadTarget();
     const { store, thread, ctx } = await createManagedThread(storeRootDir, target);
@@ -761,7 +791,7 @@ test("registers production PI handlers that capture live message_end prompt, res
   });
 });
 
-test("production PI handlers create a managed thread on session_start for a fresh session", async () => {
+test("production PI handlers ignore session_start without creating runtime messages", async () => {
   await withTempThreadStore(async ({ storeRootDir, projectDir, resolveProjectPath }) => {
     const target = makeThreadTarget({
       sessionId: "session-production-fresh",
@@ -781,11 +811,7 @@ test("production PI handlers create a managed thread on session_start for a fres
     await pi.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
 
     const thread = expectOk(await store.findManagedThread(target));
-    assert.ok(thread);
-    const messages = expectOk(await store.readMessages(thread.threadId));
-
-    assert.deepEqual(messages.map((message) => message.messageKind), ["runtime_event"]);
-    assert.equal((messages[0]?.parts[0]?.content as { event?: string }).event, "session_start");
+    assert.equal(thread, undefined);
   });
 });
 
@@ -869,6 +895,79 @@ test("production PI handlers resolve a fresh managed thread when the PI session 
   });
 });
 
+test("production PI handlers resolve generated rollout sessions through the threadId-map", async () => {
+  await withTempThreadStore(async ({ storeRootDir, projectDir, resolveProjectPath }) => {
+    const originalTarget = makeThreadTarget({
+      sessionId: "session-production-original",
+      sessionFilePath: resolveProjectPath("pi", "session-production-original.jsonl"),
+      cwd: projectDir,
+    });
+    const generatedFilePath = resolveProjectPath("generated", "session-production-generated.jsonl");
+    await ensureTargetSessionFile(originalTarget);
+    await mkdir(dirname(generatedFilePath), { recursive: true });
+    await writeFile(generatedFilePath, '{"type":"generated"}\n');
+
+    const store = new FileThreadStore(storeRootDir);
+    const thread = expectOk(await openOrCreateManagedThread({ target: originalTarget }, store));
+    expectOk(
+      await store.updateThreadMetadata({
+        threadId: thread.threadId,
+        expectedSourceRevision: thread.sourceRevision,
+        patch: {
+          target: {
+            ...thread.target,
+            currentGeneratedFilePath: generatedFilePath,
+          },
+          threadViewOutputSummary: {
+            ...thread.threadViewOutputSummary,
+            count: 1,
+            currentGeneratedFilePath: generatedFilePath,
+            lastRevisionStatus: "available",
+          },
+        },
+      }),
+    );
+
+    const generatedTarget = makeThreadTarget({
+      sessionId: "session-production-generated",
+      sessionFilePath: generatedFilePath,
+      cwd: projectDir,
+    });
+    expectOk(
+      await store.recordThreadIdMap({
+        threadId: thread.threadId,
+        target: generatedTarget,
+      }),
+    );
+
+    const pi = new FakeExtensionApi();
+    registerContextStewardExtension(pi as unknown as ExtensionAPI, {
+      createStore: () => store,
+    });
+
+    await pi.emit(
+      "message_end",
+      {
+        type: "message_end",
+        message: makePiUserMessage({ content: "Post-compact live prompt" }),
+      },
+      makePiExtensionContext(generatedTarget),
+    );
+
+    const originalLookup = expectOk(await store.findManagedThread(originalTarget));
+    const generatedLookup = expectOk(await store.findManagedThread(generatedTarget));
+    assert.equal(originalLookup?.threadId, thread.threadId);
+    assert.equal(generatedLookup?.threadId, thread.threadId);
+
+    const messages = expectOk(await store.readMessages(thread.threadId));
+    assert.deepEqual(
+      messages.map((message) => message.parts.map((part) => part.content).join("")),
+      ["Post-compact live prompt"],
+    );
+    assert.equal(messages[0]?.targetMetadata?.sessionId, "session-production-generated");
+  });
+});
+
 test("production PI handlers suppress duplicate live message_end events without appending another source record", async () => {
   await withTempThreadStore(async ({ storeRootDir, projectDir, resolveProjectPath }) => {
     const target = makeThreadTarget({
@@ -905,7 +1004,7 @@ test("production PI handlers suppress duplicate live message_end events without 
   });
 });
 
-test("production PI handlers capture relevant session and turn lifecycle events as runtime notes", async () => {
+test("production PI handlers do not store session and turn lifecycle events as messages", async () => {
   await withTempThreadStore(async ({ storeRootDir, projectDir, resolveProjectPath }) => {
     const target = makeThreadTarget({
       sessionId: "session-production-runtime",
@@ -947,19 +1046,78 @@ test("production PI handlers capture relevant session and turn lifecycle events 
     const thread = expectOk(await store.findManagedThread(target));
     assert.ok(thread);
     const messages = expectOk(await store.readMessages(thread.threadId));
-    const runtimeEvents = messages.map((message) => message.parts[0]?.content as Record<string, unknown>);
+    assert.deepEqual(messages, []);
+  });
+});
 
-    assert.deepEqual(runtimeEvents.map((content) => content.event), [
-      "session_start",
-      "session_before_switch",
-      "turn_start",
+test("production turn_end handler smooths closed turns and skips open turns", async () => {
+  await withTempThreadStore(async ({ storeRootDir, projectDir, resolveProjectPath }) => {
+    const target = makeThreadTarget({
+      sessionId: "session-production-turn-end-smooth",
+      sessionFilePath: resolveProjectPath("pi", "session-production-turn-end-smooth.jsonl"),
+      cwd: projectDir,
+    });
+    const { store, thread, ctx } = await createManagedThread(storeRootDir, target);
+
+    expectOk(
+      await capturePiEvent({
+        store,
+        threadId: thread.threadId,
+        event: { type: "message_end", message: makePiUserMessage({ content: "First prompt" }) },
+        ctx,
+      }),
+    );
+    expectOk(
+      await capturePiEvent({
+        store,
+        threadId: thread.threadId,
+        event: {
+          type: "message_end",
+          message: makePiAssistantMessage({
+            responseId: "response-turn-end-smooth-001",
+            content: [{ type: "text", text: "First response" }],
+          }),
+        },
+        ctx,
+      }),
+    );
+    expectOk(
+      await capturePiEvent({
+        store,
+        threadId: thread.threadId,
+        event: { type: "message_end", message: makePiUserMessage({ content: "Second prompt" }) },
+        ctx,
+      }),
+    );
+
+    const before = expectOk(await store.openThread(thread.threadId));
+    assert.equal(before.turns.length, 2);
+    assert.equal(before.turns[0]?.lifecycleStatus, "closed");
+    assert.equal(before.turns[1]?.lifecycleStatus, "open");
+    assert.equal(before.turns[0]?.smooth, undefined);
+    assert.equal(before.turns[1]?.smooth, undefined);
+
+    const pi = new FakeExtensionApi();
+    registerContextStewardExtension(pi as unknown as ExtensionAPI, {
+      createStore: () => store,
+    });
+    await pi.emit(
       "turn_end",
-      "session_shutdown",
-    ]);
-    assert.equal(runtimeEvents[2]?.turnIndex, 7);
-    assert.equal(runtimeEvents[3]?.toolResultCount, 1);
-    assert.ok(messages.every((message) => message.messageKind === "runtime_event"));
-    assert.equal(messages[2]?.createdAt, "2026-05-09T13:00:00.000Z");
+      {
+        type: "turn_end",
+        turnIndex: 2,
+        message: makePiAssistantMessage({ content: [{ type: "text", text: "Turn finished" }] }),
+        toolResults: [],
+      },
+      ctx,
+    );
+
+    const after = expectOk(await store.openThread(thread.threadId));
+    assert.equal(after.turns[0]?.lifecycleStatus, "closed");
+    assert.equal(after.turns[1]?.lifecycleStatus, "open");
+    assert.equal(typeof after.turns[0]?.smooth?.text, "string");
+    assert.equal(after.turns[0]?.smooth?.tokenCountMetadata?.count !== undefined, true);
+    assert.equal(after.turns[1]?.smooth, undefined);
   });
 });
 

@@ -263,7 +263,10 @@ test("closed turn receives smooth text", async () => {
     assert.equal(persisted.smooth?.generatedAt, DEFAULT_TEST_TIMESTAMP);
     assert.equal(persisted.smooth?.sourceRevision, response.sourceRevision);
     assert.match(persisted.smooth?.text ?? "", /\[user\][\s\S]*\[assistant\]/);
-    assert.equal(persisted.smooth?.tokenCount, result.smoothTokenCount);
+    assert.equal(persisted.smooth?.tokenCountMetadata?.count, result.smoothTokenCount);
+    assert.equal(persisted.smooth?.tokenCountMetadata?.scope, "smooth_turn_materialized");
+    assert.equal(persisted.smooth?.tokenCountMetadata?.sourceRevision, response.sourceRevision);
+    assert.match(persisted.smooth?.tokenCountMetadata?.representationHash ?? "", /^sha256:/);
   });
 });
 
@@ -631,7 +634,7 @@ test("stale or invalid smooth output can be regenerated", async () => {
         smooth: {
           status: "invalid",
           text: "Old smooth",
-          tokenCount: 99,
+          tokenCountMetadata: { count: 99, scope: "smooth_turn_materialized", source: "pi_heuristic", trustClass: "heuristic_estimate", representationHash: "sha256:test-smooth-99", createdAt: DEFAULT_TEST_TIMESTAMP },
           sourceRevision: response.sourceRevision - 1,
         },
       }),

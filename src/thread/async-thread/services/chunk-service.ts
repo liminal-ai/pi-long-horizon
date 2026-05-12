@@ -11,11 +11,16 @@ import {
   type ChunkCloseSettings,
   validateChunkCloseSettings,
 } from "../domain/settings.js";
-import { estimateDeterministicTokenCount } from "../domain/smooth-turn-state.js";
 import type { TurnRecord } from "../../domain/records.js";
 import { fail, ok, StewardResultError, type StewardIssue } from "../../domain/errors.js";
 import type { ThreadStore } from "../../store/thread-store.js";
 import { withSerializedThreadOperation } from "../../services/thread-service.js";
+import {
+  countChunkSmoothMaterialized,
+  countSmoothTurnMaterialized,
+  validateTokenCountRecord,
+  type TokenCountRecord,
+} from "../../../token-accounting/index.js";
 
 export interface ChunkServiceOptions {
   store: ThreadStore;
@@ -46,6 +51,20 @@ function sortTurns(turns: readonly TurnRecord[]): TurnRecord[] {
   });
 }
 
+function isCurrentTokenCountMetadata(record: TokenCountRecord | undefined, expected: TokenCountRecord): boolean {
+  if (!record) {
+    return false;
+  }
+
+  return (
+    validateTokenCountRecord(record).ok &&
+    record.scope === expected.scope &&
+    record.count === expected.count &&
+    record.sourceRevision === expected.sourceRevision &&
+    record.representationHash === expected.representationHash
+  );
+}
+
 function isCurrentSmoothTurn(turn: TurnRecord): boolean {
   if (turn.lifecycleStatus !== "closed") {
     return false;
@@ -56,13 +75,15 @@ function isCurrentSmoothTurn(turn: TurnRecord): boolean {
     return false;
   }
 
-  if (smooth.tokenCount === undefined || smooth.sourceRevision === undefined) {
+  if (smooth.tokenCountMetadata === undefined || smooth.sourceRevision === undefined) {
     return false;
   }
 
+  const expectedTokenCountMetadata = countSmoothTurnMaterialized(turn, { createdAt: smooth.generatedAt });
+
   return (
     smooth.sourceRevision === turn.sourceRevision &&
-    smooth.tokenCount === estimateDeterministicTokenCount(smooth.text)
+    isCurrentTokenCountMetadata(smooth.tokenCountMetadata, expectedTokenCountMetadata)
   );
 }
 
@@ -89,14 +110,13 @@ function createOpenChunk(
     threadId,
     lifecycleStatus: "open",
     sourceTurnIds: [],
-    smoothTokenCount: 0,
     openedAt,
   };
 }
 
 function appendTurnToChunk(chunk: ChunkState, turn: TurnRecord): void {
   const smoothText = turn.smooth?.text;
-  const smoothTokenCount = turn.smooth?.tokenCount;
+  const smoothTokenCount = turn.smooth?.tokenCountMetadata?.count;
 
   if (!smoothText || smoothTokenCount === undefined) {
     return;
@@ -104,8 +124,22 @@ function appendTurnToChunk(chunk: ChunkState, turn: TurnRecord): void {
 
   chunk.sourceTurnIds = [...chunk.sourceTurnIds, turn.turnId];
   chunk.smoothText = chunk.smoothText ? `${chunk.smoothText}\n\n${smoothText}` : smoothText;
-  chunk.smoothTokenCount = estimateDeterministicTokenCount(chunk.smoothText);
   chunk.sourceRevision = turn.sourceRevision;
+  backfillChunkSmoothTokenCountMetadata(chunk);
+}
+
+function backfillChunkSmoothTokenCountMetadata(chunk: ChunkState): boolean {
+  if (!chunk.smoothText) {
+    return false;
+  }
+
+  const expectedTokenCountMetadata = countChunkSmoothMaterialized(chunk);
+  if (isCurrentTokenCountMetadata(chunk.smoothTokenCountMetadata, expectedTokenCountMetadata)) {
+    return false;
+  }
+
+  chunk.smoothTokenCountMetadata = expectedTokenCountMetadata;
+  return true;
 }
 
 function closeChunk(chunk: ChunkState, reason: ChunkCloseReason, closedAt: string): void {
@@ -119,14 +153,15 @@ function shouldCloseBeforeAppend(
   nextTurn: TurnRecord,
   settings: ChunkCloseSettings,
 ): boolean {
-  const nextTokenCount = nextTurn.smooth?.tokenCount;
+  const nextTokenCount = nextTurn.smooth?.tokenCountMetadata?.count;
   if (nextTokenCount === undefined) {
     return false;
   }
+  const chunkTokenCount = chunk.smoothTokenCountMetadata?.count ?? 0;
 
   return (
-    chunk.smoothTokenCount >= settings.targetMinSmoothTokens &&
-    chunk.smoothTokenCount + nextTokenCount > settings.targetSoftMaxSmoothTokens
+    chunkTokenCount >= settings.targetMinSmoothTokens &&
+    chunkTokenCount + nextTokenCount > settings.targetSoftMaxSmoothTokens
   );
 }
 
@@ -159,6 +194,12 @@ export async function updateChunkState(
     const nextChunks = cloneChunks(chunksResult.value);
     const updatedChunkIds = new Set<string>();
     const blockers: StewardIssue[] = [];
+    for (const chunk of nextChunks) {
+      if (backfillChunkSmoothTokenCountMetadata(chunk)) {
+        updatedChunkIds.add(chunk.chunkId);
+      }
+    }
+
     const openChunks = nextChunks.filter((chunk) => chunk.lifecycleStatus === "open");
     if (openChunks.length > 1) {
       blockers.push(
@@ -200,7 +241,7 @@ export async function updateChunkState(
       appendTurnToChunk(openChunk, turn);
       updatedChunkIds.add(openChunk.chunkId);
 
-      if (openChunk.smoothTokenCount >= settings.hardMaxSmoothTokens) {
+      if ((openChunk.smoothTokenCountMetadata?.count ?? 0) >= settings.hardMaxSmoothTokens) {
         closeChunk(openChunk, "hard_max", timestamp);
         updatedChunkIds.add(openChunk.chunkId);
         openChunk = createOpenChunk(input.threadId, nextChunks, timestamp);

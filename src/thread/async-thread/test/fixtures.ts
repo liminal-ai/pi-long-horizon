@@ -17,6 +17,7 @@ import {
   normalizeDeterministicText,
   type SmoothTurnState,
 } from "../domain/smooth-turn-state.js";
+import { assertTokenCountRecord, type TokenCountScope } from "../../../token-accounting/index.js";
 
 export { DEFAULT_TEST_TIMESTAMP, makeThreadSnapshot };
 export type { ThreadSnapshotFixture };
@@ -24,18 +25,29 @@ export type { ThreadSnapshotFixture };
 export function makeSmoothTurnState(overrides: Partial<SmoothTurnState> = {}): SmoothTurnState {
   const text = overrides.text ?? "Deterministic smooth turn text";
   const normalizedText = normalizeDeterministicText(text);
+  const count = overrides.tokenCountMetadata?.count ?? (overrides.status === "missing" ? undefined : estimateDeterministicTokenCount(normalizedText));
 
   return cloneSmoothTurnState({
     turnId: overrides.turnId ?? "turn-001",
     threadId: overrides.threadId ?? "thread-001",
     status: overrides.status ?? "ready",
     text: overrides.status === "missing" ? undefined : normalizedText,
-    tokenCount:
-      overrides.tokenCount ??
-      (overrides.status === "missing" ? undefined : estimateDeterministicTokenCount(normalizedText)),
+    tokenCountMetadata: count === undefined ? undefined : makeTokenCountRecord(count, "smooth_turn_materialized"),
     strategy: overrides.strategy ?? "deterministic_marker_sections_v1",
     generatedAt: overrides.generatedAt ?? DEFAULT_TEST_TIMESTAMP,
     sourceRevision: overrides.sourceRevision ?? 1,
+  });
+}
+
+function makeTokenCountRecord(count: number, scope: TokenCountScope) {
+  return assertTokenCountRecord({
+    count,
+    scope,
+    source: "pi_heuristic",
+    trustClass: "heuristic_estimate",
+    representationHash: `sha256:test-${scope}-${count}`,
+    sourceRevision: 1,
+    createdAt: DEFAULT_TEST_TIMESTAMP,
   });
 }
 
@@ -58,7 +70,10 @@ export function makePlaceholderArtifactState(
             kind: "detailed",
             status: "ready",
             text: defaultDetailedText,
-            tokenCount: estimateDeterministicTokenCount(defaultDetailedText),
+            tokenCountMetadata: makeTokenCountRecord(
+              estimateDeterministicTokenCount(defaultDetailedText),
+              "detailed_chunk_materialized",
+            ),
             strategy: "deterministic_truncate_30",
             generatedAt: DEFAULT_TEST_TIMESTAMP,
           }
@@ -69,7 +84,10 @@ export function makePlaceholderArtifactState(
             kind: "brief",
             status: "ready",
             text: defaultBriefText,
-            tokenCount: estimateDeterministicTokenCount(defaultBriefText),
+            tokenCountMetadata: makeTokenCountRecord(
+              estimateDeterministicTokenCount(defaultBriefText),
+              "brief_chunk_materialized",
+            ),
             strategy: "deterministic_truncate_5",
             generatedAt: DEFAULT_TEST_TIMESTAMP,
           }
@@ -95,7 +113,9 @@ export function makeChunkState(overrides: Partial<ChunkState> = {}): ChunkState 
     lifecycleStatus,
     sourceTurnIds: overrides.sourceTurnIds ? [...overrides.sourceTurnIds] : ["turn-001", "turn-002"],
     smoothText: overrides.smoothText ?? "Combined smooth chunk text",
-    smoothTokenCount: overrides.smoothTokenCount ?? 4,
+    smoothTokenCountMetadata:
+      overrides.smoothTokenCountMetadata ??
+      makeTokenCountRecord(4, "chunk_smooth_materialized"),
     openedAt: overrides.openedAt ?? DEFAULT_TEST_TIMESTAMP,
     closedAt: overrides.closedAt ?? (lifecycleStatus === "closed" ? DEFAULT_TEST_TIMESTAMP : undefined),
     closeReason: overrides.closeReason ?? (lifecycleStatus === "closed" ? "soft_threshold" : undefined),

@@ -11,7 +11,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
 
-import { runSmartCompact } from "../../commands/smart-compact.js";
+import { runSmartCompact, type SmartCompactCommandDependencies } from "../../commands/smart-compact.js";
 import { formatCommandResult, type CommandResult } from "../commands/command-results.js";
 import {
   StewardResultError,
@@ -29,6 +29,7 @@ import { attachExistingPiSession } from "../services/import-service.js";
 import { repairTurnState } from "../services/repair-service.js";
 import { openOrCreateManagedThread } from "../services/thread-service.js";
 import { checkTurnHealth, writeCapturedMessageTurns } from "../services/turn-service.js";
+import { ensureSmoothTurn } from "../../thread/async-thread/services/smooth-turn-service.js";
 import { FileThreadStore } from "../store/file-thread-store.js";
 import type { ThreadStore } from "../store/thread-store.js";
 import type { SmartCompactCommandInput, SmartCompactCommandResult } from "../../thread-view/domain/pi-thread-view-file.js";
@@ -36,7 +37,7 @@ import { FileThreadViewStore } from "../../thread-view/store/file-thread-view-st
 import type { ThreadViewStore } from "../../thread-view/store/thread-view-store.js";
 import { formatCompactionAuditReport } from "../../workbench/services/compaction-report-formatter.js";
 import { buildCompactionAuditReport } from "../../workbench/services/compaction-report-service.js";
-import { createPiRuntimeNoteActivity, mapPiMessageEnd } from "./pi-message-mapper.js";
+import { mapPiMessageEnd } from "./pi-message-mapper.js";
 import type { PiImportSessionManager } from "./pi-session-importer.js";
 
 type PiCaptureEvent =
@@ -64,6 +65,7 @@ type PiExtensionCaptureContext = Pick<ExtensionContext, "cwd" | "sessionManager"
 export interface ContextStewardExtensionOptions {
   createStore?: (ctx: PiExtensionCaptureContext) => ThreadStore;
   createThreadViewStore?: (ctx: PiExtensionCaptureContext, threadStore: ThreadStore) => ThreadViewStore;
+  openAIInputTokenCounter?: SmartCompactCommandDependencies["openAIInputTokenCounter"];
 }
 
 export interface MapPiCaptureEventInput {
@@ -107,10 +109,6 @@ function normalizeValue(value: string | undefined): string | undefined {
   return normalized ? normalized : undefined;
 }
 
-function normalizedSessionFileCandidates(target: ThreadTargetMetadata): string[] {
-  return [...new Set([target.sessionFilePath, target.currentGeneratedFilePath].map(normalizeValue).filter(Boolean))] as string[];
-}
-
 function targetsMatch(left: ThreadTargetMetadata, right: ThreadTargetMetadata): boolean {
   if (left.runtime !== right.runtime) {
     return false;
@@ -122,8 +120,9 @@ function targetsMatch(left: ThreadTargetMetadata, right: ThreadTargetMetadata): 
     return true;
   }
 
-  const rightSessionFiles = new Set(normalizedSessionFileCandidates(right));
-  return normalizedSessionFileCandidates(left).some((sessionFilePath) => rightSessionFiles.has(sessionFilePath));
+  const leftSessionFilePath = normalizeValue(left.sessionFilePath);
+  const rightSessionFilePath = normalizeValue(right.sessionFilePath);
+  return Boolean(leftSessionFilePath && rightSessionFilePath && leftSessionFilePath === rightSessionFilePath);
 }
 
 function activeLeafIdFromContext(ctx: PiExtensionCaptureContext): string | undefined {
@@ -191,60 +190,6 @@ function canAutoCreateManagedThreadForMessageEnd(input: {
   return samePiMessage(activePathMessages[0]!.message, input.event.message);
 }
 
-function canAutoCreateManagedThreadOnSessionStart(ctx: PiExtensionCaptureContext): boolean {
-  const sessionManager = importSessionManagerFromContext(ctx);
-  if (!sessionManager) {
-    return true;
-  }
-
-  return sessionManager.getEntries().length === 0;
-}
-
-function eventTimestampToIso(event: PiCaptureEvent): string | undefined {
-  if ("timestamp" in event && typeof event.timestamp === "number" && Number.isFinite(event.timestamp)) {
-    return new Date(event.timestamp).toISOString();
-  }
-
-  return undefined;
-}
-
-function runtimeNoteForEvent(event: PiCaptureEvent): Record<string, unknown> | undefined {
-  switch (event.type) {
-    case "session_start":
-      return {
-        event: event.type,
-        reason: event.reason,
-        previousSessionFile: event.previousSessionFile,
-      };
-    case "session_before_switch":
-      return {
-        event: event.type,
-        reason: event.reason,
-        targetSessionFile: event.targetSessionFile,
-      };
-    case "session_shutdown":
-      return {
-        event: event.type,
-        reason: event.reason,
-        targetSessionFile: event.targetSessionFile,
-      };
-    case "turn_start":
-      return {
-        event: event.type,
-        turnIndex: event.turnIndex,
-      };
-    case "turn_end":
-      return {
-        event: event.type,
-        turnIndex: event.turnIndex,
-        finalizedMessageRole: event.message.role,
-        toolResultCount: event.toolResults.length,
-      };
-    default:
-      return undefined;
-  }
-}
-
 export function mapPiCaptureEventToActivity(
   input: MapPiCaptureEventInput,
 ): StewardResult<CanonicalActivity | undefined> {
@@ -255,19 +200,7 @@ export function mapPiCaptureEventToActivity(
     });
   }
 
-  const runtimeNote = runtimeNoteForEvent(input.event);
-  if (!runtimeNote) {
-    return ok(undefined);
-  }
-
-  return ok(createPiRuntimeNoteActivity({
-    ctx: input.ctx,
-    note: runtimeNote,
-    createdAt: eventTimestampToIso(input.event),
-    metadata: {
-      rawType: input.event.type,
-    },
-  }));
+  return ok(undefined);
 }
 
 export async function capturePiEvent(
@@ -293,51 +226,8 @@ export async function capturePiEvent(
   });
 }
 
-async function captureRuntimeStatus(input: {
-  store: ThreadStore;
-  threadId: string;
-  ctx: PiExtensionCaptureContext;
-  note: Record<string, unknown>;
-}): Promise<void> {
-  await captureFinalizedActivity({
-    store: input.store,
-    threadId: input.threadId,
-    activity: createPiRuntimeNoteActivity({
-      ctx: input.ctx,
-      note: input.note,
-      metadata: {
-        rawType: "capture_status",
-      },
-    }),
-    turnWriter: writeCapturedMessageTurns,
-  });
-}
-
 async function captureAndReport(input: CapturePiEventInput): Promise<StewardResult<CaptureActivityResult | undefined>> {
   const result = await capturePiEvent(input);
-  const issues = result.ok ? (result.issues ?? []) : result.issues;
-  const shouldCaptureStatus =
-    issues.length > 0 &&
-    !(result.ok && result.value?.duplicate === true) &&
-    input.event.type !== "session_shutdown";
-
-  if (shouldCaptureStatus) {
-    await captureRuntimeStatus({
-      store: input.store,
-      threadId: input.threadId,
-      ctx: input.ctx,
-      note: {
-        event: "capture_status",
-        sourceEvent: input.event.type,
-        ok: result.ok,
-        issues: issues.map((issue) => ({
-          code: issue.code,
-          message: issue.message,
-          cause: issue.cause,
-        })),
-      },
-    });
-  }
 
   return result;
 }
@@ -370,6 +260,10 @@ function isStewardResultErrorLike(
       "issues" in error &&
       Array.isArray((error as { issues?: unknown }).issues))
   );
+}
+
+function isStalePiContextError(error: unknown): boolean {
+  return error instanceof Error && error.message.includes("This extension ctx is stale after session replacement or reload");
 }
 
 async function resolveManagedThreadForCommand(
@@ -495,16 +389,27 @@ function parseSmartCompactCommandArgs(args: string): StewardResult<SmartCompactC
   }
 }
 
-function commandResultFromSmartCompact(
+function generatedSessionCountSummary(result: SmartCompactCommandResult): string {
+  const metadata = result.generatedSessionTokenCountMetadata;
+  if (!metadata) {
+    return "";
+  }
+
+  return ` Generated-session token count: ${metadata.count} (${metadata.source}/${metadata.trustClass}).`;
+}
+
+export function commandResultFromSmartCompact(
   threadId: string,
   result: SmartCompactCommandResult,
 ): CommandResult {
+  const countSummary = generatedSessionCountSummary(result);
+
   switch (result.compactStatus) {
     case "success":
       return {
         ok: true,
         title: "Smart compact",
-        summary: `Generated PI session ${result.generatedFilePath} for thread ${threadId} and reloaded PI.`,
+        summary: `Generated PI session ${result.generatedFilePath} for thread ${threadId} and reloaded PI.${countSummary}`,
         issues: [],
         threadId,
       };
@@ -512,15 +417,17 @@ function commandResultFromSmartCompact(
       return {
         ok: false,
         title: "Smart compact",
-        summary: `Thread ${threadId} is blocked before generated output could be written.`,
+        summary: `Thread ${threadId} is blocked before generated output could be written.${countSummary}`,
         issues: cloneIssues(result.blockers),
         threadId,
       };
     case "degraded":
       return {
-        ok: false,
+        ok: true,
         title: "Smart compact",
-        summary: `Thread ${threadId} rebuilt a degraded draft and stopped before reload.`,
+        summary: result.generatedFilePath
+          ? `Generated degraded PI session ${result.generatedFilePath} for thread ${threadId} and reloaded PI.${countSummary}`
+          : `Generated PI session for thread ${threadId} was not written or reloaded.${countSummary}`,
         issues: cloneIssues(result.blockers),
         threadId,
       };
@@ -528,7 +435,7 @@ function commandResultFromSmartCompact(
       return {
         ok: false,
         title: "Smart compact",
-        summary: `Generated PI session output could not be written for thread ${threadId}.`,
+        summary: `Generated PI session output could not be written for thread ${threadId}.${countSummary}`,
         issues: cloneIssues(result.blockers),
         threadId,
       };
@@ -536,7 +443,7 @@ function commandResultFromSmartCompact(
       return {
         ok: false,
         title: "Smart compact",
-        summary: `Generated PI session ${result.generatedFilePath} was written for thread ${threadId}, but PI reload failed.`,
+        summary: `Generated PI session ${result.generatedFilePath} was written for thread ${threadId}, but PI reload failed.${countSummary}`,
         issues: cloneIssues(result.blockers),
         threadId,
       };
@@ -803,6 +710,7 @@ export async function executeSmartCompactCommand(input: {
   ctx: ExtensionCommandContext;
   args: string;
   activeThread?: ThreadRecord;
+  openAIInputTokenCounter?: SmartCompactCommandDependencies["openAIInputTokenCounter"];
   onReplacementSession?: (ctx: ExtensionCommandContext) => void | Promise<void>;
 }): Promise<StewardResult<ContextStewardCommandExecutionResult>> {
   const thread = await resolveManagedThreadForCommand(input.store, input.ctx, input.activeThread);
@@ -836,14 +744,21 @@ export async function executeSmartCompactCommand(input: {
   }
 
   try {
+    const getThinkingLevel = (
+      input.ctx as ExtensionCommandContext & { getThinkingLevel?: () => string }
+    ).getThinkingLevel;
     const result = await runSmartCompact(
       {
         ...parsed.value,
         threadId: thread.value.threadId,
+        modelProvider: input.ctx.model?.provider,
+        modelId: input.ctx.model?.id,
+        thinkingLevel: getThinkingLevel?.(),
       },
       {
         threadStore: input.store,
         threadViewStore: input.threadViewStore,
+        openAIInputTokenCounter: input.openAIInputTokenCounter,
         piSessionSwitch: {
           currentSessionFile: () => input.ctx.sessionManager.getSessionFile(),
           switchSession: (sessionPath) =>
@@ -1040,10 +955,6 @@ export function registerContextStewardExtension(
   }> {
     const store = createStore(ctx);
     const target = targetFromContext(ctx);
-    if (activeThread && targetsMatch(activeThread.target, target)) {
-      return { store, thread: activeThread };
-    }
-
     const existing = await store.findManagedThread(target);
     if (!existing.ok) {
       throw new Error(existing.issues.map((issue) => `${issue.code}: ${issue.message}`).join("; "));
@@ -1054,12 +965,14 @@ export function registerContextStewardExtension(
       return { store, thread: activeThread };
     }
 
-    const shouldCreateOnSessionStart =
-      event.type === "session_start" && canAutoCreateManagedThreadOnSessionStart(ctx);
+    if (activeThread && targetsMatch(activeThread.target, target)) {
+      return { store, thread: activeThread };
+    }
+
     const shouldCreateOnMessageEnd =
       event.type === "message_end" && canAutoCreateManagedThreadForMessageEnd({ event, ctx });
 
-    if (!shouldCreateOnSessionStart && !shouldCreateOnMessageEnd) {
+    if (!shouldCreateOnMessageEnd) {
       return { store, thread: undefined };
     }
 
@@ -1090,24 +1003,31 @@ export function registerContextStewardExtension(
     }
   }
 
-  pi.on("session_start", async (event, ctx) => {
-    await captureEvent(event, ctx);
-  });
-
-  pi.on("session_before_switch", async (event, ctx) => {
-    await captureEvent(event, ctx);
-  });
-
-  pi.on("session_shutdown", async (event, ctx) => {
-    await captureEvent(event, ctx);
-  });
-
-  pi.on("turn_start", async (event, ctx) => {
-    await captureEvent(event, ctx);
-  });
-
   pi.on("turn_end", async (event, ctx) => {
-    await captureEvent(event, ctx);
+    let resolved: Awaited<ReturnType<typeof resolveCaptureThread>>;
+    try {
+      resolved = await resolveCaptureThread(event, ctx);
+    } catch (error) {
+      if (isStalePiContextError(error)) {
+        return;
+      }
+      throw error;
+    }
+
+    const { store, thread } = resolved;
+    if (!thread) {
+      return;
+    }
+
+    const snapshot = await store.openThread(thread.threadId);
+    if (!snapshot.ok) {
+      return;
+    }
+    for (const turn of snapshot.value.turns) {
+      if (turn.lifecycleStatus === "closed" && !turn.smooth) {
+        await ensureSmoothTurn({ threadId: thread.threadId, turnId: turn.turnId }, { store });
+      }
+    }
   });
 
   pi.on("message_end", async (event, ctx) => {
@@ -1252,6 +1172,7 @@ export function registerContextStewardExtension(
         ctx,
         args,
         activeThread,
+        openAIInputTokenCounter: options.openAIInputTokenCounter,
         onReplacementSession: async (nextCtx) => {
           replacementSessionContext = nextCtx;
         },

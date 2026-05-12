@@ -1,9 +1,9 @@
 import type { MessageRecord, PartRecord } from "../../domain/records.js";
 import {
-  estimateDeterministicTokenCount,
   normalizeDeterministicText,
   type SmoothTurnStrategy,
 } from "../domain/smooth-turn-state.js";
+import { estimateCompactedTextTokenCount } from "../../../thread-view/services/pi-token-estimator.js";
 
 type SmoothSectionMarker = "user" | "assistant" | "tool" | "thinking";
 
@@ -135,7 +135,7 @@ export function buildSmoothTurnText(
 
   return {
     text,
-    tokenCount: estimateDeterministicTokenCount(text),
+    tokenCount: estimateCompactedTextTokenCount(text),
     strategy: "deterministic_marker_sections_v1",
   };
 }

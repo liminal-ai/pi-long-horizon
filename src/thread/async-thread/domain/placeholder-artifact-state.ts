@@ -1,4 +1,5 @@
 import type { StewardIssue } from "../../domain/errors.js";
+import type { TokenCountRecord } from "../../../token-accounting/token-count-metadata.js";
 
 export const PLACEHOLDER_ARTIFACT_KINDS = ["detailed", "brief"] as const;
 export const PLACEHOLDER_ARTIFACT_STATUSES = ["ready", "missing", "invalid"] as const;
@@ -19,7 +20,7 @@ export interface PlaceholderArtifactRecord {
   kind: PlaceholderArtifactKind;
   status: PlaceholderArtifactStatus;
   text?: string;
-  tokenCount?: number;
+  tokenCountMetadata?: TokenCountRecord;
   strategy:
     | "deterministic_truncate_30"
     | "deterministic_truncate_5";
@@ -54,6 +55,7 @@ export function clonePlaceholderArtifactRecord(
 ): PlaceholderArtifactRecord {
   return {
     ...record,
+    tokenCountMetadata: record.tokenCountMetadata ? { ...record.tokenCountMetadata } : undefined,
   };
 }
 

@@ -63,6 +63,16 @@ interface ReconciledIndex {
   changed: boolean;
 }
 
+interface ReconciledThreadIdMap {
+  map: ThreadIdMap;
+  changed: boolean;
+}
+
+interface ThreadIdMap {
+  schemaVersion: 1;
+  threadIdByPiIdentityKey: Record<string, string>;
+}
+
 interface ThreadMutationLeaseFile {
   token: string;
   pid: number;
@@ -82,17 +92,15 @@ function cloneIssue(issue: StewardIssue): StewardIssue {
 }
 
 function deserializeThreadRecord(record: SerializedThreadRecord): ThreadRecord {
-  const legacyThreadViewOutputSummaryField = `projection${"Summary"}`;
   const {
     threadViewOutputSummary,
-    [legacyThreadViewOutputSummaryField]: legacyThreadViewOutputSummary,
     ...thread
   } = record;
 
   return {
     ...thread,
     threadViewOutputSummary: structuredClone(
-      (threadViewOutputSummary ?? legacyThreadViewOutputSummary ?? { count: 0 }) as ThreadRecord["threadViewOutputSummary"],
+      (threadViewOutputSummary ?? { count: 0 }) as ThreadRecord["threadViewOutputSummary"],
     ),
   };
 }
@@ -121,6 +129,13 @@ function targetAssociationConflict(message: string): StewardIssue {
   return {
     code: "TARGET_ASSOCIATION_CONFLICT",
     message,
+  };
+}
+
+function createThreadIdMap(threadIdByPiIdentityKey: Record<string, string> = {}): ThreadIdMap {
+  return {
+    schemaVersion: 1,
+    threadIdByPiIdentityKey: { ...threadIdByPiIdentityKey },
   };
 }
 
@@ -153,12 +168,14 @@ export class FileThreadStore implements ThreadStore {
   private readonly threadsDir: string;
   private readonly fixturesDir: string;
   private readonly indexPath: string;
+  private readonly threadIdMapPath: string;
   private readonly mutationLocksDir: string;
 
   constructor(private readonly rootDir: string) {
     this.threadsDir = join(rootDir, "threads");
     this.fixturesDir = join(rootDir, "fixtures");
     this.indexPath = join(rootDir, "index.json");
+    this.threadIdMapPath = join(rootDir, "threadId-map.json");
     this.mutationLocksDir = join(rootDir, ".thread-mutation-locks");
   }
 
@@ -226,6 +243,76 @@ export class FileThreadStore implements ThreadStore {
     }
   }
 
+  async recordThreadIdMap(input: { threadId: string; target: ThreadTargetRef }): Promise<StewardResult<void>> {
+    try {
+      await this.ensureStoreReady();
+      await this.readThreadRecord(input.threadId);
+
+      const keySet = this.deriveKeys(input.target);
+      if (!keySet.ok) {
+        return keySet;
+      }
+
+      const map = await this.readThreadIdMap();
+      const nextMap = createThreadIdMap(map.threadIdByPiIdentityKey);
+      for (const key of [keySet.value.canonicalKey, ...keySet.value.aliasKeys]) {
+        const mappedThreadId = nextMap.threadIdByPiIdentityKey[key];
+        if (mappedThreadId && mappedThreadId !== input.threadId) {
+          return fail(
+            targetAssociationConflict(
+              `PI identity ${key} is already mapped to thread ${mappedThreadId} in threadId-map.json.`,
+            ),
+          );
+        }
+
+        nextMap.threadIdByPiIdentityKey[key] = input.threadId;
+      }
+
+      await this.writeJsonAtomic(this.threadIdMapPath, nextMap);
+      return ok(undefined);
+    } catch (error) {
+      return fail(storeUnavailableIssue(error, "recordThreadIdMap", input.threadId));
+    }
+  }
+
+  async resolveThreadIdMap(target: ThreadTargetRef): Promise<StewardResult<string | undefined>> {
+    try {
+      await this.ensureStoreReady();
+
+      const keySet = this.deriveKeys(target);
+      if (!keySet.ok) {
+        return keySet;
+      }
+
+      const map = await this.readThreadIdMap();
+      const mappedThreadIds = new Set<string>();
+      for (const key of [keySet.value.canonicalKey, ...keySet.value.aliasKeys]) {
+        const threadId = map.threadIdByPiIdentityKey[key];
+        if (threadId) {
+          mappedThreadIds.add(threadId);
+        }
+      }
+
+      if (mappedThreadIds.size === 0) {
+        return ok(undefined);
+      }
+
+      if (mappedThreadIds.size > 1) {
+        return fail(
+          targetAssociationConflict(
+            `PI identities for ${keySet.value.canonicalKey} map to multiple threads in threadId-map.json: ${[
+              ...mappedThreadIds,
+            ].join(", ")}.`,
+          ),
+        );
+      }
+
+      return ok([...mappedThreadIds][0]);
+    } catch (error) {
+      return fail(storeUnavailableIssue(error, "resolveThreadIdMap"));
+    }
+  }
+
   async findThreadByTarget(target: ThreadTargetRef): Promise<StewardResult<ThreadRecord | undefined>> {
     try {
       const indexResult = await this.ensureStoreReady();
@@ -265,11 +352,20 @@ export class FileThreadStore implements ThreadStore {
   }
 
   async findManagedThread(target: ThreadRecord["target"]): Promise<StewardResult<ThreadRecord | undefined>> {
-    return this.findThreadByTarget({
+    const mappedThreadId = await this.resolveThreadIdMap({
       runtime: target.runtime,
       sessionId: target.sessionId,
       sessionFilePath: target.sessionFilePath,
     });
+    if (!mappedThreadId.ok) {
+      return mappedThreadId;
+    }
+
+    if (mappedThreadId.value) {
+      return this.openMappedManagedThread(mappedThreadId.value);
+    }
+
+    return ok(undefined);
   }
 
   async assertCanMutate(threadId: string): Promise<StewardResult<ThreadRecord>> {
@@ -733,14 +829,36 @@ export class FileThreadStore implements ThreadStore {
       if (!reconciled.ok) {
         return reconciled;
       }
+      const reconciledThreadIdMap = await this.reconcileThreadIdMap();
+      if (!reconciledThreadIdMap.ok) {
+        return reconciledThreadIdMap;
+      }
 
       if (reconciled.value.changed || !(await this.fileExists(this.indexPath))) {
         await this.writeJsonAtomic(this.indexPath, reconciled.value.index);
+      }
+      if (reconciledThreadIdMap.value.changed || !(await this.fileExists(this.threadIdMapPath))) {
+        await this.writeJsonAtomic(this.threadIdMapPath, reconciledThreadIdMap.value.map);
       }
 
       return ok(reconciled.value.index);
     } catch (error) {
       return fail(storeUnavailableIssue(error, "ensureStoreReady"));
+    }
+  }
+
+  private async openMappedManagedThread(threadId: string): Promise<StewardResult<ThreadRecord | undefined>> {
+    try {
+      return ok(await this.readThreadRecord(threadId));
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") {
+        return fail(
+          targetAssociationConflict(`threadId-map.json points to missing or stale thread ${threadId}.`),
+        );
+      }
+
+      return fail(storeUnavailableIssue(error, "openMappedManagedThread", threadId));
     }
   }
 
@@ -806,6 +924,62 @@ export class FileThreadStore implements ThreadStore {
     return ok({
       index: nextIndex,
       changed: JSON.stringify(currentIndex.threadByTargetKey) !== JSON.stringify(nextIndex.threadByTargetKey),
+    });
+  }
+
+  private async reconcileThreadIdMap(): Promise<StewardResult<ReconciledThreadIdMap>> {
+    const currentMap = await this.readThreadIdMap();
+    const nextMap = createThreadIdMap(currentMap.threadIdByPiIdentityKey);
+    const entries = await readdir(this.threadsDir, { withFileTypes: true });
+    const knownThreadIds = new Set<string>();
+
+    for (const entry of entries) {
+      if (!entry.isDirectory()) {
+        continue;
+      }
+
+      const threadId = entry.name;
+      if (!(await this.fileExists(this.getThreadPaths(threadId).thread))) {
+        continue;
+      }
+
+      knownThreadIds.add(threadId);
+      const thread = await this.readThreadRecord(threadId);
+      const targets = await this.collectThreadIdMapTargets(thread);
+      for (const target of targets) {
+        const keySet = this.deriveKeys(target);
+        if (!keySet.ok) {
+          return keySet;
+        }
+
+        for (const key of [keySet.value.canonicalKey, ...keySet.value.aliasKeys]) {
+          const mappedThreadId = nextMap.threadIdByPiIdentityKey[key];
+          if (mappedThreadId && mappedThreadId !== thread.threadId) {
+            return fail(
+              targetAssociationConflict(
+                `PI identity ${key} is claimed by both thread ${mappedThreadId} and ${thread.threadId} in threadId-map.json.`,
+              ),
+            );
+          }
+
+          nextMap.threadIdByPiIdentityKey[key] = thread.threadId;
+        }
+      }
+    }
+
+    for (const [key, threadId] of Object.entries(nextMap.threadIdByPiIdentityKey)) {
+      if (!knownThreadIds.has(threadId)) {
+        return fail(
+          targetAssociationConflict(
+            `PI identity ${key} points to missing or stale thread ${threadId} in threadId-map.json.`,
+          ),
+        );
+      }
+    }
+
+    return ok({
+      map: nextMap,
+      changed: JSON.stringify(currentMap.threadIdByPiIdentityKey) !== JSON.stringify(nextMap.threadIdByPiIdentityKey),
     });
   }
 
@@ -1016,6 +1190,88 @@ export class FileThreadStore implements ThreadStore {
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT" && fallback !== undefined) {
         return structuredClone(fallback);
+      }
+
+      throw error;
+    }
+  }
+
+  private async readThreadIdMap(): Promise<ThreadIdMap> {
+    const map = await this.readJsonFile<ThreadIdMap>(this.threadIdMapPath, createThreadIdMap());
+    return createThreadIdMap(map.threadIdByPiIdentityKey ?? {});
+  }
+
+  private async collectThreadIdMapTargets(thread: ThreadRecord): Promise<ThreadTargetRef[]> {
+    const targets = new Map<string, ThreadTargetRef>();
+    const addTarget = (target: ThreadTargetRef | undefined): void => {
+      if (!target) {
+        return;
+      }
+
+      const sessionId = this.normalizeTargetValue(target.sessionId);
+      const sessionFilePath = this.normalizeTargetValue(target.sessionFilePath);
+      if (!sessionId && !sessionFilePath) {
+        return;
+      }
+
+      const key = JSON.stringify({
+        runtime: target.runtime,
+        sessionId,
+        sessionFilePath,
+      });
+      targets.set(key, {
+        runtime: target.runtime,
+        sessionId,
+        sessionFilePath,
+      });
+    };
+
+    addTarget({
+      runtime: thread.target.runtime,
+      sessionId: thread.target.sessionId,
+      sessionFilePath: thread.target.sessionFilePath,
+    });
+
+    const generatedFilePaths = [
+      thread.target.currentGeneratedFilePath,
+      thread.threadViewOutputSummary.currentGeneratedFilePath,
+      thread.threadViewOutputSummary.generatedOutput?.generatedFilePath,
+    ];
+    for (const generatedFilePath of generatedFilePaths) {
+      const sessionFilePath = this.normalizeTargetValue(generatedFilePath);
+      if (!sessionFilePath) {
+        continue;
+      }
+
+      addTarget({
+        runtime: thread.target.runtime,
+        sessionId: await this.readSessionHeaderId(sessionFilePath),
+        sessionFilePath,
+      });
+    }
+
+    return [...targets.values()];
+  }
+
+  private async readSessionHeaderId(sessionFilePath: string): Promise<string | undefined> {
+    try {
+      const content = await readFile(sessionFilePath, "utf8");
+      const firstLine = content
+        .split("\n")
+        .find((line) => line.trim().length > 0);
+      if (!firstLine) {
+        return undefined;
+      }
+
+      const parsed = JSON.parse(firstLine) as { type?: unknown; id?: unknown };
+      if (parsed.type === "session" && typeof parsed.id === "string" && parsed.id.trim().length > 0) {
+        return parsed.id.trim();
+      }
+
+      return undefined;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        return undefined;
       }
 
       throw error;

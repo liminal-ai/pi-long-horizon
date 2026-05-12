@@ -11,6 +11,7 @@ export const ASYNC_THREAD_BLOCKER_CODES = [
   "LOWER_THRESHOLD_UNREACHED",
   "GENERATED_WRITE_FAILED",
   "PI_RELOAD_FAILED",
+  "TOKEN_COUNT_BLOCKED",
 ] as const;
 
 export type AsyncThreadStatusLevel = (typeof ASYNC_THREAD_STATUSES)[number];

@@ -177,6 +177,9 @@ export async function buildPiThreadViewFile(
     sessionId: input.sessionId ?? `${input.threadId}-${input.threadViewId}`,
     cwd: input.cwd ?? process.cwd(),
     parentSessionId: input.parentSessionId,
+    modelProvider: input.modelProvider,
+    modelId: input.modelId,
+    thinkingLevel: input.thinkingLevel,
     generatedAt: input.generatedAt ?? new Date().toISOString(),
     placeholderExplicit: entries.some(
       (entry) =>

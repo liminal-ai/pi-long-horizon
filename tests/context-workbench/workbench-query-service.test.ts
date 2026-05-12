@@ -11,6 +11,7 @@ import {
 } from "../../src/context-steward/services/thread-service.js";
 import { runSmartCompact } from "../../src/commands/smart-compact.js";
 import { createPiCliHarnessAdapter } from "../../src/harness-adapter/pi-cli-ha/pi-cli-ha.js";
+import { OpenAIInputTokenCounter } from "../../src/token-accounting/index.js";
 import { FileThreadStore } from "../../src/context-steward/store/file-thread-store.js";
 import {
   makeActorRecord,
@@ -35,6 +36,12 @@ import {
   seedDeterministicRebuildThread,
   seedMissingDetailedPlaceholderThread,
 } from "../thread-view/helpers.js";
+
+const fakeOpenAICounter = new OpenAIInputTokenCounter({
+  async countInputTokens() {
+    return 1;
+  },
+}, "gpt-test");
 
 function expectOk<T>(result: StewardResult<T>): T {
   assert.equal(result.ok, true, result.ok ? undefined : result.issues.map((issue) => issue.code).join(", "));
@@ -736,13 +743,14 @@ test("projection failure state appears in inspectable output metadata", async ()
     const result = await runSmartCompact(
       {
         threadId: context.threadId,
-        requestedLowerBound: 30,
+          requestedLowerBound: 2_000,
         requestedBandPercentages: { fullFidelity: 50, smooth: 20, detailed: 20, brief: 10 },
         mode: "strict",
       },
       {
         threadStore: context.threadStore,
         threadViewStore: context.threadViewStore,
+        openAIInputTokenCounter: fakeOpenAICounter,
         piCliHarnessAdapter: createPiCliHarnessAdapter({
           switchSession: async () => {
             throw new Error("reload failed");

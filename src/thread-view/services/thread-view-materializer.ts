@@ -256,6 +256,18 @@ function stringifyPartContent(content: string | Record<string, unknown>): string
   return JSON.stringify(content);
 }
 
+export function materializeRawThreadViewMessageContent(message: MessageRecord): ThreadViewMessageRecord["content"] {
+  return {
+    messageId: message.messageId,
+    actorId: message.actorId,
+    actorType: message.actorType,
+    messageKind: message.messageKind,
+    capturedAt: message.capturedAt,
+    parts: structuredClone(message.parts),
+    targetMetadata: message.targetMetadata ? structuredClone(message.targetMetadata) : undefined,
+  };
+}
+
 function buildRawTurnMessage(
   threadViewId: string,
   turnId: string,
@@ -274,15 +286,7 @@ function buildRawTurnMessage(
     sourceKind: "raw_turn_message",
     sourceReference: `${turnId}/${message.messageId}`,
     messageOrder,
-    content: {
-      messageId: message.messageId,
-      actorId: message.actorId,
-      actorType: message.actorType,
-      messageKind: message.messageKind,
-      capturedAt: message.capturedAt,
-      parts: structuredClone(message.parts),
-      targetMetadata: message.targetMetadata ? structuredClone(message.targetMetadata) : undefined,
-    },
+    content: materializeRawThreadViewMessageContent(message),
   };
 }
 

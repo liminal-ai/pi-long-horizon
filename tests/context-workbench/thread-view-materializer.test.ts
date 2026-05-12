@@ -204,7 +204,7 @@ async function seedMaterializerThread(storeRootDir: string) {
           closedAt: alphaTool.capturedAt,
           smooth: {
             text: formatSmoothTurnFromMessages(alphaMessages),
-            tokenCount: 21,
+            tokenCountMetadata: { count: 21, scope: "smooth_turn_materialized", source: "pi_heuristic", trustClass: "heuristic_estimate", representationHash: "sha256:test-smooth-21", createdAt: "2026-01-01T00:00:00.000Z" },
           },
         }),
         makeTurnRecord({
@@ -224,7 +224,7 @@ async function seedMaterializerThread(storeRootDir: string) {
           closedAt: betaResponse.capturedAt,
           smooth: {
             text: formatSmoothTurnFromMessages(betaMessages),
-            tokenCount: 12,
+            tokenCountMetadata: { count: 12, scope: "smooth_turn_materialized", source: "pi_heuristic", trustClass: "heuristic_estimate", representationHash: "sha256:test-smooth-12", createdAt: "2026-01-01T00:00:00.000Z" },
           },
         }),
         makeTurnRecord({

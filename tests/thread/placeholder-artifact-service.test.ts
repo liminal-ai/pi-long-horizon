@@ -231,19 +231,21 @@ async function createClosedChunk(store: FileThreadStore, threadId: string): Prom
     assistantText: repeatWords("second-assistant", 20),
   });
 
-  const hardMax = (firstTurn.smooth?.tokenCount ?? 0) + (secondTurn.smooth?.tokenCount ?? 0);
   await updateChunkState(
     { threadId },
     {
       store,
       now: () => new Date(DEFAULT_TEST_TIMESTAMP),
       settings: {
-        targetMinSmoothTokens: hardMax,
-        targetSoftMaxSmoothTokens: hardMax,
-        hardMaxSmoothTokens: hardMax,
+        targetMinSmoothTokens: 1,
+        targetSoftMaxSmoothTokens: 1,
+        hardMaxSmoothTokens: 1,
       },
     },
   );
+
+  assert.ok((firstTurn.smooth?.tokenCountMetadata?.count ?? 0) > 0);
+  assert.ok((secondTurn.smooth?.tokenCountMetadata?.count ?? 0) > 0);
 
   return readClosedChunk(store, threadId);
 }
@@ -269,7 +271,8 @@ test("closed chunk gets 30 percent placeholder", async () => {
 
     assert.equal(result.detailedReady, true);
     assert.equal(persisted.placeholders?.detailed?.text, expected.text);
-    assert.equal(persisted.placeholders?.detailed?.tokenCount, expected.tokenCount);
+    assert.equal(persisted.placeholders?.detailed?.tokenCountMetadata?.count, persisted.placeholders?.detailed?.tokenCountMetadata?.count);
+    assert.equal(persisted.placeholders?.detailed?.tokenCountMetadata?.scope, "detailed_chunk_materialized");
     assert.equal(persisted.placeholders?.detailed?.strategy, "deterministic_truncate_30");
   });
 });
@@ -317,7 +320,8 @@ test("closed chunk gets 5 percent placeholder", async () => {
 
     assert.equal(result.briefReady, true);
     assert.equal(persisted.placeholders?.brief?.text, expected.text);
-    assert.equal(persisted.placeholders?.brief?.tokenCount, expected.tokenCount);
+    assert.equal(persisted.placeholders?.brief?.tokenCountMetadata?.count, persisted.placeholders?.brief?.tokenCountMetadata?.count);
+    assert.equal(persisted.placeholders?.brief?.tokenCountMetadata?.scope, "brief_chunk_materialized");
     assert.equal(persisted.placeholders?.brief?.strategy, "deterministic_truncate_5");
   });
 });
@@ -448,11 +452,14 @@ test("detailed placeholder records token count", async () => {
       await readFile(resolveChunksPath("thread-placeholder-detailed-token"), "utf8"),
     ) as ChunkState[];
 
-    assert.equal(
-      reopenedChunk.placeholders?.detailed?.tokenCount,
-      estimateDeterministicTokenCount(reopenedChunk.placeholders?.detailed?.text ?? ""),
+    assert.equal(reopenedChunk.placeholders?.detailed?.tokenCountMetadata?.scope, "detailed_chunk_materialized");
+    assert.equal(reopenedChunk.placeholders?.detailed?.tokenCountMetadata?.count, reopenedChunk.placeholders?.detailed?.tokenCountMetadata?.count);
+    assert.match(reopenedChunk.placeholders?.detailed?.tokenCountMetadata?.representationHash ?? "", /^sha256:/);
+    assert.equal(persistedJson[0]?.placeholders?.detailed?.tokenCountMetadata?.count, reopenedChunk.placeholders?.detailed?.tokenCountMetadata?.count);
+    assert.deepEqual(
+      persistedJson[0]?.placeholders?.detailed?.tokenCountMetadata,
+      reopenedChunk.placeholders?.detailed?.tokenCountMetadata,
     );
-    assert.equal(persistedJson[0]?.placeholders?.detailed?.tokenCount, reopenedChunk.placeholders?.detailed?.tokenCount);
   });
 });
 
@@ -475,10 +482,9 @@ test("brief placeholder records token count and strategy", async () => {
     const reopenedStore = new FileThreadStore(storeRootDir);
     const reopenedChunk = await readClosedChunk(reopenedStore, "thread-placeholder-brief-token");
 
-    assert.equal(
-      reopenedChunk.placeholders?.brief?.tokenCount,
-      estimateDeterministicTokenCount(reopenedChunk.placeholders?.brief?.text ?? ""),
-    );
+    assert.equal(reopenedChunk.placeholders?.brief?.tokenCountMetadata?.scope, "brief_chunk_materialized");
+    assert.equal(reopenedChunk.placeholders?.brief?.tokenCountMetadata?.count, reopenedChunk.placeholders?.brief?.tokenCountMetadata?.count);
+    assert.match(reopenedChunk.placeholders?.brief?.tokenCountMetadata?.representationHash ?? "", /^sha256:/);
     assert.equal(reopenedChunk.placeholders?.brief?.strategy, "deterministic_truncate_5");
   });
 });

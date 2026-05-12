@@ -1,4 +1,5 @@
 import type { TurnSmoothRecord } from "../../domain/records.js";
+import type { TokenCountRecord } from "../../../token-accounting/token-count-metadata.js";
 
 export const SMOOTH_TURN_STATUSES = ["ready", "missing", "stale", "invalid"] as const;
 export const SMOOTH_TURN_STRATEGIES = ["deterministic_marker_sections_v1"] as const;
@@ -11,7 +12,7 @@ export interface SmoothTurnState {
   threadId: string;
   status: SmoothTurnStatus;
   text?: string;
-  tokenCount?: number;
+  tokenCountMetadata?: TokenCountRecord;
   strategy?: SmoothTurnStrategy;
   generatedAt?: string;
   sourceRevision?: number;
@@ -52,6 +53,7 @@ export function estimateDeterministicTokenCount(text: string): number {
 export function cloneSmoothTurnState(record: SmoothTurnState): SmoothTurnState {
   return {
     ...record,
+    tokenCountMetadata: record.tokenCountMetadata ? { ...record.tokenCountMetadata } : undefined,
   };
 }
 
@@ -59,7 +61,7 @@ export function toTurnSmoothRecord(record: SmoothTurnState): TurnSmoothRecord {
   return {
     status: record.status,
     text: record.text,
-    tokenCount: record.tokenCount,
+    tokenCountMetadata: record.tokenCountMetadata ? { ...record.tokenCountMetadata } : undefined,
     strategy: record.strategy,
     generatedAt: record.generatedAt,
     sourceRevision: record.sourceRevision,

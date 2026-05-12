@@ -12,7 +12,11 @@ import type { DeterministicSmoothFormatOptions } from "./smooth-turn-format.js";
 import { buildSmoothTurnText } from "./smooth-turn-format.js";
 import { withSerializedThreadOperation } from "../../services/thread-service.js";
 import { fail, ok, StewardResultError, type StewardResult } from "../../domain/errors.js";
-import { estimateDeterministicTokenCount } from "../domain/smooth-turn-state.js";
+import {
+  countSmoothTurnMaterialized,
+  validateTokenCountRecord,
+  type TokenCountRecord,
+} from "../../../token-accounting/index.js";
 
 export interface SmoothTurnServiceOptions {
   store: ThreadStore;
@@ -42,6 +46,42 @@ function sortTurnMessages(snapshot: ThreadSnapshot, turn: TurnRecord) {
     .sort((left, right) => left.sourceOrder - right.sourceOrder);
 }
 
+function isCurrentTokenCountMetadata(record: TokenCountRecord | undefined, expected: TokenCountRecord): boolean {
+  if (!record) {
+    return false;
+  }
+
+  return (
+    validateTokenCountRecord(record).ok &&
+    record.scope === expected.scope &&
+    record.count === expected.count &&
+    record.sourceRevision === expected.sourceRevision &&
+    record.representationHash === expected.representationHash
+  );
+}
+
+function calculateSmoothTokenCountRecord(turn: TurnRecord, generatedAt?: string): TokenCountRecord {
+  return countSmoothTurnMaterialized(turn, { createdAt: generatedAt });
+}
+
+function withSmoothTokenCountMetadata(smooth: SmoothTurnState, turn: TurnRecord): SmoothTurnState {
+  const generatedAt = smooth.generatedAt ?? new Date().toISOString();
+  const turnWithSmooth: TurnRecord = {
+    ...turn,
+    smooth: toTurnSmoothRecord({
+      ...smooth,
+      generatedAt,
+    }),
+  };
+  const tokenCountMetadata = calculateSmoothTokenCountRecord(turnWithSmooth, generatedAt);
+
+  return {
+    ...smooth,
+    tokenCountMetadata,
+    generatedAt,
+  };
+}
+
 function evaluateSmoothTurn(turn: TurnRecord): ReadSmoothTurnStateResult {
   const smooth = turn.smooth;
   if (!smooth) {
@@ -56,7 +96,7 @@ function evaluateSmoothTurn(turn: TurnRecord): ReadSmoothTurnStateResult {
       turnId: turn.turnId,
       smoothStatus: "missing",
       smoothText: smooth.text,
-      smoothTokenCount: smooth.tokenCount,
+      smoothTokenCount: smooth.tokenCountMetadata?.count,
       smoothStrategy: smooth.strategy,
       generatedAt: smooth.generatedAt,
       sourceRevision: smooth.sourceRevision,
@@ -66,8 +106,7 @@ function evaluateSmoothTurn(turn: TurnRecord): ReadSmoothTurnStateResult {
   if (
     smooth.status === "invalid" ||
     !smooth.text ||
-    smooth.tokenCount === undefined ||
-    smooth.tokenCount !== estimateDeterministicTokenCount(smooth.text) ||
+    smooth.tokenCountMetadata === undefined ||
     smooth.strategy !== "deterministic_marker_sections_v1" ||
     !smooth.generatedAt ||
     smooth.sourceRevision === undefined
@@ -76,7 +115,22 @@ function evaluateSmoothTurn(turn: TurnRecord): ReadSmoothTurnStateResult {
       turnId: turn.turnId,
       smoothStatus: "invalid",
       smoothText: smooth.text,
-      smoothTokenCount: smooth.tokenCount,
+      smoothTokenCount: smooth.tokenCountMetadata?.count,
+      smoothStrategy: smooth.strategy,
+      generatedAt: smooth.generatedAt,
+      sourceRevision: smooth.sourceRevision,
+    };
+  }
+
+  const expectedTokenCountMetadata = calculateSmoothTokenCountRecord(turn, smooth.generatedAt);
+  if (
+    !isCurrentTokenCountMetadata(smooth.tokenCountMetadata, expectedTokenCountMetadata)
+  ) {
+    return {
+      turnId: turn.turnId,
+      smoothStatus: "invalid",
+      smoothText: smooth.text,
+      smoothTokenCount: smooth.tokenCountMetadata?.count,
       smoothStrategy: smooth.strategy,
       generatedAt: smooth.generatedAt,
       sourceRevision: smooth.sourceRevision,
@@ -88,7 +142,7 @@ function evaluateSmoothTurn(turn: TurnRecord): ReadSmoothTurnStateResult {
       turnId: turn.turnId,
       smoothStatus: "stale",
       smoothText: smooth.text,
-      smoothTokenCount: smooth.tokenCount,
+      smoothTokenCount: smooth.tokenCountMetadata.count,
       smoothStrategy: smooth.strategy,
       generatedAt: smooth.generatedAt,
       sourceRevision: smooth.sourceRevision,
@@ -99,7 +153,7 @@ function evaluateSmoothTurn(turn: TurnRecord): ReadSmoothTurnStateResult {
     turnId: turn.turnId,
     smoothStatus: "ready",
     smoothText: smooth.text,
-    smoothTokenCount: smooth.tokenCount,
+    smoothTokenCount: smooth.tokenCountMetadata.count,
     smoothStrategy: smooth.strategy,
     generatedAt: smooth.generatedAt,
     sourceRevision: smooth.sourceRevision,
@@ -116,17 +170,17 @@ function buildSmoothState(
   snapshot: ThreadSnapshot,
 ): SmoothTurnState {
   const formatted = buildSmoothTurnText(sortTurnMessages(snapshot, input.turn), input.formatOptions);
-
-  return {
+  const smooth: SmoothTurnState = {
     turnId: input.turn.turnId,
     threadId: input.threadId,
     status: "ready",
     text: formatted.text,
-    tokenCount: formatted.tokenCount,
     strategy: formatted.strategy,
     generatedAt: input.generatedAt,
     sourceRevision: input.turn.sourceRevision,
   };
+
+  return withSmoothTokenCountMetadata(smooth, input.turn);
 }
 
 async function writeSmoothTurn(
@@ -205,10 +259,12 @@ async function persistSmoothTurnStateWithinSerializedThreadOperation(
     });
   }
 
-  if (turn.sourceRevision !== input.smooth.sourceRevision) {
+  const smooth = withSmoothTokenCountMetadata(input.smooth, turn);
+
+  if (turn.sourceRevision !== smooth.sourceRevision) {
     return fail({
       code: "STALE_SOURCE_REVISION",
-      message: `Turn ${input.turnId} source revision ${turn.sourceRevision} does not match smooth source revision ${input.smooth.sourceRevision}.`,
+      message: `Turn ${input.turnId} source revision ${turn.sourceRevision} does not match smooth source revision ${smooth.sourceRevision}.`,
       threadId: input.threadId,
     });
   }
@@ -217,7 +273,7 @@ async function persistSmoothTurnStateWithinSerializedThreadOperation(
     {
       snapshot: snapshotResult.value,
       turn,
-      smooth: input.smooth,
+      smooth,
     },
     store,
   );
@@ -369,7 +425,7 @@ export async function ensureSmoothTurn(
     return ok({
       turnId: smooth.turnId,
       smoothStatus: smooth.status,
-      smoothTokenCount: smooth.tokenCount,
+      smoothTokenCount: smooth.tokenCountMetadata?.count,
     } satisfies EnsureSmoothTurnResult);
   }).then((result) => {
     if (!result.ok) {

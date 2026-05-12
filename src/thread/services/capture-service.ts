@@ -25,6 +25,7 @@ export interface CanonicalActivity {
   parts: MessageRecord["parts"];
   targetMetadata: PiTargetMetadata;
   targetEventKey?: string;
+  tokenTelemetry?: MessageRecord["tokenTelemetry"];
 }
 
 export interface CaptureActivityInput {
@@ -232,6 +233,9 @@ export async function captureFinalizedActivityInCurrentThreadOperation(
       createdAt: input.activity.createdAt,
       parts: input.activity.parts.map((part) => structuredClone(part)),
       targetMetadata,
+      tokenTelemetry: input.activity.tokenTelemetry
+        ? structuredClone(input.activity.tokenTelemetry)
+        : undefined,
     },
     targetEventKey,
   });

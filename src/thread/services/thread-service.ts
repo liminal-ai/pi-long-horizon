@@ -94,6 +94,43 @@ function managedTargetsMatch(left: ThreadTargetMetadata, right: ThreadTargetMeta
   );
 }
 
+function normalizeTargetIdentityValue(value: string | undefined): string | undefined {
+  const normalized = value?.trim();
+  return normalized ? normalized : undefined;
+}
+
+function assertManagedOpenIdentityCompatible(
+  existing: ThreadTargetMetadata,
+  incoming: ThreadTargetMetadata,
+): StewardResult<void> {
+  if (existing.runtime !== incoming.runtime) {
+    return fail({
+      code: "TARGET_ASSOCIATION_CONFLICT",
+      message: `Stored target runtime ${existing.runtime} does not match incoming runtime ${incoming.runtime}.`,
+    });
+  }
+
+  const existingSessionId = normalizeTargetIdentityValue(existing.sessionId);
+  const incomingSessionId = normalizeTargetIdentityValue(incoming.sessionId);
+  if (existingSessionId && incomingSessionId && existingSessionId !== incomingSessionId) {
+    return fail({
+      code: "TARGET_ASSOCIATION_CONFLICT",
+      message: `Stored target session id ${existingSessionId} does not match incoming session id ${incomingSessionId}.`,
+    });
+  }
+
+  const existingSessionFilePath = normalizeTargetIdentityValue(existing.sessionFilePath);
+  const incomingSessionFilePath = normalizeTargetIdentityValue(incoming.sessionFilePath);
+  if (existingSessionFilePath && incomingSessionFilePath && existingSessionFilePath !== incomingSessionFilePath) {
+    return fail({
+      code: "TARGET_ASSOCIATION_CONFLICT",
+      message: `Stored target session file ${existingSessionFilePath} does not match incoming session file ${incomingSessionFilePath}.`,
+    });
+  }
+
+  return ok(undefined);
+}
+
 export async function openOrCreateManagedThread(
   input: ManagedThreadInput,
   store: ThreadStore,
@@ -112,6 +149,11 @@ export async function openOrCreateManagedThread(
   let thread: ThreadRecord;
 
   if (existing.value) {
+    const compatibility = assertManagedOpenIdentityCompatible(existing.value.target, input.target);
+    if (!compatibility.ok) {
+      return compatibility;
+    }
+
     const nextTarget = mergeManagedTarget(existing.value.target, input.target);
     const targetMatches = managedTargetsMatch(existing.value.target, nextTarget);
 
@@ -148,6 +190,18 @@ export async function openOrCreateManagedThread(
     }
 
     thread = created.value;
+  }
+
+  const mapped = await store.recordThreadIdMap({
+    threadId: thread.threadId,
+    target: {
+      runtime: input.target.runtime,
+      sessionId: input.target.sessionId,
+      sessionFilePath: input.target.sessionFilePath,
+    },
+  });
+  if (!mapped.ok) {
+    return mapped;
   }
 
   return store.assertCanMutate(thread.threadId);

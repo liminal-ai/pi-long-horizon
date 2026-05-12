@@ -3,19 +3,19 @@ import {
   createStewardIssue,
   type StewardIssue,
 } from "../../thread/domain/errors.js";
-import type { MessageRecord } from "../../thread/domain/records.js";
 import type { ThreadStore } from "../../thread/store/thread-store.js";
 import {
   BAND_ORDER,
   type BandRecord,
   type BandRenderedStatus,
   type BandType,
-  type ThreadViewMessageRecord,
 } from "../../thread-view/domain/thread-view-records.js";
 import type { ThreadViewStore } from "../../thread-view/store/thread-view-store.js";
 import {
-  estimateMaterializedMessageTokenCount,
-  estimateRawMessageTokenCount,
+  resolveChunkPlaceholderTokenAccounting,
+  resolveRawTurnTokenAccounting,
+  resolveSmoothTurnTokenAccounting,
+  type SelectedTokenAccounting,
 } from "../../thread-view/services/thread-view-builder.js";
 import { WorkbenchQueryService } from "./workbench-query-service.js";
 
@@ -26,6 +26,8 @@ export interface CompactionAuditBandReport {
   selectedIds: string[];
   renderedStatus: BandRenderedStatus;
   actualTokenCount: number;
+  countPolicyStatus?: SelectedTokenAccounting["decision"]["status"];
+  countPolicyReason?: string;
 }
 
 export interface CompactionAuditSelectedTurn {
@@ -33,6 +35,8 @@ export interface CompactionAuditSelectedTurn {
   bandType: "full_fidelity" | "smooth";
   rawTokenCount: number;
   smoothTokenCount?: number;
+  rawCountPolicyStatus?: SelectedTokenAccounting["decision"]["status"];
+  smoothCountPolicyStatus?: SelectedTokenAccounting["decision"]["status"];
 }
 
 export interface CompactionAuditSelectedChunk {
@@ -41,6 +45,9 @@ export interface CompactionAuditSelectedChunk {
   smoothTokenCount?: number;
   detailedTokenCount?: number;
   briefTokenCount?: number;
+  smoothCountPolicyStatus?: SelectedTokenAccounting["decision"]["status"];
+  detailedCountPolicyStatus?: SelectedTokenAccounting["decision"]["status"];
+  briefCountPolicyStatus?: SelectedTokenAccounting["decision"]["status"];
 }
 
 export interface CompactionAuditReport {
@@ -48,6 +55,11 @@ export interface CompactionAuditReport {
   threadViewId: string;
   compactStatus?: string;
   resultingTokenCount: number;
+  generatedSessionTokenCount?: number;
+  generatedSessionCountSource?: string;
+  generatedSessionCountTrustClass?: string;
+  generatedSessionCountPolicyStatus?: SelectedTokenAccounting["decision"]["status"];
+  generatedSessionCountPolicyReason?: string;
   generatedFilePath?: string;
   archivePath?: string;
   bands: Record<BandType, CompactionAuditBandReport>;
@@ -65,10 +77,6 @@ export interface BuildCompactionAuditReportInput {
 export interface BuildCompactionAuditReportDependencies {
   threadStore: ThreadStore;
   threadViewStore: ThreadViewStore;
-}
-
-function emittedMessageTokenCount(message: ThreadViewMessageRecord): number {
-  return estimateMaterializedMessageTokenCount(message.content);
 }
 
 function bandRecordForType(
@@ -90,10 +98,6 @@ function bandRecordForType(
     case "brief":
       return bands.briefBand;
   }
-}
-
-function rawTurnTokenCount(messages: readonly MessageRecord[]): number {
-  return messages.reduce((total, message) => total + estimateRawMessageTokenCount(message), 0);
 }
 
 function throwReportIssue(input: { code: StewardIssue["code"]; message: string; threadId: string }): never {
@@ -125,27 +129,14 @@ export async function buildCompactionAuditReport(
   const generatedOutput = threadResult.value.thread.threadViewOutputSummary.generatedOutput;
   const scopedGeneratedOutput =
     generatedOutput?.threadViewId === input.threadViewId ? generatedOutput : undefined;
-  const emittedMessages = view.emittedMessages;
-  const bands = Object.fromEntries(
-    BAND_ORDER.map((bandType) => {
-      const band = bandRecordForType(view, bandType);
-      const actualTokenCount = emittedMessages
-        .filter((message) => message.bandType === bandType)
-        .reduce((total, message) => total + emittedMessageTokenCount(message), 0);
-
-      return [
-        bandType,
-        {
-          bandType,
-          targetTokenBudget: band.targetTokenBudget,
-          selectedCount: band.selectedIds.length,
-          selectedIds: [...band.selectedIds],
-          renderedStatus: band.renderedStatus,
-          actualTokenCount,
-        } satisfies CompactionAuditBandReport,
-      ];
-    }),
-  ) as Record<BandType, CompactionAuditBandReport>;
+  const chunkState = await dependencies.threadStore.readChunks(input.threadId);
+  if (!chunkState.ok) {
+    throw new StewardResultError(chunkState.issues);
+  }
+  const chunksById = new Map(chunkState.value.map((chunk) => [chunk.chunkId, chunk]));
+  const accountingByBand = new Map<BandType, SelectedTokenAccounting[]>(
+    BAND_ORDER.map((bandType) => [bandType, []]),
+  );
 
   const selectedTurns: CompactionAuditSelectedTurn[] = [];
   for (const bandType of ["full_fidelity", "smooth"] as const) {
@@ -155,12 +146,27 @@ export async function buildCompactionAuditReport(
       if (!turnResult.ok) {
         throw new StewardResultError(turnResult.issues);
       }
+      const rawAccounting = resolveRawTurnTokenAccounting({
+        turn: turnResult.value.turn,
+        messages: turnResult.value.messages,
+      });
+      const smoothAccounting = resolveSmoothTurnTokenAccounting({
+        turn: turnResult.value.turn,
+      });
+      if (bandType === "full_fidelity") {
+        accountingByBand.get("full_fidelity")?.push(rawAccounting);
+      }
+      if (bandType === "smooth" && smoothAccounting) {
+        accountingByBand.get("smooth")?.push(smoothAccounting);
+      }
 
       selectedTurns.push({
         turnId,
         bandType,
-        rawTokenCount: rawTurnTokenCount(turnResult.value.messages),
-        smoothTokenCount: turnResult.value.turn.smooth?.tokenCount,
+        rawTokenCount: rawAccounting.count,
+        smoothTokenCount: smoothAccounting?.count,
+        rawCountPolicyStatus: rawAccounting.decision.status,
+        smoothCountPolicyStatus: smoothAccounting?.decision.status,
       });
     }
   }
@@ -169,20 +175,60 @@ export async function buildCompactionAuditReport(
   for (const bandType of ["detailed", "brief"] as const) {
     const band = bandRecordForType(view, bandType);
     for (const chunkId of band.selectedIds) {
-      const chunkResult = await query.openChunkDetail({ threadId: input.threadId, chunkId });
-      if (!chunkResult.ok) {
-        throw new StewardResultError(chunkResult.issues);
+      const chunk = chunksById.get(chunkId);
+      if (!chunk) {
+        throwReportIssue({
+          code: "WORKBENCH_SOURCE_UNIT_NOT_FOUND",
+          message: `Chunk ${chunkId} was not found for thread ${input.threadId}.`,
+          threadId: input.threadId,
+        });
+      }
+      const detailedAccounting = resolveChunkPlaceholderTokenAccounting({
+        chunk,
+        bandType: "detailed",
+      });
+      const briefAccounting = resolveChunkPlaceholderTokenAccounting({
+        chunk,
+        bandType: "brief",
+      });
+      const selectedBandAccounting = bandType === "detailed" ? detailedAccounting : briefAccounting;
+      if (selectedBandAccounting) {
+        accountingByBand.get(bandType)?.push(selectedBandAccounting);
       }
 
       selectedChunks.push({
         chunkId,
         bandType,
-        smoothTokenCount: chunkResult.value.chunk.smoothTokenCount,
-        detailedTokenCount: chunkResult.value.chunk.detailedSummaryTokenCount,
-        briefTokenCount: chunkResult.value.chunk.briefSummaryTokenCount,
+        smoothTokenCount: chunk.smoothTokenCountMetadata?.count,
+        detailedTokenCount: detailedAccounting?.count,
+        briefTokenCount: briefAccounting?.count,
+        detailedCountPolicyStatus: detailedAccounting?.decision.status,
+        briefCountPolicyStatus: briefAccounting?.decision.status,
       });
     }
   }
+
+  const bands = Object.fromEntries(
+    BAND_ORDER.map((bandType) => {
+      const band = bandRecordForType(view, bandType);
+      const accounting = accountingByBand.get(bandType) ?? [];
+      const degradedAccounting = accounting.find((entry) => entry.decision.status !== "usable");
+
+      return [
+        bandType,
+        {
+          bandType,
+          targetTokenBudget: band.targetTokenBudget,
+          selectedCount: band.selectedIds.length,
+          selectedIds: [...band.selectedIds],
+          renderedStatus: band.renderedStatus,
+          actualTokenCount: accounting.reduce((total, entry) => total + entry.count, 0),
+          countPolicyStatus: degradedAccounting?.decision.status ?? accounting[0]?.decision.status,
+          countPolicyReason: degradedAccounting?.decision.reason ?? accounting[0]?.decision.reason,
+        } satisfies CompactionAuditBandReport,
+      ];
+    }),
+  ) as Record<BandType, CompactionAuditBandReport>;
 
   if (view.threadId !== input.threadId) {
     throwReportIssue({
@@ -196,13 +242,18 @@ export async function buildCompactionAuditReport(
     threadId: input.threadId,
     threadViewId: input.threadViewId,
     compactStatus: scopedGeneratedOutput?.status,
-    resultingTokenCount: emittedMessages.reduce((total, message) => total + emittedMessageTokenCount(message), 0),
+    resultingTokenCount: Object.values(bands).reduce((total, band) => total + band.actualTokenCount, 0),
+    generatedSessionTokenCount: scopedGeneratedOutput?.generatedSessionTokenCount,
+    generatedSessionCountSource: scopedGeneratedOutput?.generatedSessionTokenCountMetadata?.source,
+    generatedSessionCountTrustClass: scopedGeneratedOutput?.generatedSessionTokenCountMetadata?.trustClass,
+    generatedSessionCountPolicyStatus: scopedGeneratedOutput?.generatedSessionCountPolicy?.status,
+    generatedSessionCountPolicyReason: scopedGeneratedOutput?.generatedSessionCountPolicy?.reason,
     generatedFilePath: scopedGeneratedOutput?.generatedFilePath,
     archivePath: scopedGeneratedOutput?.archivePath,
     bands,
     selectedTurns,
     selectedChunks,
     blockers: scopedGeneratedOutput?.issues?.map((issue) => createStewardIssue(issue)) ?? [],
-    reloadResult: scopedGeneratedOutput?.status,
+    reloadResult: scopedGeneratedOutput?.generatedFilePath ? scopedGeneratedOutput.status : undefined,
   };
 }

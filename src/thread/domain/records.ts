@@ -1,6 +1,7 @@
 import type { GeneratedOutputMetadata } from "../domain/output-metadata.js";
 import { cloneGeneratedOutputMetadata } from "../domain/output-metadata.js";
 import type { StewardErrorCode, StewardIssue } from "./errors.js";
+import type { TokenCountRecord } from "../../token-accounting/token-count-metadata.js";
 
 export const THREAD_SCHEMA_VERSION = "context-steward.thread.v1" as const;
 
@@ -105,6 +106,7 @@ export interface MessageRecord {
   capturedAt: string;
   parts: PartRecord[];
   targetMetadata?: PiTargetMetadata;
+  tokenTelemetry?: MessageTokenTelemetryMetadata;
 }
 
 export interface PartRecord {
@@ -127,6 +129,7 @@ export interface TurnRecord {
   openedAt?: string;
   closedAt?: string;
   sourceRevision: number;
+  rawTokenCountMetadata?: TokenCountRecord;
   smooth?: TurnSmoothRecord;
   repairMetadata?: RepairMetadata;
 }
@@ -134,7 +137,7 @@ export interface TurnRecord {
 export interface TurnSmoothRecord {
   status?: "ready" | "missing" | "stale" | "invalid";
   text?: string;
-  tokenCount?: number;
+  tokenCountMetadata?: TokenCountRecord;
   strategy?: "deterministic_marker_sections_v1";
   generatedAt?: string;
   sourceRevision?: number;
@@ -205,6 +208,23 @@ export interface PiTargetMetadata {
   stopReason?: string;
   imported?: boolean;
   rawType?: string;
+}
+
+export interface MessageTokenTelemetryMetadata {
+  providerUsage?: ProviderUsageTelemetryMetadata;
+}
+
+export interface ProviderUsageTelemetryMetadata {
+  source: "pi_assistant_message_usage";
+  provider: string;
+  model: string;
+  api?: string;
+  responseId?: string;
+  responseModel?: string;
+  stopReason?: string;
+  usage: Record<string, unknown>;
+  tokenCountRecord?: TokenCountRecord;
+  capturedAt: string;
 }
 
 export interface CreateThreadRecordInput {

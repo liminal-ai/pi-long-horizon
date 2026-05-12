@@ -15,12 +15,15 @@ import type {
 import {
   CURRENT_SESSION_VERSION,
   type CustomEntry,
+  type ModelChangeEntry,
   type SessionHeader,
   type SessionMessageEntry,
+  type ThinkingLevelChangeEntry,
 } from "@earendil-works/pi-coding-agent";
 
 import type {
   PiThreadViewEntry,
+  PiThreadViewFile,
   WritePiThreadViewFileInput,
   WritePiThreadViewFileResult,
 } from "../../domain/pi-thread-view-file.js";
@@ -59,7 +62,7 @@ const defaultFs: PiThreadViewWriterFs = {
   writeFile,
 };
 
-const GENERATED_USAGE: Usage = {
+const SYNTHETIC_GENERATED_USAGE: Usage = {
   input: 0,
   output: 0,
   cacheRead: 0,
@@ -157,9 +160,25 @@ function extractRawMessage(
   return undefined;
 }
 
-function toAssistantBlocks(
-  content: string | Record<string, unknown>,
-): Array<TextContent | ThinkingContent | ToolCall> {
+function extractToolCallId(partContent: unknown, fallback?: unknown): string | undefined {
+  if (partContent && typeof partContent === "object") {
+    const content = partContent as {
+      id?: unknown;
+      toolCallId?: unknown;
+      callId?: unknown;
+      call_id?: unknown;
+    };
+    const id = content.toolCallId ?? content.callId ?? content.call_id ?? content.id;
+    if (typeof id === "string" && id.length > 0) {
+      return id;
+    }
+  }
+
+  return typeof fallback === "string" && fallback.length > 0 ? fallback : undefined;
+}
+
+function toAssistantBlocks(entry: PiThreadViewEntry): Array<TextContent | ThinkingContent | ToolCall> {
+  const content = entry.content;
   if (typeof content === "string") {
     return [{ type: "text", text: content }];
   }
@@ -199,10 +218,14 @@ function toAssistantBlocks(
           (partContent as { arguments?: unknown }).arguments !== null
           ? (partContent as { arguments: Record<string, unknown> }).arguments
           : {};
+      const toolCallId = extractToolCallId(partContent, entry.metadata?.toolCallId);
+      if (!toolCallId) {
+        throw new Error("Assistant tool_call part is missing a tool call ID.");
+      }
 
       return {
         type: "toolCall",
-        id: `generated-tool-call-${index + 1}`,
+        id: toolCallId,
         name: toolName,
         arguments: toolArguments,
       } satisfies ToolCall;
@@ -223,15 +246,19 @@ function serializeUserMessage(entry: PiThreadViewEntry, timestamp: string): User
   };
 }
 
-function serializeAssistantMessage(entry: PiThreadViewEntry, timestamp: string): AssistantMessage {
+function serializeAssistantMessage(
+  entry: PiThreadViewEntry,
+  file: PiThreadViewFile,
+  timestamp: string,
+): AssistantMessage {
   return {
     role: "assistant",
     api: "pi-long-horizon",
-    provider: "pi-long-horizon",
-    model: "generated-thread-view",
+    provider: file.modelProvider ?? "pi-long-horizon",
+    model: file.modelId ?? "generated-thread-view",
     stopReason: "stop",
-    usage: GENERATED_USAGE,
-    content: toAssistantBlocks(entry.content),
+    usage: SYNTHETIC_GENERATED_USAGE,
+    content: toAssistantBlocks(entry),
     timestamp: Date.parse(timestamp),
   };
 }
@@ -239,14 +266,14 @@ function serializeAssistantMessage(entry: PiThreadViewEntry, timestamp: string):
 function serializeToolResultMessage(
   entry: PiThreadViewEntry,
   timestamp: string,
-  index: number,
 ): ToolResultMessage {
+  if (typeof entry.metadata?.toolCallId !== "string" || entry.metadata.toolCallId.length === 0) {
+    throw new Error("Tool result entry is missing metadata.toolCallId.");
+  }
+
   return {
     role: "toolResult",
-    toolCallId:
-      typeof entry.metadata?.toolCallId === "string"
-        ? entry.metadata.toolCallId
-        : `generated-tool-result-${index + 1}`,
+    toolCallId: entry.metadata.toolCallId,
     toolName:
       typeof entry.metadata?.toolName === "string"
         ? entry.metadata.toolName
@@ -295,28 +322,80 @@ function serializeCustomMessage(entry: PiThreadViewEntry, timestamp: string): Pi
   };
 }
 
+function serializeCompactedContentMessage(entry: PiThreadViewEntry, timestamp: string): PiCustomMessage {
+  return {
+    role: "custom",
+    customType: "pi-long-horizon.compacted-content",
+    content: toUserVisibleBlocks(entry.content),
+    display: false,
+    timestamp: Date.parse(timestamp),
+  };
+}
+
 function serializeSessionMessageEntry(
-  entry: PiThreadViewEntry,
-  index: number,
-  parentId: string | null,
-  timestamp: string,
+  input: {
+    file: PiThreadViewFile;
+    entry: PiThreadViewEntry;
+    index: number;
+    parentId: string | null;
+    timestamp: string;
+  },
 ): SessionMessageEntry {
-  const id = `entry-${String(index + 1).padStart(3, "0")}`;
+  const id = `entry-${String(input.index + 1).padStart(3, "0")}`;
   const message =
-    entry.role === "user"
-      ? serializeUserMessage(entry, timestamp)
-      : entry.role === "toolResult"
-        ? serializeToolResultMessage(entry, timestamp, index)
-        : entry.role === "custom"
-          ? serializeCustomMessage(entry, timestamp)
-          : serializeAssistantMessage(entry, timestamp);
+    input.entry.generatedSource === "raw_turn_message"
+      ? input.entry.role === "user"
+        ? serializeUserMessage(input.entry, input.timestamp)
+        : input.entry.role === "toolResult"
+          ? serializeToolResultMessage(input.entry, input.timestamp)
+          : input.entry.role === "custom"
+            ? serializeCustomMessage(input.entry, input.timestamp)
+            : serializeAssistantMessage(input.entry, input.file, input.timestamp)
+      : serializeCompactedContentMessage(input.entry, input.timestamp);
 
   return {
     type: "message",
     id,
+    parentId: input.parentId,
+    timestamp: input.timestamp,
+    message,
+  };
+}
+
+function serializeModelChangeEntry(
+  input: WritePiThreadViewFileInput,
+  parentId: string,
+  timestamp: string,
+): ModelChangeEntry | undefined {
+  if (!input.file.modelProvider || !input.file.modelId) {
+    return undefined;
+  }
+
+  return {
+    type: "model_change",
+    provider: input.file.modelProvider,
+    modelId: input.file.modelId,
+    id: "thread-view-model-change-001",
     parentId,
     timestamp,
-    message,
+  };
+}
+
+function serializeThinkingLevelChangeEntry(
+  input: WritePiThreadViewFileInput,
+  parentId: string,
+  timestamp: string,
+): ThinkingLevelChangeEntry | undefined {
+  if (!input.file.thinkingLevel) {
+    return undefined;
+  }
+
+  return {
+    type: "thinking_level_change",
+    thinkingLevel: input.file.thinkingLevel,
+    id: "thread-view-thinking-level-change-001",
+    parentId,
+    timestamp,
   };
 }
 
@@ -346,7 +425,7 @@ function serializeThreadViewOutputMetadataEntry(
   };
 }
 
-function serializeFileContent(input: WritePiThreadViewFileInput, timestamp: string): string {
+export function serializePiThreadViewFileContent(input: WritePiThreadViewFileInput, timestamp: string): string {
   const header: SessionHeader = {
     type: "session",
     version: CURRENT_SESSION_VERSION,
@@ -356,16 +435,31 @@ function serializeFileContent(input: WritePiThreadViewFileInput, timestamp: stri
     parentSession: input.file.parentSessionId,
   };
   const threadViewOutputMetadata = serializeThreadViewOutputMetadataEntry(input, timestamp);
+  const settingsEntries: Array<ModelChangeEntry | ThinkingLevelChangeEntry> = [];
+  const modelChange = serializeModelChangeEntry(input, threadViewOutputMetadata.id, timestamp);
+  if (modelChange) {
+    settingsEntries.push(modelChange);
+  }
+  const thinkingLevelChange = serializeThinkingLevelChangeEntry(
+    input,
+    settingsEntries.at(-1)?.id ?? threadViewOutputMetadata.id,
+    timestamp,
+  );
+  if (thinkingLevelChange) {
+    settingsEntries.push(thinkingLevelChange);
+  }
+  const firstMessageParentId = settingsEntries.at(-1)?.id ?? threadViewOutputMetadata.id;
   const messageEntries = input.file.entries.map((entry, index) =>
-    serializeSessionMessageEntry(
+    serializeSessionMessageEntry({
+      file: input.file,
       entry,
       index,
-      index === 0 ? threadViewOutputMetadata.id : `entry-${String(index).padStart(3, "0")}`,
+      parentId: index === 0 ? firstMessageParentId : `entry-${String(index).padStart(3, "0")}`,
       timestamp,
-    ),
+    }),
   );
 
-  return [header, threadViewOutputMetadata, ...messageEntries].map((entry) => JSON.stringify(entry)).join("\n") + "\n";
+  return [header, threadViewOutputMetadata, ...settingsEntries, ...messageEntries].map((entry) => JSON.stringify(entry)).join("\n") + "\n";
 }
 
 async function writeAtomic(filePath: string, content: string, fsImpl: PiThreadViewWriterFs): Promise<void> {
@@ -396,7 +490,7 @@ export async function writePiThreadViewFile(
     ...input,
     archivedAt: now,
   });
-  const nextContent = serializeFileContent(input, now);
+  const nextContent = serializePiThreadViewFileContent(input, now);
 
   let previousContent: string | undefined;
   try {

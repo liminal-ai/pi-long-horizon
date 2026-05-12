@@ -21,6 +21,13 @@ import {
 import { fail, ok, StewardResultError, type StewardIssue } from "../../domain/errors.js";
 import type { ThreadStore } from "../../store/thread-store.js";
 import { withSerializedThreadOperation } from "../../services/thread-service.js";
+import {
+  countBriefChunkMaterialized,
+  countChunkSmoothMaterialized,
+  countDetailedChunkMaterialized,
+  validateTokenCountRecord,
+  type TokenCountRecord,
+} from "../../../token-accounting/index.js";
 
 export interface PlaceholderArtifactServiceOptions {
   store: ThreadStore;
@@ -39,6 +46,34 @@ function buildPlaceholderIssue(message: string, threadId: string, cause: string)
 
 function cloneChunks(chunks: readonly ChunkState[]): ChunkState[] {
   return chunks.map((chunk) => cloneChunkState(chunk));
+}
+
+function isCurrentTokenCountMetadata(record: TokenCountRecord | undefined, expected: TokenCountRecord): boolean {
+  if (!record) {
+    return false;
+  }
+
+  return (
+    validateTokenCountRecord(record).ok &&
+    record.scope === expected.scope &&
+    record.count === expected.count &&
+    record.sourceRevision === expected.sourceRevision &&
+    record.representationHash === expected.representationHash
+  );
+}
+
+function backfillChunkSmoothTokenCountMetadata(chunk: ChunkState): boolean {
+  if (!chunk.smoothText) {
+    return false;
+  }
+
+  const expectedTokenCountMetadata = countChunkSmoothMaterialized(chunk);
+  if (isCurrentTokenCountMetadata(chunk.smoothTokenCountMetadata, expectedTokenCountMetadata)) {
+    return false;
+  }
+
+  chunk.smoothTokenCountMetadata = expectedTokenCountMetadata;
+  return true;
 }
 
 function validateChunkForPlaceholderBuild(chunk: ChunkState): StewardIssue[] {
@@ -65,12 +100,13 @@ function validateChunkForPlaceholderBuild(chunk: ChunkState): StewardIssue[] {
     );
   }
 
-  if (chunk.smoothTokenCount !== estimateDeterministicTokenCount(smoothText)) {
+  const expectedSmoothTokenCountMetadata = countChunkSmoothMaterialized(chunk);
+  if (!isCurrentTokenCountMetadata(chunk.smoothTokenCountMetadata, expectedSmoothTokenCountMetadata)) {
     issues.push(
       buildPlaceholderIssue(
-        `Chunk ${chunk.chunkId} smooth token count does not match its persisted smooth text.`,
+        `Chunk ${chunk.chunkId} smooth token metadata does not match its persisted smooth text.`,
         chunk.threadId,
-        "smooth_token_count_invalid",
+        "smooth_token_count_metadata_invalid",
       ),
     );
   }
@@ -102,9 +138,33 @@ function buildPlaceholderRecord(input: {
     kind: input.kind,
     status: "ready",
     text,
-    tokenCount: estimateDeterministicTokenCount(text),
     strategy,
     generatedAt: input.generatedAt,
+  };
+}
+
+function withPlaceholderTokenCountMetadata(input: {
+  chunk: ChunkState;
+  record: PlaceholderArtifactRecord;
+}): PlaceholderArtifactRecord {
+  const placeholders: PlaceholderArtifactState = {
+    chunkId: input.chunk.chunkId,
+    threadId: input.chunk.threadId,
+    detailed: input.record.kind === "detailed" ? input.record : input.chunk.placeholders?.detailed,
+    brief: input.record.kind === "brief" ? input.record : input.chunk.placeholders?.brief,
+  };
+  const chunkWithPlaceholder: ChunkState = {
+    ...input.chunk,
+    placeholders,
+  };
+  const tokenCountMetadata =
+    input.record.kind === "detailed"
+      ? countDetailedChunkMaterialized(chunkWithPlaceholder, { createdAt: input.record.generatedAt })
+      : countBriefChunkMaterialized(chunkWithPlaceholder, { createdAt: input.record.generatedAt });
+
+  return {
+    ...input.record,
+    tokenCountMetadata,
   };
 }
 
@@ -120,7 +180,7 @@ function isCurrentPlaceholderRecord(
     record.kind === expected.kind &&
     record.status === "ready" &&
     record.text === expected.text &&
-    record.tokenCount === expected.tokenCount &&
+    isCurrentTokenCountMetadata(record.tokenCountMetadata, expected.tokenCountMetadata!) &&
     record.strategy === expected.strategy &&
     typeof record.generatedAt === "string" &&
     record.generatedAt.length > 0
@@ -173,6 +233,8 @@ export async function ensurePlaceholderArtifacts(
       } satisfies EnsurePlaceholderArtifactsResult);
     }
 
+    backfillChunkSmoothTokenCountMetadata(chunk);
+
     const blockers = validateChunkForPlaceholderBuild(chunk);
     if (blockers.length > 0) {
       return ok({
@@ -184,17 +246,23 @@ export async function ensurePlaceholderArtifacts(
     }
 
     const generatedAt = (options.now ?? (() => new Date()))().toISOString();
-    const detailed = buildPlaceholderRecord({
-      kind: "detailed",
-      smoothText: chunk.smoothText ?? "",
-      settings,
-      generatedAt,
+    const detailed = withPlaceholderTokenCountMetadata({
+      chunk,
+      record: buildPlaceholderRecord({
+        kind: "detailed",
+        smoothText: chunk.smoothText ?? "",
+        settings,
+        generatedAt,
+      }),
     });
-    const brief = buildPlaceholderRecord({
-      kind: "brief",
-      smoothText: chunk.smoothText ?? "",
-      settings,
-      generatedAt,
+    const brief = withPlaceholderTokenCountMetadata({
+      chunk,
+      record: buildPlaceholderRecord({
+        kind: "brief",
+        smoothText: chunk.smoothText ?? "",
+        settings,
+        generatedAt,
+      }),
     });
     const previousPlaceholders = chunk.placeholders
       ? clonePlaceholderArtifactState(chunk.placeholders)
