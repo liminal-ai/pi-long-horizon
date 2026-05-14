@@ -9,6 +9,7 @@ import type {
   TurnEndEvent,
   TurnStartEvent,
 } from "@earendil-works/pi-coding-agent";
+import { appendFile, mkdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 import { runSmartCompact, type SmartCompactCommandDependencies } from "../../commands/smart-compact.js";
@@ -40,6 +41,8 @@ import {
   stringifyPiVisibleContentForLiveEstimate,
   type LiveToolResultTruncationOptions,
 } from "../../thread-view/services/live-tool-result-truncation.js";
+import { PromptVisibleToolResultProjection } from "../../thread-view/services/prompt-visible-tool-result-projection.js";
+import { refreshActivePromptProjectionFile } from "../../thread-view/targets/pi/active-prompt-projection-writer.js";
 import { formatCompactionAuditReport } from "../../workbench/services/compaction-report-formatter.js";
 import { buildCompactionAuditReport } from "../../workbench/services/compaction-report-service.js";
 import { mapPiMessageEnd } from "./pi-message-mapper.js";
@@ -1139,6 +1142,7 @@ export async function executeSmartCompactCommand(input: {
   args: string;
   activeThread?: ThreadRecord;
   openAIInputTokenCounter?: SmartCompactCommandDependencies["openAIInputTokenCounter"];
+  liveToolResultTruncation?: LiveToolResultTruncationOptions & { enabled?: boolean };
   onReplacementSession?: (ctx: ExtensionCommandContext) => void | Promise<void>;
 }): Promise<StewardResult<ContextStewardCommandExecutionResult>> {
   const thread = await resolveManagedThreadForCommand(input.store, input.ctx, input.activeThread);
@@ -1185,6 +1189,7 @@ export async function executeSmartCompactCommand(input: {
         threadStore: input.store,
         threadViewStore: input.threadViewStore,
         openAIInputTokenCounter: input.openAIInputTokenCounter,
+        promptVisibleToolResultTruncation: input.liveToolResultTruncation,
         piSessionSwitch: {
           currentSessionFile: () => input.ctx.sessionManager.getSessionFile(),
           switchSession: (sessionPath) =>
@@ -1372,9 +1377,63 @@ export function registerContextStewardExtension(
   const createThreadViewStore = options.createThreadViewStore ?? defaultCreateThreadViewStore;
   const liveTruncationOptions = options.liveToolResultTruncation ?? {};
   const liveTruncationEnabled = liveTruncationOptions.enabled !== false;
+  const promptProjection = new PromptVisibleToolResultProjection(liveTruncationOptions);
   const originalToolResults = new Map<string, OriginalToolResultContent>();
   let activeThread: ThreadRecord | undefined;
   let activeSessionContext: PiExtensionCaptureContext | undefined;
+  let activePromptProjectionScopeKey: string | undefined;
+  type BackgroundMaintenanceInput = {
+    threadId: string;
+    ctx: PiExtensionCaptureContext;
+    tokenCountModel?: string;
+  };
+  type BackgroundMaintenanceState = {
+    running: boolean;
+    pending: boolean;
+    latest: BackgroundMaintenanceInput;
+  };
+  const backgroundMaintenanceByThreadId = new Map<string, BackgroundMaintenanceState>();
+
+  function logTiming(label: string, startedAt: number, parts: Record<string, unknown> = {}): void {
+    const cwd = activeSessionContext?.cwd ?? process.cwd();
+    const debugDir = join(cwd, ".context-steward", "debug");
+    const logPath = join(debugDir, "lh-timing.log");
+    const record = {
+      at: new Date().toISOString(),
+      label,
+      totalMs: Date.now() - startedAt,
+      ...parts,
+    };
+
+    void mkdir(debugDir, { recursive: true })
+      .then(() => appendFile(logPath, `${JSON.stringify(record)}\n`, "utf8"))
+      .catch(() => undefined);
+  }
+
+  function promptProjectionScopeKeyFromContext(ctx: PiExtensionCaptureContext): string | undefined {
+    try {
+      return JSON.stringify({
+        cwd: ctx.cwd,
+        sessionId: ctx.sessionManager.getSessionId() || undefined,
+        sessionFile: ctx.sessionManager.getSessionFile(),
+      });
+    } catch (error) {
+      if (isStalePiContextError(error)) {
+        return undefined;
+      }
+      throw error;
+    }
+  }
+
+  function syncPromptProjectionScope(ctx: PiExtensionCaptureContext): void {
+    const scopeKey = promptProjectionScopeKeyFromContext(ctx);
+    if (!scopeKey || scopeKey === activePromptProjectionScopeKey) {
+      return;
+    }
+
+    promptProjection.reset();
+    activePromptProjectionScopeKey = scopeKey;
+  }
 
   async function resolveCaptureThread(
     event: PiCaptureEvent,
@@ -1415,22 +1474,244 @@ export function registerContextStewardExtension(
     return { store, thread: activeThread };
   }
 
-  async function captureEvent(event: PiCaptureEvent, ctx: PiExtensionCaptureContext): Promise<void> {
-    const { store, thread } = await resolveCaptureThread(event, ctx);
-    if (!thread) {
+  async function resolveExistingCaptureThread(ctx: PiExtensionCaptureContext): Promise<{
+    store: ThreadStore;
+    thread?: ThreadRecord;
+  }> {
+    const store = createStore(ctx);
+    const target = targetFromContext(ctx);
+    const existing = await store.findManagedThread(target);
+    if (!existing.ok) {
+      throw new Error(existing.issues.map((issue) => `${issue.code}: ${issue.message}`).join("; "));
+    }
+
+    if (existing.value) {
+      activeThread = existing.value;
+      return { store, thread: activeThread };
+    }
+
+    if (activeThread && targetsMatch(activeThread.target, target)) {
+      return { store, thread: activeThread };
+    }
+
+    return { store, thread: undefined };
+  }
+
+  async function captureEvent(
+    event: PiCaptureEvent,
+    ctx: PiExtensionCaptureContext,
+  ): Promise<CaptureActivityResult | undefined> {
+    const startedAt = Date.now();
+    let resolveMs = 0;
+    let captureMs = 0;
+    let threadId = "none";
+    let duplicate = "n/a";
+    try {
+      let stepStartedAt = Date.now();
+      const { store, thread } = await resolveCaptureThread(event, ctx);
+      resolveMs = Date.now() - stepStartedAt;
+      if (!thread) {
+        return undefined;
+      }
+
+      threadId = thread.threadId;
+      stepStartedAt = Date.now();
+      const result = await captureAndReport({
+        store,
+        threadId: thread.threadId,
+        event,
+        ctx,
+      });
+      captureMs = Date.now() - stepStartedAt;
+
+      if (!result.ok) {
+        throw new Error(result.issues.map((issue) => `${issue.code}: ${issue.message}`).join("; "));
+      }
+
+      duplicate = String(result.value?.duplicate);
+      return result.value;
+    } finally {
+      logTiming("captureEvent", startedAt, {
+        event: event.type,
+        resolve: `${resolveMs}ms`,
+        capture: `${captureMs}ms`,
+        threadId,
+        duplicate,
+      });
+    }
+  }
+
+  function hydratePromptProjectionFromContext(ctx: PiExtensionCaptureContext): void {
+    try {
+      syncPromptProjectionScope(ctx);
+      const sessionManager = importSessionManagerFromContext(ctx);
+      if (!sessionManager) {
+        return;
+      }
+
+      const activePathEntries = sessionManager.getBranch(activeLeafIdFromContext(ctx));
+      promptProjection.hydrateFromMessages(
+        activePathEntries
+          .filter(isSessionMessageEntry)
+          .map((entry) => entry.message),
+      );
+    } catch (error) {
+      if (isStalePiContextError(error)) {
+        return;
+      }
+      throw error;
+    }
+  }
+
+  async function refreshActivePromptProjectionFromContext(input: {
+    store: ThreadStore;
+    thread: ThreadRecord;
+    ctx: PiExtensionCaptureContext;
+  }): Promise<void> {
+    const startedAt = Date.now();
+    let dirtyCount = 0;
+    let openThreadMs = 0;
+    let writeMs = 0;
+    let skipped = "";
+    try {
+      if (!liveTruncationEnabled) {
+        skipped = "disabled";
+        return;
+      }
+
+      const dirtyToolCallIds = promptProjection.getDirtyToolCallIds();
+      dirtyCount = dirtyToolCallIds.length;
+      if (dirtyToolCallIds.length === 0) {
+        skipped = "clean";
+        return;
+      }
+
+      let stepStartedAt = Date.now();
+      const snapshot = await input.store.openThread(input.thread.threadId);
+      openThreadMs = Date.now() - stepStartedAt;
+      if (!snapshot.ok) {
+        skipped = "openThreadFailed";
+        return;
+      }
+
+      const currentRollout = currentGeneratedRolloutFromSnapshot(snapshot.value);
+      const generatedFilePath = normalizeValue(currentRollout.generatedFilePath);
+      const currentSessionFile = input.ctx.sessionManager.getSessionFile();
+      if (!generatedFilePath || !samePath(generatedFilePath, currentSessionFile)) {
+        skipped = "notActiveFile";
+        return;
+      }
+
+      const decisions = dirtyToolCallIds
+        .map((toolCallId) => promptProjection.getDecision(toolCallId))
+        .filter((decision): decision is NonNullable<typeof decision> => decision !== undefined);
+      stepStartedAt = Date.now();
+      const refreshed = await refreshActivePromptProjectionFile({
+        generatedFilePath,
+        decisions,
+      });
+      writeMs = Date.now() - stepStartedAt;
+      if (refreshed.cleanableToolCallIds.length > 0) {
+        promptProjection.markClean(refreshed.cleanableToolCallIds);
+      }
+      skipped = refreshed.updated ? "updated" : refreshed.skippedReason ?? "unchanged";
+    } finally {
+      logTiming("refreshActivePromptProjection", startedAt, {
+        dirty: dirtyCount,
+        openThread: `${openThreadMs}ms`,
+        write: `${writeMs}ms`,
+        result: skipped,
+      });
+    }
+  }
+
+  async function refreshActivePromptProjectionForContext(ctx: PiExtensionCaptureContext): Promise<void> {
+    try {
+      syncPromptProjectionScope(ctx);
+      const resolved = await resolveExistingCaptureThread(ctx);
+      if (!resolved.thread) {
+        return;
+      }
+
+      await refreshActivePromptProjectionFromContext({
+        store: resolved.store,
+        thread: resolved.thread,
+        ctx,
+      });
+    } catch (error) {
+      if (isStalePiContextError(error)) {
+        return;
+      }
+      throw error;
+    }
+  }
+
+  async function runBackgroundMaintenance(input: BackgroundMaintenanceInput): Promise<void> {
+    const startedAt = Date.now();
+    let result = "completed";
+    try {
+      await maintainAsyncThread(
+        { threadId: input.threadId },
+        {
+          store: createStore(input.ctx),
+          openAIInputTokenCounter: options.openAIInputTokenCounter,
+          tokenCountModel: input.tokenCountModel,
+        },
+      );
+    } catch (error) {
+      result = "failed";
+      logTiming("backgroundMaintenanceError", startedAt, {
+        threadId: input.threadId,
+        cause: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      logTiming("backgroundMaintenanceRun", startedAt, {
+        threadId: input.threadId,
+        result,
+      });
+    }
+  }
+
+  function scheduleBackgroundMaintenance(input: BackgroundMaintenanceInput): void {
+    const startedAt = Date.now();
+    let state = backgroundMaintenanceByThreadId.get(input.threadId);
+    if (state?.running) {
+      state.pending = true;
+      state.latest = input;
+      logTiming("backgroundMaintenanceSchedule", startedAt, {
+        threadId: input.threadId,
+        result: "pending",
+      });
       return;
     }
 
-    const result = await captureAndReport({
-      store,
-      threadId: thread.threadId,
-      event,
-      ctx,
+    state = {
+      running: true,
+      pending: false,
+      latest: input,
+    };
+    backgroundMaintenanceByThreadId.set(input.threadId, state);
+    logTiming("backgroundMaintenanceSchedule", startedAt, {
+      threadId: input.threadId,
+      result: "started",
     });
 
-    if (!result.ok) {
-      throw new Error(result.issues.map((issue) => `${issue.code}: ${issue.message}`).join("; "));
-    }
+    void runBackgroundMaintenance(input).finally(() => {
+      const latestState = backgroundMaintenanceByThreadId.get(input.threadId);
+      if (!latestState) {
+        return;
+      }
+
+      if (latestState.pending) {
+        const next = latestState.latest;
+        latestState.running = false;
+        latestState.pending = false;
+        scheduleBackgroundMaintenance(next);
+        return;
+      }
+
+      backgroundMaintenanceByThreadId.delete(input.threadId);
+    });
   }
 
   const reconcileCurrentSession = async (ctx: ExtensionContext) => {
@@ -1450,6 +1731,8 @@ export function registerContextStewardExtension(
           if (refreshedThread.ok && refreshedThread.value) {
             activeThread = refreshedThread.value;
           }
+          hydratePromptProjectionFromContext(nextCtx);
+          await refreshActivePromptProjectionForContext(nextCtx);
         },
       });
       if (reconciled.ok && reconciled.value.thread) {
@@ -1489,45 +1772,118 @@ export function registerContextStewardExtension(
   };
 
   pi.on("session_start", async (_event, ctx) => {
-    activeSessionContext = snapshotCaptureContext(ctx) ?? activeSessionContext;
-    await reconcileCurrentSession(ctx);
+    const startedAt = Date.now();
+    let snapshotMs = 0;
+    let reconcileMs = 0;
+    let hydrateMs = 0;
+    let refreshMs = 0;
+    try {
+      let stepStartedAt = Date.now();
+      activeSessionContext = snapshotCaptureContext(ctx) ?? activeSessionContext;
+      snapshotMs = Date.now() - stepStartedAt;
+      stepStartedAt = Date.now();
+      await reconcileCurrentSession(ctx);
+      reconcileMs = Date.now() - stepStartedAt;
+      stepStartedAt = Date.now();
+      hydratePromptProjectionFromContext(ctx);
+      hydrateMs = Date.now() - stepStartedAt;
+      stepStartedAt = Date.now();
+      await refreshActivePromptProjectionForContext(ctx);
+      refreshMs = Date.now() - stepStartedAt;
+    } finally {
+      logTiming("session_start", startedAt, {
+        snapshot: `${snapshotMs}ms`,
+        reconcile: `${reconcileMs}ms`,
+        hydrate: `${hydrateMs}ms`,
+        refresh: `${refreshMs}ms`,
+      });
+    }
   });
 
   pi.on("turn_end", async (event, ctx) => {
-    let resolved: Awaited<ReturnType<typeof resolveCaptureThread>>;
-    let resolvedContext: PiExtensionCaptureContext = ctx;
+    const startedAt = Date.now();
+    let resolveMs = 0;
+    let maintenanceScheduleMs = 0;
+    let refreshMs = 0;
+    let threadId = "none";
+    let staleFallback = false;
     try {
-      resolved = await resolveCaptureThread(event, ctx);
-    } catch (error) {
-      if (isStalePiContextError(error)) {
-        if (!activeSessionContext) {
-          return;
+      let resolved: Awaited<ReturnType<typeof resolveCaptureThread>>;
+      let resolvedContext: PiExtensionCaptureContext = ctx;
+      try {
+        const stepStartedAt = Date.now();
+        resolved = await resolveCaptureThread(event, ctx);
+        resolveMs = Date.now() - stepStartedAt;
+      } catch (error) {
+        if (isStalePiContextError(error)) {
+          if (!activeSessionContext) {
+            return;
+          }
+          staleFallback = true;
+          resolvedContext = activeSessionContext;
+          const stepStartedAt = Date.now();
+          resolved = await resolveCaptureThread(event, activeSessionContext);
+          resolveMs = Date.now() - stepStartedAt;
+        } else {
+          throw error;
         }
-        resolvedContext = activeSessionContext;
-        resolved = await resolveCaptureThread(event, activeSessionContext);
-      } else {
-        throw error;
       }
-    }
 
-    const { store, thread } = resolved;
-    if (!thread) {
-      return;
-    }
+      const { store, thread } = resolved;
+      if (!thread) {
+        return;
+      }
 
-    await maintainAsyncThread(
-      { threadId: thread.threadId },
-      {
+      threadId = thread.threadId;
+      let stepStartedAt = Date.now();
+      await refreshActivePromptProjectionFromContext({
         store,
-        openAIInputTokenCounter: options.openAIInputTokenCounter,
+        thread,
+        ctx: resolvedContext,
+      });
+      refreshMs = Date.now() - stepStartedAt;
+
+      stepStartedAt = Date.now();
+      scheduleBackgroundMaintenance({
+        threadId: thread.threadId,
+        ctx: snapshotCaptureContext(resolvedContext) ?? resolvedContext,
         tokenCountModel: resolvedContext === ctx ? safeContextModelId(ctx as ExtensionContext) : undefined,
-      },
-    );
+      });
+      maintenanceScheduleMs = Date.now() - stepStartedAt;
+    } finally {
+      logTiming("turn_end", startedAt, {
+        resolve: `${resolveMs}ms`,
+        refresh: `${refreshMs}ms`,
+        maintenanceSchedule: `${maintenanceScheduleMs}ms`,
+        staleFallback,
+        threadId,
+      });
+    }
+  });
+
+  pi.on("agent_end", async (_event, ctx) => {
+    const startedAt = Date.now();
+    let refreshMs = 0;
+    try {
+      const stepStartedAt = Date.now();
+      await refreshActivePromptProjectionForContext(ctx);
+      refreshMs = Date.now() - stepStartedAt;
+    } finally {
+      logTiming("agent_end", startedAt, {
+        refresh: `${refreshMs}ms`,
+      });
+    }
   });
 
   pi.on("message_end", async (event, ctx) => {
+    const startedAt = Date.now();
+    let captureMs = 0;
+    let observeMs = 0;
+    let fallback = false;
+    let duplicate = "n/a";
     try {
-      await captureEvent(
+      let stepStartedAt = Date.now();
+      const captureResult = await captureEvent(
         {
           ...event,
           message: restoreOriginalToolResultMessage({
@@ -1538,12 +1894,22 @@ export function registerContextStewardExtension(
         },
         ctx,
       );
+      captureMs = Date.now() - stepStartedAt;
+      duplicate = String(captureResult?.duplicate);
+      if (captureResult && !captureResult.duplicate && liveTruncationEnabled) {
+        stepStartedAt = Date.now();
+        syncPromptProjectionScope(ctx);
+        promptProjection.observeMessage(event.message);
+        observeMs = Date.now() - stepStartedAt;
+      }
     } catch (error) {
       if (!isStalePiContextError(error) || !activeSessionContext) {
         throw error;
       }
 
-      await captureEvent(
+      fallback = true;
+      const stepStartedAt = Date.now();
+      const captureResult = await captureEvent(
         {
           ...event,
           message: restoreOriginalToolResultMessage({
@@ -1554,6 +1920,22 @@ export function registerContextStewardExtension(
         },
         activeSessionContext,
       );
+      captureMs += Date.now() - stepStartedAt;
+      duplicate = String(captureResult?.duplicate);
+      if (captureResult && !captureResult.duplicate && liveTruncationEnabled) {
+        const observeStartedAt = Date.now();
+        syncPromptProjectionScope(activeSessionContext);
+        promptProjection.observeMessage(event.message);
+        observeMs += Date.now() - observeStartedAt;
+      }
+    } finally {
+      logTiming("message_end", startedAt, {
+        capture: `${captureMs}ms`,
+        observe: `${observeMs}ms`,
+        fallback,
+        duplicate,
+        role: event.message.role,
+      });
     }
   });
 
@@ -1582,14 +1964,29 @@ export function registerContextStewardExtension(
     }
   });
 
-  pi.on("context", async (event) => {
+  pi.on("context", async (event, ctx) => {
+    const startedAt = Date.now();
+    let applyMs = 0;
+    let messageCount = event.messages.length;
     if (!liveTruncationEnabled) {
       return;
     }
 
-    return {
-      messages: truncatePiLiveContextMessages(event.messages, liveTruncationOptions),
-    };
+    try {
+      syncPromptProjectionScope(ctx);
+      const stepStartedAt = Date.now();
+      const messages = promptProjection.applyToMessages(event.messages);
+      applyMs = Date.now() - stepStartedAt;
+      messageCount = messages.length;
+      return {
+        messages,
+      };
+    } finally {
+      logTiming("context", startedAt, {
+        apply: `${applyMs}ms`,
+        messages: messageCount,
+      });
+    }
   });
 
   if (typeof pi.registerCommand !== "function") {
@@ -1717,6 +2114,29 @@ export function registerContextStewardExtension(
     },
   });
 
+  pi.registerCommand("lh-prompt-projection-status", {
+    description: "Show live prompt-visible tool-result truncation state.",
+    handler: async (_args: string, ctx: ExtensionCommandContext) => {
+      const status = promptProjection.getStatus();
+      const activeFile = normalizeValue(ctx.sessionManager.getSessionFile());
+      notifyCommand(ctx, {
+        ok: true,
+        title: "Prompt projection",
+        summary: [
+          `hydrated=${status.hydrated}`,
+          `observed=${status.observedCount}`,
+          `protected=${status.protectedMessageCount} messages/${status.protectedTokenTotal} estimated tokens`,
+          `decisions=${status.decisionCount}`,
+          `dirty=${status.dirtyCount}`,
+          `threshold=${status.rawZoneTokenThreshold}`,
+          `charLimit=${status.truncatedCharLimit}`,
+          activeFile ? `activeFile=${activeFile}` : undefined,
+        ].filter((part): part is string => part !== undefined).join("; "),
+        issues: [],
+      });
+    },
+  });
+
   pi.registerCommand("lh-smart-compact", {
     description:
       "Run manual smart compact with explicit inputs: --lower-bound <tokens> --full <pct> --smooth <pct> --detailed <pct> --brief <pct> [--mode strict|prepare].",
@@ -1731,6 +2151,7 @@ export function registerContextStewardExtension(
         args,
         activeThread,
         openAIInputTokenCounter: options.openAIInputTokenCounter,
+        liveToolResultTruncation: liveTruncationOptions,
         onReplacementSession: async (nextCtx) => {
           replacementSessionContext = nextCtx;
         },

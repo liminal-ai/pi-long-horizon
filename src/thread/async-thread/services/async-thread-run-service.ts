@@ -3,6 +3,8 @@ import {
   type PrepareAsyncThreadInput,
   type PrepareAsyncThreadResult,
 } from "../domain/async-thread-status.js";
+import { appendFile, mkdir } from "node:fs/promises";
+import { join } from "node:path";
 import type { ThreadViewBandPercentages } from "../../../thread-view/domain/pi-thread-view-file.js";
 import {
   estimateRawMessageTokenCount,
@@ -72,6 +74,22 @@ interface OrderedChunkCandidate {
 interface LowerBandSelectionResult {
   selectedChunkIds: string[];
   remainingCandidates: OrderedChunkCandidate[];
+}
+
+function logAsyncMaintenanceTiming(threadId: string, label: string, startedAt: number, parts: Record<string, unknown> = {}): void {
+  const debugDir = join(process.cwd(), ".context-steward", "debug");
+  const logPath = join(debugDir, "lh-timing.log");
+  const record = {
+    at: new Date().toISOString(),
+    label,
+    threadId,
+    totalMs: Date.now() - startedAt,
+    ...parts,
+  };
+
+  void mkdir(debugDir, { recursive: true })
+    .then(() => appendFile(logPath, `${JSON.stringify(record)}\n`, "utf8"))
+    .catch(() => undefined);
 }
 
 const BAND_ALLOCATION_KEYS = ["fullFidelity", "smooth", "detailed", "brief"] as const;
@@ -330,6 +348,26 @@ function isSmoothTurnReady(turn: {
     typeof smooth?.text === "string" &&
     typeof smooth?.tokenCountMetadata?.count === "number" &&
     smooth.sourceRevision === turn.sourceRevision
+  );
+}
+
+function areChunkPlaceholdersReady(chunk: ChunkState): boolean {
+  if (chunk.lifecycleStatus !== "closed" || !chunk.smoothText || typeof chunk.smoothTokenCountMetadata?.count !== "number") {
+    return false;
+  }
+
+  const detailed = chunk.placeholders?.detailed;
+  const brief = chunk.placeholders?.brief;
+
+  return (
+    detailed?.status === "ready" &&
+    typeof detailed.text === "string" &&
+    detailed.text.length > 0 &&
+    typeof detailed.tokenCountMetadata?.count === "number" &&
+    brief?.status === "ready" &&
+    typeof brief.text === "string" &&
+    brief.text.length > 0 &&
+    typeof brief.tokenCountMetadata?.count === "number"
   );
 }
 
@@ -786,13 +824,35 @@ async function repairMissingArtifacts(
   threadId: string,
   dependencies: AsyncThreadRunDependencies,
 ): Promise<StewardIssue[]> {
+  const startedAt = Date.now();
+  let openThreadMs = 0;
+  let smoothMs = 0;
+  let updateChunkMs = 0;
+  let readChunksMs = 0;
+  let placeholderMs = 0;
+  let closedTurns = 0;
+  let closedChunks = 0;
+  let result = "unknown";
+  let stepStartedAt = Date.now();
   const threadSnapshot = await dependencies.store.openThread(threadId);
+  openThreadMs = Date.now() - stepStartedAt;
   if (!threadSnapshot.ok) {
+    result = "openThreadFailed";
+    logAsyncMaintenanceTiming(threadId, "repairMissingArtifacts", startedAt, {
+      result,
+      openThreadMs,
+    });
     return threadSnapshot.issues;
   }
 
+  stepStartedAt = Date.now();
   for (const turn of threadSnapshot.value.turns) {
     if (turn.lifecycleStatus !== "closed") {
+      continue;
+    }
+
+    closedTurns += 1;
+    if (isSmoothTurnReady(turn)) {
       continue;
     }
 
@@ -808,11 +868,21 @@ async function repairMissingArtifacts(
         },
       );
     } catch (error) {
+      smoothMs += Date.now() - stepStartedAt;
+      result = "smoothFailed";
+      logAsyncMaintenanceTiming(threadId, "repairMissingArtifacts", startedAt, {
+        result,
+        openThreadMs,
+        smoothMs,
+        closedTurns,
+      });
       return issuesFromUnknownError(error, threadId);
     }
   }
+  smoothMs = Date.now() - stepStartedAt;
 
   try {
+    stepStartedAt = Date.now();
     await updateChunkState(
       {
         threadId,
@@ -822,17 +892,44 @@ async function repairMissingArtifacts(
         now: dependencies.now,
       },
     );
+    updateChunkMs = Date.now() - stepStartedAt;
   } catch (error) {
+    updateChunkMs = Date.now() - stepStartedAt;
+    result = "updateChunkFailed";
+    logAsyncMaintenanceTiming(threadId, "repairMissingArtifacts", startedAt, {
+      result,
+      openThreadMs,
+      smoothMs,
+      updateChunkMs,
+      closedTurns,
+    });
     return issuesFromUnknownError(error, threadId);
   }
 
+  stepStartedAt = Date.now();
   const chunksSnapshot = await dependencies.store.readChunks(threadId);
+  readChunksMs = Date.now() - stepStartedAt;
   if (!chunksSnapshot.ok) {
+    result = "readChunksFailed";
+    logAsyncMaintenanceTiming(threadId, "repairMissingArtifacts", startedAt, {
+      result,
+      openThreadMs,
+      smoothMs,
+      updateChunkMs,
+      readChunksMs,
+      closedTurns,
+    });
     return chunksSnapshot.issues;
   }
 
+  stepStartedAt = Date.now();
   for (const chunk of chunksSnapshot.value) {
     if (chunk.lifecycleStatus !== "closed") {
+      continue;
+    }
+
+    closedChunks += 1;
+    if (areChunkPlaceholdersReady(chunk)) {
       continue;
     }
 
@@ -848,10 +945,34 @@ async function repairMissingArtifacts(
         },
       );
     } catch (error) {
+      placeholderMs += Date.now() - stepStartedAt;
+      result = "placeholderFailed";
+      logAsyncMaintenanceTiming(threadId, "repairMissingArtifacts", startedAt, {
+        result,
+        openThreadMs,
+        smoothMs,
+        updateChunkMs,
+        readChunksMs,
+        placeholderMs,
+        closedTurns,
+        closedChunks,
+      });
       return issuesFromUnknownError(error, threadId);
     }
   }
+  placeholderMs = Date.now() - stepStartedAt;
 
+  result = "ok";
+  logAsyncMaintenanceTiming(threadId, "repairMissingArtifacts", startedAt, {
+    result,
+    openThreadMs,
+    smoothMs,
+    updateChunkMs,
+    readChunksMs,
+    placeholderMs,
+    closedTurns,
+    closedChunks,
+  });
   return [];
 }
 
@@ -870,8 +991,28 @@ async function repairOpenAITokenCounts(
       "OpenAI materialized token counter is not configured; strict smart compact cannot use heuristic token counts as success.",
   },
 ): Promise<StewardIssue[]> {
+  const startedAt = Date.now();
+  let openThreadMs = 0;
+  let turnLoopMs = 0;
+  let writeTurnsMs = 0;
+  let reopenThreadMs = 0;
+  let readChunksMs = 0;
+  let chunkLoopMs = 0;
+  let writeChunksMs = 0;
+  let turnsVisited = 0;
+  let rawCounts = 0;
+  let smoothCounts = 0;
+  let chunksVisited = 0;
+  let chunkSmoothCounts = 0;
+  let detailedCounts = 0;
+  let briefCounts = 0;
+  let result = "unknown";
   const counter = dependencies.openAIInputTokenCounter;
   if (!counter) {
+    result = "missingCounter";
+    logAsyncMaintenanceTiming(threadId, "repairOpenAITokenCounts", startedAt, {
+      result,
+    });
     return [
       tokenCountBlockedIssue({
         threadId,
@@ -880,8 +1021,15 @@ async function repairOpenAITokenCounts(
     ];
   }
 
+  let stepStartedAt = Date.now();
   const snapshot = await dependencies.store.openThread(threadId);
+  openThreadMs = Date.now() - stepStartedAt;
   if (!snapshot.ok) {
+    result = "openThreadFailed";
+    logAsyncMaintenanceTiming(threadId, "repairOpenAITokenCounts", startedAt, {
+      result,
+      openThreadMs,
+    });
     return snapshot.issues;
   }
 
@@ -890,7 +1038,9 @@ async function repairOpenAITokenCounts(
   let turnsChanged = false;
 
   try {
+    stepStartedAt = Date.now();
     for (const turn of nextTurns) {
+      turnsVisited += 1;
       if (!options.includeOpenRawTurns && turn.lifecycleStatus !== "closed") {
         continue;
       }
@@ -915,6 +1065,7 @@ async function repairOpenAITokenCounts(
           model: dependencies.tokenCountModel,
         })
       ) {
+        rawCounts += 1;
         turn.rawTokenCountMetadata = await counter.countRawTurnMaterialized({
           turn,
           messages,
@@ -943,6 +1094,7 @@ async function repairOpenAITokenCounts(
           model: dependencies.tokenCountModel,
         })
       ) {
+        smoothCounts += 1;
         turn.smooth = {
           ...turn.smooth,
           tokenCountMetadata: await counter.countSmoothTurnMaterialized(turn, {
@@ -953,7 +1105,17 @@ async function repairOpenAITokenCounts(
         turnsChanged = true;
       }
     }
+    turnLoopMs = Date.now() - stepStartedAt;
   } catch (error) {
+    result = "turnCountFailed";
+    logAsyncMaintenanceTiming(threadId, "repairOpenAITokenCounts", startedAt, {
+      result,
+      openThreadMs,
+      turnLoopMs: Date.now() - stepStartedAt,
+      turnsVisited,
+      rawCounts,
+      smoothCounts,
+    });
     return [
       tokenCountIssueFromError(
         error,
@@ -964,6 +1126,7 @@ async function repairOpenAITokenCounts(
   }
 
   if (turnsChanged) {
+    stepStartedAt = Date.now();
     const writeTurnsResult = await dependencies.store.writeTurns({
       threadId,
       expectedSourceRevision: snapshot.value.thread.sourceRevision,
@@ -972,25 +1135,65 @@ async function repairOpenAITokenCounts(
       turns: nextTurns,
       turnState: snapshot.value.thread.status.turnState,
     });
+    writeTurnsMs = Date.now() - stepStartedAt;
     if (!writeTurnsResult.ok) {
+      result = "writeTurnsFailed";
+      logAsyncMaintenanceTiming(threadId, "repairOpenAITokenCounts", startedAt, {
+        result,
+        openThreadMs,
+        turnLoopMs,
+        writeTurnsMs,
+        turnsVisited,
+        rawCounts,
+        smoothCounts,
+      });
       return writeTurnsResult.issues;
     }
   }
 
+  stepStartedAt = Date.now();
   const latestSnapshot = await dependencies.store.openThread(threadId);
+  reopenThreadMs = Date.now() - stepStartedAt;
   if (!latestSnapshot.ok) {
+    result = "reopenThreadFailed";
+    logAsyncMaintenanceTiming(threadId, "repairOpenAITokenCounts", startedAt, {
+      result,
+      openThreadMs,
+      turnLoopMs,
+      writeTurnsMs,
+      reopenThreadMs,
+      turnsVisited,
+      rawCounts,
+      smoothCounts,
+    });
     return latestSnapshot.issues;
   }
 
+  stepStartedAt = Date.now();
   const chunksSnapshot = await dependencies.store.readChunks(threadId);
+  readChunksMs = Date.now() - stepStartedAt;
   if (!chunksSnapshot.ok) {
+    result = "readChunksFailed";
+    logAsyncMaintenanceTiming(threadId, "repairOpenAITokenCounts", startedAt, {
+      result,
+      openThreadMs,
+      turnLoopMs,
+      writeTurnsMs,
+      reopenThreadMs,
+      readChunksMs,
+      turnsVisited,
+      rawCounts,
+      smoothCounts,
+    });
     return chunksSnapshot.issues;
   }
 
   const nextChunks = structuredClone(chunksSnapshot.value);
   let chunksChanged = false;
   try {
+    stepStartedAt = Date.now();
     for (const chunk of nextChunks) {
+      chunksVisited += 1;
       if (chunk.lifecycleStatus !== "closed" || !chunk.smoothText) {
         continue;
       }
@@ -1006,6 +1209,7 @@ async function repairOpenAITokenCounts(
           model: dependencies.tokenCountModel,
         })
       ) {
+        chunkSmoothCounts += 1;
         chunk.smoothTokenCountMetadata = await counter.countChunkSmoothMaterialized(chunk, {
           model: dependencies.tokenCountModel,
           now: dependencies.now,
@@ -1026,6 +1230,7 @@ async function repairOpenAITokenCounts(
             model: dependencies.tokenCountModel,
           })
         ) {
+          detailedCounts += 1;
           chunk.placeholders.detailed = {
             ...chunk.placeholders.detailed,
             tokenCountMetadata: await counter.countDetailedChunkMaterialized(chunk, {
@@ -1050,6 +1255,7 @@ async function repairOpenAITokenCounts(
             model: dependencies.tokenCountModel,
           })
         ) {
+          briefCounts += 1;
           chunk.placeholders.brief = {
             ...chunk.placeholders.brief,
             tokenCountMetadata: await counter.countBriefChunkMaterialized(chunk, {
@@ -1061,7 +1267,25 @@ async function repairOpenAITokenCounts(
         }
       }
     }
+    chunkLoopMs = Date.now() - stepStartedAt;
   } catch (error) {
+    result = "chunkCountFailed";
+    logAsyncMaintenanceTiming(threadId, "repairOpenAITokenCounts", startedAt, {
+      result,
+      openThreadMs,
+      turnLoopMs,
+      writeTurnsMs,
+      reopenThreadMs,
+      readChunksMs,
+      chunkLoopMs: Date.now() - stepStartedAt,
+      turnsVisited,
+      rawCounts,
+      smoothCounts,
+      chunksVisited,
+      chunkSmoothCounts,
+      detailedCounts,
+      briefCounts,
+    });
     return [
       tokenCountIssueFromError(
         error,
@@ -1072,15 +1296,53 @@ async function repairOpenAITokenCounts(
   }
 
   if (!chunksChanged) {
+    result = "unchanged";
+    logAsyncMaintenanceTiming(threadId, "repairOpenAITokenCounts", startedAt, {
+      result,
+      openThreadMs,
+      turnLoopMs,
+      writeTurnsMs,
+      reopenThreadMs,
+      readChunksMs,
+      chunkLoopMs,
+      turnsVisited,
+      rawCounts,
+      smoothCounts,
+      chunksVisited,
+      chunkSmoothCounts,
+      detailedCounts,
+      briefCounts,
+    });
     return [];
   }
 
+  stepStartedAt = Date.now();
   const writeChunksResult = await dependencies.store.writeChunks({
     threadId,
     expectedSourceRevision: latestSnapshot.value.thread.sourceRevision,
     expectedMessageHighWatermark: latestSnapshot.value.thread.messageHighWatermark,
     expectedTurnsRevision: latestSnapshot.value.thread.turnsRevision,
     chunks: nextChunks,
+  });
+  writeChunksMs = Date.now() - stepStartedAt;
+
+  result = writeChunksResult.ok ? "updated" : "writeChunksFailed";
+  logAsyncMaintenanceTiming(threadId, "repairOpenAITokenCounts", startedAt, {
+    result,
+    openThreadMs,
+    turnLoopMs,
+    writeTurnsMs,
+    reopenThreadMs,
+    readChunksMs,
+    chunkLoopMs,
+    writeChunksMs,
+    turnsVisited,
+    rawCounts,
+    smoothCounts,
+    chunksVisited,
+    chunkSmoothCounts,
+    detailedCounts,
+    briefCounts,
   });
 
   return writeChunksResult.ok ? [] : writeChunksResult.issues;
@@ -1090,8 +1352,22 @@ async function persistDegradedRawTokenCountsForClosedTurns(
   threadId: string,
   dependencies: AsyncThreadRunDependencies,
 ): Promise<StewardIssue[]> {
+  const startedAt = Date.now();
+  let openThreadMs = 0;
+  let loopMs = 0;
+  let writeMs = 0;
+  let turnsVisited = 0;
+  let changedTurns = 0;
+  let result = "unknown";
+  let stepStartedAt = Date.now();
   const snapshot = await dependencies.store.openThread(threadId);
+  openThreadMs = Date.now() - stepStartedAt;
   if (!snapshot.ok) {
+    result = "openThreadFailed";
+    logAsyncMaintenanceTiming(threadId, "persistDegradedRawTokenCountsForClosedTurns", startedAt, {
+      result,
+      openThreadMs,
+    });
     return snapshot.issues;
   }
 
@@ -1099,7 +1375,9 @@ async function persistDegradedRawTokenCountsForClosedTurns(
   const nextTurns = structuredClone(snapshot.value.turns);
   let turnsChanged = false;
 
+  stepStartedAt = Date.now();
   for (const turn of nextTurns) {
+    turnsVisited += 1;
     if (turn.lifecycleStatus !== "closed") {
       continue;
     }
@@ -1138,12 +1416,23 @@ async function persistDegradedRawTokenCountsForClosedTurns(
 
     turn.rawTokenCountMetadata = expected;
     turnsChanged = true;
+    changedTurns += 1;
   }
+  loopMs = Date.now() - stepStartedAt;
 
   if (!turnsChanged) {
+    result = "unchanged";
+    logAsyncMaintenanceTiming(threadId, "persistDegradedRawTokenCountsForClosedTurns", startedAt, {
+      result,
+      openThreadMs,
+      loopMs,
+      turnsVisited,
+      changedTurns,
+    });
     return [];
   }
 
+  stepStartedAt = Date.now();
   const writeTurnsResult = await dependencies.store.writeTurns({
     threadId,
     expectedSourceRevision: snapshot.value.thread.sourceRevision,
@@ -1151,6 +1440,16 @@ async function persistDegradedRawTokenCountsForClosedTurns(
     expectedTurnsRevision: snapshot.value.thread.turnsRevision,
     turns: nextTurns,
     turnState: snapshot.value.thread.status.turnState,
+  });
+  writeMs = Date.now() - stepStartedAt;
+  result = writeTurnsResult.ok ? "updated" : "writeFailed";
+  logAsyncMaintenanceTiming(threadId, "persistDegradedRawTokenCountsForClosedTurns", startedAt, {
+    result,
+    openThreadMs,
+    loopMs,
+    writeMs,
+    turnsVisited,
+    changedTurns,
   });
 
   return writeTurnsResult.ok ? [] : writeTurnsResult.issues;
@@ -1162,12 +1461,26 @@ async function persistTokenCountingMaintenanceStatus(input: {
   status: "ready" | "repair_needed";
   issues: readonly StewardIssue[];
 }): Promise<StewardIssue[]> {
+  const startedAt = Date.now();
+  let openThreadMs = 0;
+  let writeMs = 0;
+  let result = "unknown";
+  let stepStartedAt = Date.now();
   const snapshot = await input.dependencies.store.openThread(input.threadId);
+  openThreadMs = Date.now() - stepStartedAt;
   if (!snapshot.ok) {
+    result = "openThreadFailed";
+    logAsyncMaintenanceTiming(input.threadId, "persistTokenCountingMaintenanceStatus", startedAt, {
+      result,
+      openThreadMs,
+      status: input.status,
+      issueCount: input.issues.length,
+    });
     return snapshot.issues;
   }
 
   const updatedAt = (input.dependencies.now ?? (() => new Date()))().toISOString();
+  stepStartedAt = Date.now();
   const writeResult = await input.dependencies.store.updateThreadMetadata({
     threadId: input.threadId,
     expectedSourceRevision: snapshot.value.thread.sourceRevision,
@@ -1185,6 +1498,15 @@ async function persistTokenCountingMaintenanceStatus(input: {
       updatedAt,
     },
   });
+  writeMs = Date.now() - stepStartedAt;
+  result = writeResult.ok ? "updated" : "writeFailed";
+  logAsyncMaintenanceTiming(input.threadId, "persistTokenCountingMaintenanceStatus", startedAt, {
+    result,
+    openThreadMs,
+    writeMs,
+    status: input.status,
+    issueCount: input.issues.length,
+  });
 
   return writeResult.ok ? [] : writeResult.issues;
 }
@@ -1193,6 +1515,11 @@ export async function maintainAsyncThread(
   input: MaintainAsyncThreadInput,
   dependencies?: AsyncThreadRunDependencies,
 ): Promise<MaintainAsyncThreadResult> {
+  const startedAt = Date.now();
+  let artifactsMs = 0;
+  let degradedRawMs = 0;
+  let exactCountsMs = 0;
+  let statusMs = 0;
   if (!dependencies?.store) {
     const blockers = [
       createStewardIssue({
@@ -1202,6 +1529,9 @@ export async function maintainAsyncThread(
       }),
     ];
 
+    logAsyncMaintenanceTiming(input.threadId, "maintainAsyncThread", startedAt, {
+      result: "missingStore",
+    });
     return {
       threadId: input.threadId,
       artifactsReady: false,
@@ -1210,8 +1540,13 @@ export async function maintainAsyncThread(
     };
   }
 
+  let stepStartedAt = Date.now();
   const artifactIssues = await repairMissingArtifacts(input.threadId, dependencies);
+  artifactsMs = Date.now() - stepStartedAt;
+  stepStartedAt = Date.now();
   const degradedRawIssues = await persistDegradedRawTokenCountsForClosedTurns(input.threadId, dependencies);
+  degradedRawMs = Date.now() - stepStartedAt;
+  stepStartedAt = Date.now();
   const tokenCountIssues = await repairOpenAITokenCounts(input.threadId, dependencies, {
     includeOpenRawTurns: false,
     missingCounterMessage:
@@ -1219,14 +1554,29 @@ export async function maintainAsyncThread(
     failureMessage:
       "OpenAI materialized token counting failed during async maintenance; deterministic artifacts were left with repair-needed heuristic counts for smart compact prepare.",
   });
+  exactCountsMs = Date.now() - stepStartedAt;
   const tokenCountingIssues = [...degradedRawIssues, ...tokenCountIssues];
+  stepStartedAt = Date.now();
   const persistedStatusIssues = await persistTokenCountingMaintenanceStatus({
     threadId: input.threadId,
     dependencies,
     status: tokenCountingIssues.length === 0 ? "ready" : "repair_needed",
     issues: tokenCountingIssues,
   });
+  statusMs = Date.now() - stepStartedAt;
   const blockers = [...artifactIssues, ...tokenCountingIssues, ...persistedStatusIssues].map((issue) => createStewardIssue(issue));
+  logAsyncMaintenanceTiming(input.threadId, "maintainAsyncThread", startedAt, {
+    result: "ok",
+    artifactsMs,
+    degradedRawMs,
+    exactCountsMs,
+    statusMs,
+    artifactIssues: artifactIssues.length,
+    degradedRawIssues: degradedRawIssues.length,
+    tokenCountIssues: tokenCountIssues.length,
+    persistedStatusIssues: persistedStatusIssues.length,
+    blockers: blockers.length,
+  });
 
   return {
     threadId: input.threadId,

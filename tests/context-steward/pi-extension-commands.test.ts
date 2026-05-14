@@ -1332,3 +1332,32 @@ test("/lh-status works when no managed thread exists", async () => {
     assert.equal(notifications[0]!.message, "Status: No managed thread exists for the current PI session.");
   });
 });
+
+test("/lh-prompt-projection-status reports live projection counters", async () => {
+  await withTempThreadStore(async ({ projectDir }) => {
+    const target = makeThreadTarget({
+      cwd: projectDir,
+      sessionFilePath: `${projectDir}/pi/session-prompt-projection-status.jsonl`,
+    });
+    await ensureTargetSessionFile(target);
+
+    const { api, commands } = createMockPiApi();
+    registerContextStewardExtension(api, {
+      liveToolResultTruncation: {
+        rawZoneTokenThreshold: 123,
+        truncatedCharLimit: 17,
+      },
+    });
+
+    const statusCommand = commands.get("lh-prompt-projection-status");
+    assert.ok(statusCommand);
+
+    const { ctx, notifications } = createCommandContext(target);
+    await statusCommand!.handler("", ctx);
+
+    assert.equal(notifications.length, 1);
+    assert.equal(notifications[0]!.level, "info");
+    assert.match(notifications[0]!.message, /^Prompt projection: hydrated=false; observed=0;/);
+    assert.match(notifications[0]!.message, /threshold=123; charLimit=17/);
+  });
+});

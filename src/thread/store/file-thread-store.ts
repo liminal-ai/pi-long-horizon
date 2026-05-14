@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { realpathSync } from "node:fs";
 import { appendFile, mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 
 import { fail, ok, type StewardIssue, type StewardResult } from "../domain/errors.js";
@@ -991,6 +992,10 @@ export class FileThreadStore implements ThreadStore {
   private async migrateThreadGeneratedRolloutIdentities(threadId: string): Promise<void> {
     const paths = this.getThreadPaths(threadId);
     const thread = await this.readThreadJsonFile(paths.thread);
+    if (thread.threadId !== threadId) {
+      return;
+    }
+
     const projections = await this.readJsonFile<ProjectionRevisionRecord[]>(paths.projections, []);
     if (projections.length === 0) {
       return;
@@ -1023,6 +1028,7 @@ export class FileThreadStore implements ThreadStore {
       );
     });
     if (!needsMigration) {
+      await this.retireLegacyGeneratedRolloutArtifacts(threadId, thread, projections);
       return;
     }
 
@@ -1126,6 +1132,72 @@ export class FileThreadStore implements ThreadStore {
 
     await this.writeJsonAtomic(paths.projections, nextProjections);
     await this.writeThreadJsonAtomic(paths.thread, nextThread);
+    await this.retireLegacyGeneratedRolloutArtifacts(threadId, nextThread, nextProjections);
+  }
+
+  private async retireLegacyGeneratedRolloutArtifacts(
+    threadId: string,
+    thread: ThreadRecord,
+    projections: readonly ProjectionRevisionRecord[],
+  ): Promise<void> {
+    const paths = this.getThreadPaths(threadId);
+    const generatedDir = join(paths.threadDir, "generated");
+    const generatedEntries = await readdir(generatedDir, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") {
+        return [];
+      }
+
+      throw error;
+    });
+
+    const activeGeneratedPaths = new Set<string>();
+    const addActiveGeneratedPath = (filePath: string | undefined): void => {
+      if (!filePath) {
+        return;
+      }
+
+      activeGeneratedPaths.add(resolve(filePath));
+    };
+
+    addActiveGeneratedPath(thread.target.currentGeneratedFilePath);
+    addActiveGeneratedPath(thread.threadViewOutputSummary.currentGeneratedFilePath);
+    addActiveGeneratedPath(thread.threadViewOutputSummary.generatedOutput?.generatedFilePath);
+    for (const projection of projections) {
+      addActiveGeneratedPath(projection.generatedFilePath);
+    }
+
+    for (const entry of generatedEntries) {
+      if (!entry.isFile() || !this.isLegacyThreadGeneratedRolloutFileName(threadId, entry.name)) {
+        continue;
+      }
+
+      const sourcePath = resolve(join(generatedDir, entry.name));
+      if (activeGeneratedPaths.has(sourcePath)) {
+        continue;
+      }
+
+      const archivePath = await this.nextRetiredGeneratedRolloutArchivePath(threadId, entry.name);
+      await mkdir(dirname(archivePath), { recursive: true });
+      await rename(sourcePath, archivePath);
+    }
+  }
+
+  private isLegacyThreadGeneratedRolloutFileName(threadId: string, fileName: string): boolean {
+    return fileName.startsWith(`${threadId}-thread_view_`) && fileName.endsWith(".jsonl");
+  }
+
+  private async nextRetiredGeneratedRolloutArchivePath(threadId: string, fileName: string): Promise<string> {
+    const archiveDir = join(this.getThreadPaths(threadId).threadDir, "archives", "pi-thread-views", "retired-generated");
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    let candidate = join(archiveDir, `${timestamp}-${fileName}`);
+    let index = 1;
+
+    while (await this.fileExists(candidate)) {
+      candidate = join(archiveDir, `${timestamp}-${index}-${fileName}`);
+      index += 1;
+    }
+
+    return candidate;
   }
 
   private async listGeneratedRolloutArchivePaths(threadId: string): Promise<string[]> {
@@ -1286,6 +1358,10 @@ export class FileThreadStore implements ThreadStore {
       }
 
       const thread = await this.readThreadRecord(threadId);
+      if (thread.threadId !== threadId) {
+        continue;
+      }
+
       const keys = this.deriveKeys({
         runtime: thread.target.runtime,
         sessionId: thread.target.sessionId,
@@ -1343,6 +1419,7 @@ export class FileThreadStore implements ThreadStore {
     );
     const entries = await readdir(this.threadsDir, { withFileTypes: true });
     const knownThreadIds = new Set<string>();
+    const liveManagedGeneratedIdentityKeys = new Set<string>();
 
     for (const entry of entries) {
       if (!entry.isDirectory()) {
@@ -1354,8 +1431,12 @@ export class FileThreadStore implements ThreadStore {
         continue;
       }
 
-      knownThreadIds.add(threadId);
       const thread = await this.readThreadRecord(threadId);
+      if (thread.threadId !== threadId) {
+        continue;
+      }
+
+      knownThreadIds.add(thread.threadId);
       const targets = await this.collectThreadIdMapTargets(thread);
       for (const target of targets) {
         const keySet = this.deriveKeys(target);
@@ -1374,6 +1455,9 @@ export class FileThreadStore implements ThreadStore {
           }
 
           nextMap.threadIdByPiIdentityKey[key] = thread.threadId;
+          if (this.isManagedGeneratedIdentityKey(key)) {
+            liveManagedGeneratedIdentityKeys.add(key);
+          }
         }
       }
 
@@ -1408,7 +1492,22 @@ export class FileThreadStore implements ThreadStore {
 
           nextMap.threadIdByPiIdentityKey[key] = thread.threadId;
           nextMap.projectionRevisionIdByPiIdentityKey[key] = projection.revisionId;
+          if (this.isManagedGeneratedIdentityKey(key)) {
+            liveManagedGeneratedIdentityKeys.add(key);
+          }
         }
+      }
+    }
+
+    for (const key of Object.keys(nextMap.threadIdByPiIdentityKey)) {
+      if (this.isManagedGeneratedIdentityKey(key) && !liveManagedGeneratedIdentityKeys.has(key)) {
+        delete nextMap.threadIdByPiIdentityKey[key];
+        delete nextMap.projectionRevisionIdByPiIdentityKey[key];
+      }
+    }
+    for (const key of Object.keys(nextMap.projectionRevisionIdByPiIdentityKey)) {
+      if (this.isManagedGeneratedIdentityKey(key) && !liveManagedGeneratedIdentityKeys.has(key)) {
+        delete nextMap.projectionRevisionIdByPiIdentityKey[key];
       }
     }
 
@@ -1729,6 +1828,35 @@ export class FileThreadStore implements ThreadStore {
     }
 
     return [...targets.values()];
+  }
+
+  private isManagedGeneratedIdentityKey(key: string): boolean {
+    const prefix = "pi:session-file:";
+    if (!key.startsWith(prefix)) {
+      return false;
+    }
+
+    const sessionFilePath = this.normalizeIdentityFilePath(key.slice(prefix.length));
+    const threadsDir = this.normalizeIdentityFilePath(this.threadsDir);
+    return sessionFilePath.startsWith(`${threadsDir}${sep}`) && sessionFilePath.includes(`${sep}generated${sep}`);
+  }
+
+  private normalizeIdentityFilePath(filePath: string): string {
+    const resolvedPath = resolve(filePath);
+
+    try {
+      return realpathSync(resolvedPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        try {
+          return join(realpathSync(dirname(resolvedPath)), basename(resolvedPath));
+        } catch {
+          return resolvedPath;
+        }
+      }
+
+      throw error;
+    }
   }
 
   private async readSessionHeaderId(sessionFilePath: string): Promise<string | undefined> {

@@ -923,6 +923,117 @@ test("reconciles threadId-map from persisted thread and generated rollout state 
   });
 });
 
+test("retires stale legacy managed generated rollout files and map identities on restart", async () => {
+  await withTempThreadStore(async ({ storeRootDir, resolveProjectPath, resolveStorePath }) => {
+    const store = new FileThreadStore(storeRootDir);
+    const target = await makeManagedTarget(resolveProjectPath, {
+      sessionId: "session-map-legacy-generated-001",
+      sessionFilePath: resolveProjectPath("pi-sessions", "session-map-legacy-generated-001.jsonl"),
+    });
+    const thread = expectOk(await openOrCreateManagedThread({ target }, store));
+    const threadDir = resolveStorePath("threads", thread.threadId);
+    const generatedDir = join(threadDir, "generated");
+    const currentGeneratedFilePath = join(generatedDir, "projection-current-thread_view_current.jsonl");
+    const legacyFileName = `${thread.threadId}-thread_view_legacy-reused-path.jsonl`;
+    const legacyGeneratedFilePath = join(generatedDir, legacyFileName);
+
+    await mkdir(generatedDir, { recursive: true });
+    await writeFile(
+      currentGeneratedFilePath,
+      `${JSON.stringify({ type: "session", version: 3, id: "sc-current-generated", timestamp: "2026-05-12T00:00:00.000Z", cwd: target.cwd })}\n`,
+    );
+    await writeFile(
+      legacyGeneratedFilePath,
+      `${JSON.stringify({ type: "session", version: 3, id: "sc-legacy-generated", timestamp: "2026-05-11T00:00:00.000Z", cwd: target.cwd })}\n`,
+    );
+
+    expectOk(
+      await store.writeProjectionRevision(
+        makeProjectionRevisionRecord({
+          revisionId: "projection-current",
+          threadId: thread.threadId,
+          generatedSessionId: "sc-current-generated",
+          generatedFilePath: currentGeneratedFilePath,
+          threadViewId: "thread_view_current",
+          status: "available",
+        }),
+      ),
+    );
+
+    const shadowThreadDir = resolveStorePath("threads", `${thread.threadId}-pre-tail-recovery`);
+    await mkdir(shadowThreadDir, { recursive: true });
+    await writeFile(
+      join(shadowThreadDir, "thread.json"),
+      `${JSON.stringify(
+        {
+          ...thread,
+          target: {
+            ...thread.target,
+            currentGeneratedFilePath: legacyGeneratedFilePath,
+          },
+          threadViewOutputSummary: {
+            ...thread.threadViewOutputSummary,
+            count: 1,
+            currentProjectionRevisionId: "projection-shadow-legacy",
+            currentThreadViewId: "thread_view_legacy-reused-path",
+            currentGeneratedFilePath: legacyGeneratedFilePath,
+          },
+        } satisfies ThreadRecord,
+        null,
+        2,
+      )}\n`,
+    );
+    await writeFile(
+      join(shadowThreadDir, "projections.json"),
+      `${JSON.stringify(
+        [
+          makeProjectionRevisionRecord({
+            revisionId: "projection-shadow-legacy",
+            threadId: thread.threadId,
+            generatedSessionId: "sc-legacy-generated",
+            generatedFilePath: legacyGeneratedFilePath,
+            threadViewId: "thread_view_legacy-reused-path",
+            status: "available",
+          }),
+        ],
+        null,
+        2,
+      )}\n`,
+    );
+
+    const legacyKeySet = deriveTargetSessionKeys({
+      runtime: "pi",
+      sessionFilePath: legacyGeneratedFilePath,
+    });
+    const mapPath = resolveStorePath("threadId-map.json");
+    const map = JSON.parse(await readFile(mapPath, "utf8")) as {
+      threadIdByPiIdentityKey: Record<string, string>;
+      projectionRevisionIdByPiIdentityKey: Record<string, string>;
+    };
+    map.threadIdByPiIdentityKey[legacyKeySet.canonicalKey] = thread.threadId;
+    map.projectionRevisionIdByPiIdentityKey[legacyKeySet.canonicalKey] = "projection-legacy-stale";
+    await writeFile(mapPath, `${JSON.stringify(map, null, 2)}\n`);
+
+    const restartedStore = new FileThreadStore(storeRootDir);
+    const snapshot = expectOk(await restartedStore.openThread(thread.threadId));
+    const reconciledMap = JSON.parse(await readFile(mapPath, "utf8")) as {
+      threadIdByPiIdentityKey: Record<string, string>;
+      projectionRevisionIdByPiIdentityKey: Record<string, string>;
+    };
+    const generatedEntries = await readdir(generatedDir);
+    const retiredEntries = await readdir(join(threadDir, "archives", "pi-thread-views", "retired-generated"));
+
+    assert.equal(snapshot.thread.threadViewOutputSummary.currentGeneratedFilePath, currentGeneratedFilePath);
+    assert.equal(reconciledMap.threadIdByPiIdentityKey[legacyKeySet.canonicalKey], undefined);
+    assert.equal(reconciledMap.projectionRevisionIdByPiIdentityKey[legacyKeySet.canonicalKey], undefined);
+    assert.equal(generatedEntries.includes(legacyFileName), false);
+    assert.equal(
+      retiredEntries.some((entry) => entry.endsWith(legacyFileName)),
+      true,
+    );
+  });
+});
+
 test("rejects duplicate threadId-map bindings for the same PI identity", async () => {
   await withTempThreadStore(async ({ storeRootDir, resolveProjectPath }) => {
     const store = new FileThreadStore(storeRootDir);

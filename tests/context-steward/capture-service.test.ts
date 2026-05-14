@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import test from "node:test";
 import { dirname } from "node:path";
 
@@ -142,6 +142,32 @@ async function ensureTargetSessionFile(target: ReturnType<typeof makeThreadTarge
     await mkdir(dirname(target.sessionFilePath), { recursive: true });
     await writeFile(target.sessionFilePath, '{"type":"session"}\n');
   }
+}
+
+async function waitForAssertion(
+  assertion: () => Promise<void> | void,
+  description: string,
+  timeoutMs = 5_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  let lastError: unknown;
+
+  while (Date.now() < deadline) {
+    try {
+      await assertion();
+      return;
+    } catch (error) {
+      lastError = error;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+
+  if (lastError instanceof Error) {
+    lastError.message = `${description}: ${lastError.message}`;
+    throw lastError;
+  }
+
+  throw new Error(description);
 }
 
 function makeImportCapableContext(
@@ -1132,6 +1158,10 @@ test("production PI handlers do not store session and turn lifecycle events as m
 
     const thread = expectOk(await store.findManagedThread(target));
     assert.ok(thread);
+    await waitForAssertion(async () => {
+      const after = expectOk(await store.openThread(thread.threadId));
+      assert.equal(typeof after.thread.status.tokenCounting?.status, "string");
+    }, "background turn_end maintenance should finish after lifecycle-only turn_end");
     const messages = expectOk(await store.readMessages(thread.threadId));
     assert.deepEqual(messages, []);
   });
@@ -1199,12 +1229,355 @@ test("production turn_end handler smooths closed turns and skips open turns", as
       ctx,
     );
 
+    await waitForAssertion(async () => {
+      const after = expectOk(await store.openThread(thread.threadId));
+      assert.equal(typeof after.turns[0]?.smooth?.text, "string");
+      assert.equal(typeof after.thread.status.tokenCounting?.status, "string");
+    }, "background turn_end maintenance should smooth the closed turn");
+
     const after = expectOk(await store.openThread(thread.threadId));
     assert.equal(after.turns[0]?.lifecycleStatus, "closed");
     assert.equal(after.turns[1]?.lifecycleStatus, "open");
     assert.equal(typeof after.turns[0]?.smooth?.text, "string");
     assert.equal(after.turns[0]?.smooth?.tokenCountMetadata?.count !== undefined, true);
     assert.equal(after.turns[1]?.smooth, undefined);
+  });
+});
+
+test("production turn_end handler refreshes the active generated session file for known prompt truncations", async () => {
+  await withTempThreadStore(async ({ storeRootDir, projectDir, resolveProjectPath }) => {
+    const generatedFilePath = resolveProjectPath(".context-steward", "threads", "thread-active-prompt", "generated", "active.jsonl");
+    const target = makeThreadTarget({
+      sessionId: "session-active-prompt",
+      sessionFilePath: generatedFilePath,
+      cwd: projectDir,
+      currentGeneratedFilePath: generatedFilePath,
+    });
+    const oldToolResult = makePiToolResultMessage({
+      toolCallId: "call-active-prompt-001",
+      toolName: "read",
+      content: [{ type: "text", text: "A".repeat(200) }],
+    });
+    const newerAssistant = makePiAssistantMessage({
+      responseId: "response-active-prompt-001",
+      content: [{ type: "text", text: "newer ordinary response ".repeat(20) }],
+    });
+    await mkdir(dirname(generatedFilePath), { recursive: true });
+    await writeFile(
+      generatedFilePath,
+      [
+        JSON.stringify({
+          type: "session",
+          version: 3,
+          id: "session-active-prompt",
+          timestamp: "2026-01-01T00:00:00.000Z",
+          cwd: projectDir,
+        }),
+        JSON.stringify({
+          type: "message",
+          id: "entry-001",
+          parentId: null,
+          timestamp: "2026-01-01T00:00:01.000Z",
+          message: oldToolResult,
+        }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+    const store = new FileThreadStore(storeRootDir);
+    const thread = expectOk(await openOrCreateManagedThread({ target }, store));
+    const ctx = makePiExtensionContext(target);
+    const pi = new FakeExtensionApi();
+
+    registerContextStewardExtension(pi as unknown as ExtensionAPI, {
+      createStore: () => store,
+      liveToolResultTruncation: {
+        rawZoneTokenThreshold: 100,
+        truncatedCharLimit: 12,
+      },
+    });
+    await pi.emit("message_end", { type: "message_end", message: oldToolResult }, ctx);
+    await pi.emit("message_end", { type: "message_end", message: newerAssistant }, ctx);
+    await pi.emit(
+      "turn_end",
+      {
+        type: "turn_end",
+        turnIndex: 1,
+        message: newerAssistant,
+        toolResults: [],
+      },
+      ctx,
+    );
+
+    const sessionLines = (await readFile(generatedFilePath, "utf8"))
+      .split("\n")
+      .filter((line) => line.trim().length > 0)
+      .map((line) => JSON.parse(line));
+    const activeToolEntry = sessionLines[1] as {
+      message: { content: Array<{ text: string }> };
+    };
+    const canonicalMessages = expectOk(await store.readMessages(thread.threadId));
+    const canonicalTool = canonicalMessages.find((message) => message.targetMetadata?.toolCallId === "call-active-prompt-001");
+
+    assert.equal(activeToolEntry.message.content[0]?.text, `${"A".repeat(12)}...`);
+    assert.deepEqual(canonicalTool?.parts[0]?.content, {
+      output: "A".repeat(200),
+      toolCallId: "call-active-prompt-001",
+      toolName: "read",
+      isError: false,
+    });
+
+    await waitForAssertion(async () => {
+      const after = expectOk(await store.openThread(thread.threadId));
+      assert.equal(typeof after.thread.status.tokenCounting?.status, "string");
+    }, "background turn_end maintenance should finish after prompt projection refresh");
+  });
+});
+
+test("production prompt projection does not reset when PI leaf advances during ordinary appends", async () => {
+  await withTempThreadStore(async ({ storeRootDir, projectDir, resolveProjectPath }) => {
+    const generatedFilePath = resolveProjectPath(".context-steward", "threads", "thread-leaf-advance-prompt", "generated", "active.jsonl");
+    const target = makeThreadTarget({
+      sessionId: "session-leaf-advance-prompt",
+      sessionFilePath: generatedFilePath,
+      cwd: projectDir,
+      currentGeneratedFilePath: generatedFilePath,
+    });
+    const oldToolResult = makePiToolResultMessage({
+      toolCallId: "call-leaf-advance-001",
+      toolName: "read",
+      content: [{ type: "text", text: "L".repeat(200) }],
+    });
+    const newerAssistant = makePiAssistantMessage({
+      responseId: "response-leaf-advance-001",
+      content: [{ type: "text", text: "newer ordinary response ".repeat(20) }],
+    });
+    const entries: ReturnType<typeof makePiSessionEntries> = [];
+    let activeLeafId: string | undefined;
+    const ctx = makeImportCapableContext(target, {
+      entries,
+      activeBranch: entries,
+      activeLeafId,
+    });
+    const appendEntry = (message: typeof oldToolResult | typeof newerAssistant) => {
+      const id = `entry-${String(entries.length + 1).padStart(3, "0")}`;
+      entries.push({
+        type: "message",
+        id,
+        parentId: activeLeafId ?? null,
+        timestamp: new Date(Date.parse("2026-01-01T00:00:00.000Z") + entries.length * 1_000).toISOString(),
+        message,
+      });
+      activeLeafId = id;
+    };
+    const leafAdvancingCtx = {
+      ...ctx,
+      sessionManager: {
+        ...ctx.sessionManager,
+        getBranch: () => entries,
+        getEntries: () => entries,
+        getLeafId: () => activeLeafId ?? null,
+      },
+    };
+    await mkdir(dirname(generatedFilePath), { recursive: true });
+    await writeFile(
+      generatedFilePath,
+      [
+        JSON.stringify({
+          type: "session",
+          version: 3,
+          id: "session-leaf-advance-prompt",
+          timestamp: "2026-01-01T00:00:00.000Z",
+          cwd: projectDir,
+        }),
+        JSON.stringify({
+          type: "message",
+          id: "entry-001",
+          parentId: null,
+          timestamp: "2026-01-01T00:00:01.000Z",
+          message: oldToolResult,
+        }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+    const store = new FileThreadStore(storeRootDir);
+    const thread = expectOk(await openOrCreateManagedThread({ target }, store));
+    const pi = new FakeExtensionApi();
+
+    registerContextStewardExtension(pi as unknown as ExtensionAPI, {
+      createStore: () => store,
+      liveToolResultTruncation: {
+        rawZoneTokenThreshold: 100,
+        truncatedCharLimit: 12,
+      },
+    });
+
+    appendEntry(oldToolResult);
+    await pi.emit("message_end", { type: "message_end", message: oldToolResult }, leafAdvancingCtx);
+    appendEntry(newerAssistant);
+    await pi.emit("message_end", { type: "message_end", message: newerAssistant }, leafAdvancingCtx);
+    await pi.emit(
+      "turn_end",
+      {
+        type: "turn_end",
+        turnIndex: 1,
+        message: newerAssistant,
+        toolResults: [],
+      },
+      leafAdvancingCtx,
+    );
+
+    const sessionLines = (await readFile(generatedFilePath, "utf8"))
+      .split("\n")
+      .filter((line) => line.trim().length > 0)
+      .map((line) => JSON.parse(line));
+    const activeToolEntry = sessionLines[1] as {
+      message: { content: Array<{ text: string }> };
+    };
+
+    assert.equal(activeToolEntry.message.content[0]?.text, `${"L".repeat(12)}...`);
+
+    await waitForAssertion(async () => {
+      const after = expectOk(await store.openThread(thread.threadId));
+      assert.equal(typeof after.thread.status.tokenCounting?.status, "string");
+    }, "background turn_end maintenance should finish after leaf-advance prompt projection refresh");
+  });
+});
+
+test("production session_start handler refreshes an oversized active generated session file before the next turn", async () => {
+  await withTempThreadStore(async ({ storeRootDir, projectDir, resolveProjectPath }) => {
+    const generatedFilePath = resolveProjectPath(".context-steward", "threads", "thread-startup-prompt", "generated", "active.jsonl");
+    const target = makeThreadTarget({
+      sessionId: "session-startup-prompt",
+      sessionFilePath: generatedFilePath,
+      cwd: projectDir,
+      currentGeneratedFilePath: generatedFilePath,
+    });
+    const oldToolResult = makePiToolResultMessage({
+      toolCallId: "call-startup-prompt-001",
+      toolName: "read",
+      content: [{ type: "text", text: "S".repeat(200) }],
+    });
+    const newerAssistant = makePiAssistantMessage({
+      responseId: "response-startup-prompt-001",
+      content: [{ type: "text", text: "newer ordinary response ".repeat(20) }],
+    });
+    await mkdir(dirname(generatedFilePath), { recursive: true });
+    await writeFile(
+      generatedFilePath,
+      [
+        JSON.stringify({
+          type: "session",
+          version: 3,
+          id: "session-startup-prompt",
+          timestamp: "2026-01-01T00:00:00.000Z",
+          cwd: projectDir,
+        }),
+        JSON.stringify({
+          type: "message",
+          id: "entry-001",
+          parentId: null,
+          timestamp: "2026-01-01T00:00:01.000Z",
+          message: oldToolResult,
+        }),
+        JSON.stringify({
+          type: "message",
+          id: "entry-002",
+          parentId: "entry-001",
+          timestamp: "2026-01-01T00:00:02.000Z",
+          message: newerAssistant,
+        }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+    const store = new FileThreadStore(storeRootDir);
+    await openOrCreateManagedThread({ target }, store);
+    const entries = makePiSessionEntries({ messages: [oldToolResult, newerAssistant] });
+    const ctx = makeImportCapableContext(target, { entries });
+    const pi = new FakeExtensionApi();
+
+    registerContextStewardExtension(pi as unknown as ExtensionAPI, {
+      createStore: () => store,
+      liveToolResultTruncation: {
+        rawZoneTokenThreshold: 100,
+        truncatedCharLimit: 12,
+      },
+    });
+    await pi.emit("session_start", { type: "session_start" }, ctx);
+
+    const sessionLines = (await readFile(generatedFilePath, "utf8"))
+      .split("\n")
+      .filter((line) => line.trim().length > 0)
+      .map((line) => JSON.parse(line));
+    const activeToolEntry = sessionLines[1] as {
+      message: { content: Array<{ text: string }> };
+    };
+
+    assert.equal(activeToolEntry.message.content[0]?.text, `${"S".repeat(12)}...`);
+  });
+});
+
+test("production context projection state is scoped to the active PI session branch", async () => {
+  await withTempThreadStore(async ({ projectDir, resolveProjectPath }) => {
+    const sharedToolCallId = "call-shared-scope-001";
+    const firstTarget = makeThreadTarget({
+      sessionId: "session-prompt-scope-one",
+      sessionFilePath: resolveProjectPath("pi", "session-prompt-scope-one.jsonl"),
+      cwd: projectDir,
+    });
+    const secondTarget = makeThreadTarget({
+      sessionId: "session-prompt-scope-two",
+      sessionFilePath: resolveProjectPath("pi", "session-prompt-scope-two.jsonl"),
+      cwd: projectDir,
+    });
+    const firstToolResult = makePiToolResultMessage({
+      toolCallId: sharedToolCallId,
+      content: [{ type: "text", text: "P".repeat(200) }],
+    });
+    const firstNewerAssistant = makePiAssistantMessage({
+      responseId: "response-prompt-scope-one",
+      content: [{ type: "text", text: "newer ordinary response ".repeat(20) }],
+    });
+    const secondToolResult = makePiToolResultMessage({
+      toolCallId: sharedToolCallId,
+      content: [{ type: "text", text: "Q".repeat(200) }],
+    });
+    const firstMessages = [firstToolResult, firstNewerAssistant];
+    const secondMessages = [secondToolResult];
+    const firstCtx = makeImportCapableContext(firstTarget, {
+      entries: makePiSessionEntries({ messages: firstMessages }),
+    });
+    const secondCtx = makeImportCapableContext(secondTarget, {
+      entries: makePiSessionEntries({ messages: secondMessages }),
+    });
+    const pi = new FakeExtensionApi();
+
+    registerContextStewardExtension(pi as unknown as ExtensionAPI, {
+      liveToolResultTruncation: {
+        rawZoneTokenThreshold: 100,
+        truncatedCharLimit: 12,
+      },
+    });
+
+    const contextHandler = pi.handlers.get("context")?.[0];
+    assert.ok(contextHandler);
+
+    await pi.emit("session_start", { type: "session_start", reason: "resume" }, firstCtx);
+    const firstResult = await contextHandler(
+      { type: "context", messages: firstMessages },
+      firstCtx,
+    ) as { messages: typeof firstMessages };
+    const firstAppliedToolResult = firstResult.messages[0] as typeof firstToolResult;
+
+    assert.equal((firstAppliedToolResult.content[0] as { text: string }).text, `${"P".repeat(12)}...`);
+
+    await pi.emit("session_start", { type: "session_start", reason: "resume" }, secondCtx);
+    const secondResult = await contextHandler(
+      { type: "context", messages: secondMessages },
+      secondCtx,
+    ) as { messages: typeof secondMessages };
+    const secondAppliedToolResult = secondResult.messages[0] as typeof secondToolResult;
+
+    assert.equal((secondAppliedToolResult.content[0] as { text: string }).text, "Q".repeat(200));
   });
 });
 
@@ -1282,6 +1655,11 @@ test("production turn_end handler persists token-count maintenance failures", as
       },
       ctx,
     );
+
+    await waitForAssertion(async () => {
+      const after = expectOk(await store.openThread(thread.threadId));
+      assert.equal(after.thread.status.tokenCounting?.status, "repair_needed");
+    }, "background turn_end maintenance should persist token-count failures");
 
     const after = expectOk(await store.openThread(thread.threadId));
     assert.equal(after.thread.status.tokenCounting?.status, "repair_needed");

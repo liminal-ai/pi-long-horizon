@@ -15,6 +15,7 @@ import {
   writePiThreadViewFile,
   type PiThreadViewWriterOptions,
 } from "../thread-view/targets/pi/pi-thread-view-writer.js";
+import { applyPromptVisibleToolResultTruncationToPiThreadViewFile } from "../thread-view/targets/pi/pi-thread-view-prompt-truncation.js";
 import type {
   PiCliHarnessAdapter,
   PiThreadViewFile,
@@ -22,6 +23,7 @@ import type {
   SmartCompactCommandResult,
 } from "../thread-view/domain/pi-thread-view-file.js";
 import { validateSmartCompactCommandInput } from "../thread-view/domain/pi-thread-view-file.js";
+import type { LiveToolResultTruncationOptions } from "../thread-view/services/live-tool-result-truncation.js";
 import type { GeneratedOutputMetadata } from "../thread/domain/output-metadata.js";
 import {
   evaluateTokenCountRecordForScope,
@@ -37,6 +39,7 @@ export interface SmartCompactCommandDependencies {
   piCliHarnessAdapter?: PiCliHarnessAdapter;
   piSessionSwitch?: PiCliHarnessAdapterDependencies;
   piThreadViewWriterOptions?: PiThreadViewWriterOptions;
+  promptVisibleToolResultTruncation?: LiveToolResultTruncationOptions & { enabled?: boolean };
   openAIInputTokenCounter?: AsyncThreadRunDependencies["openAIInputTokenCounter"] &
     Pick<OpenAIInputTokenCounter, "countGeneratedSession">;
   asyncThreadDependencies?: Omit<AsyncThreadRunDependencies, "store">;
@@ -473,10 +476,16 @@ export async function runSmartCompact(
       dependencies.now ??
       (() => new Date())
     )().toISOString();
+    const promptVisiblePiFile = dependencies.promptVisibleToolResultTruncation?.enabled === false
+      ? piFile
+      : applyPromptVisibleToolResultTruncationToPiThreadViewFile(
+          piFile,
+          dependencies.promptVisibleToolResultTruncation,
+        ).file;
     const finalCountResult = await countFinalGeneratedSessionUntilUnderTarget({
       threadId: input.threadId,
       requestedLowerBound: input.requestedLowerBound,
-      initialPiFile: piFile,
+      initialPiFile: promptVisiblePiFile,
       openAIInputTokenCounter: openAIInputTokenCounterForFinalCount,
       threadViewId: buildResult.draftThreadViewId,
       sourceRevision: threadSnapshot.value.thread.sourceRevision,
