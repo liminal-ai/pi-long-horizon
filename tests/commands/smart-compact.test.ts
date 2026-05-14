@@ -255,6 +255,57 @@ test("command accepts explicit per-run inputs, writes a generated PI file, and r
   });
 });
 
+test("successful smart compact persists generated rollout session and model metadata", async () => {
+  await withTempFeature3Store(async (context) => {
+    const seeded = await seedMissingDetailedPlaceholderThread(context.storeRootDir);
+
+    const result = await runSmartCompact(
+      {
+        threadId: seeded.threadId,
+        requestedLowerBound: 2_000,
+        requestedBandPercentages: { fullFidelity: 60, smooth: 40, detailed: 0, brief: 0 },
+        mode: "prepare",
+        modelProvider: "openai-codex",
+        modelId: "gpt-5.5",
+        thinkingLevel: "low",
+      },
+      {
+        threadStore: seeded.threadStore,
+        threadViewStore: seeded.threadViewStore,
+        openAIInputTokenCounter: fakeOpenAICounter,
+        piThreadViewWriterOptions: {
+          pathResolver: createPathResolver(context),
+          now: () => new Date("2026-01-01T00:00:00.000Z"),
+        },
+        piCliHarnessAdapter: createPiCliHarnessAdapter({
+          switchSession: async () => ({ cancelled: false }),
+        }),
+        now: () => new Date("2026-01-01T00:00:00.000Z"),
+      },
+    );
+
+    assert.equal(result.compactStatus, "success");
+    assert.ok(result.generatedFilePath);
+
+    const snapshot = await seeded.threadStore.openThread(seeded.threadId);
+    assert.equal(snapshot.ok, true);
+    const latestProjection = snapshot.value.projections.at(-1);
+    const generatedOutput = snapshot.value.thread.threadViewOutputSummary.generatedOutput;
+
+    assert.equal(latestProjection?.generatedFilePath, result.generatedFilePath);
+    assert.equal(latestProjection?.generatedSessionId, generatedOutput?.generatedSessionId);
+    assert.equal(latestProjection?.threadViewId, result.threadViewId);
+    assert.equal(latestProjection?.modelProvider, "openai-codex");
+    assert.equal(latestProjection?.modelId, "gpt-5.5");
+    assert.equal(latestProjection?.thinkingLevel, "low");
+    assert.equal(generatedOutput?.generatedFilePath, result.generatedFilePath);
+    assert.equal(generatedOutput?.threadViewId, result.threadViewId);
+    assert.equal(generatedOutput?.modelProvider, "openai-codex");
+    assert.equal(generatedOutput?.modelId, "gpt-5.5");
+    assert.equal(generatedOutput?.thinkingLevel, "low");
+  });
+});
+
 test("generated session over requested lower bound stops before write or reload", async () => {
   await withTempFeature3Store(async (context) => {
     const seeded = await seedDeterministicRebuildThread(context.storeRootDir);
@@ -471,7 +522,8 @@ test("default command path roots generated and archived output under the active 
 
     assert.equal(firstResult.compactStatus, "success");
     assert.ok(firstResult.threadViewId);
-    const expectedFileName = `${seeded.threadId}-${firstResult.threadViewId}.jsonl`;
+    assert.ok(firstResult.projectionRevisionId);
+    const expectedFileName = `${firstResult.projectionRevisionId}-${firstResult.threadViewId}.jsonl`;
     const expectedGeneratedPath = context.resolveGeneratedPath(seeded.threadId, expectedFileName);
     assert.equal(firstResult.generatedFilePath, expectedGeneratedPath);
     assert.equal(firstResult.archivePath, undefined);
@@ -495,16 +547,13 @@ test("default command path roots generated and archived output under the active 
     });
 
     assert.equal(secondResult.compactStatus, "success");
-    assert.equal(secondResult.threadViewId, firstResult.threadViewId);
-    assert.equal(secondResult.generatedFilePath, expectedGeneratedPath);
-    const archiveStamp = secondNow().toISOString().replace(/[:.]/g, "-");
-    const expectedArchivePath = context.resolveGeneratedArchivePath(
-      seeded.threadId,
-      `${archiveStamp}-${basename(expectedGeneratedPath)}`,
-    );
-    assert.equal(secondResult.archivePath, expectedArchivePath);
-    assert.equal(await readFile(secondResult.archivePath!, "utf8"), firstContent);
-    assert.deepEqual(switchedTo, [expectedGeneratedPath, expectedGeneratedPath]);
+    assert.ok(secondResult.projectionRevisionId);
+    assert.notEqual(secondResult.threadViewId, firstResult.threadViewId);
+    assert.notEqual(secondResult.projectionRevisionId, firstResult.projectionRevisionId);
+    assert.notEqual(secondResult.generatedFilePath, expectedGeneratedPath);
+    assert.equal(secondResult.archivePath, undefined);
+    assert.notEqual(await readFile(secondResult.generatedFilePath!, "utf8"), firstContent);
+    assert.deepEqual(switchedTo, [expectedGeneratedPath, secondResult.generatedFilePath!]);
     const mappedThreadId = await seeded.threadStore.resolveThreadIdMap({
       runtime: "pi",
       sessionFilePath: expectedGeneratedPath,
@@ -513,6 +562,14 @@ test("default command path roots generated and archived output under the active 
       assert.fail(mappedThreadId.issues.map((issue) => issue.message).join("; "));
     }
     assert.equal(mappedThreadId.value, seeded.threadId);
+    const mappedProjectionId = await seeded.threadStore.resolveProjectionRevisionIdMap({
+      runtime: "pi",
+      sessionFilePath: secondResult.generatedFilePath!,
+    });
+    if (!mappedProjectionId.ok) {
+      assert.fail(mappedProjectionId.issues.map((issue) => issue.message).join("; "));
+    }
+    assert.equal(mappedProjectionId.value, secondResult.projectionRevisionId);
   });
 });
 

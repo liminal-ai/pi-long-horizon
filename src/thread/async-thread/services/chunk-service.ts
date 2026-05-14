@@ -56,10 +56,12 @@ function isCurrentTokenCountMetadata(record: TokenCountRecord | undefined, expec
     return false;
   }
 
+  const isExactProviderCount = record.source === "provider_input_count" && record.trustClass === "exact";
+
   return (
     validateTokenCountRecord(record).ok &&
     record.scope === expected.scope &&
-    record.count === expected.count &&
+    (isExactProviderCount || record.count === expected.count) &&
     record.sourceRevision === expected.sourceRevision &&
     record.representationHash === expected.representationHash
   );

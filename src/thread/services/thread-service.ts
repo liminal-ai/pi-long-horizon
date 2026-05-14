@@ -244,6 +244,7 @@ export async function appendSourceMessage(input: AppendSourceMessageInput): Prom
 function buildNextThreadViewOutputSummary(input: {
   thread: ThreadRecord;
   generatedFilePath?: string;
+  revision?: ProjectionRevisionRecord;
   generatedOutput?: GeneratedOutputMetadata;
 }): ThreadRecord["threadViewOutputSummary"] {
   const nextThreadViewOutputSummary =
@@ -255,11 +256,59 @@ function buildNextThreadViewOutputSummary(input: {
             input.generatedFilePath ?? input.thread.threadViewOutputSummary.currentGeneratedFilePath,
         };
 
-  return input.generatedOutput === undefined
+  const withCurrentRevision = input.revision === undefined
     ? nextThreadViewOutputSummary
     : {
         ...nextThreadViewOutputSummary,
+        count: Math.max(nextThreadViewOutputSummary.count, 1),
+        currentProjectionRevisionId: input.revision.revisionId,
+        currentThreadViewId: input.revision.threadViewId,
+        currentGeneratedSessionId: input.revision.generatedSessionId,
+        currentGeneratedFilePath: input.revision.generatedFilePath,
+        lastRevisionStatus: input.revision.status,
+      };
+
+  return input.generatedOutput === undefined
+    ? withCurrentRevision
+    : {
+        ...withCurrentRevision,
         generatedOutput: input.generatedOutput,
+      };
+}
+
+function buildNextThreadTarget(input: {
+  thread: ThreadRecord;
+  generatedFilePath?: string;
+  revision?: ProjectionRevisionRecord;
+}): ThreadRecord["target"] {
+  const nextGeneratedFilePath =
+    input.revision?.generatedFilePath ?? input.generatedFilePath ?? input.thread.target.currentGeneratedFilePath;
+
+  return {
+    ...input.thread.target,
+    currentGeneratedFilePath: nextGeneratedFilePath,
+  };
+}
+
+function buildNextGeneratedOutput(input: {
+  generatedOutput?: GeneratedOutputMetadata;
+  revision?: ProjectionRevisionRecord;
+}): GeneratedOutputMetadata | undefined {
+  if (!input.generatedOutput) {
+    return undefined;
+  }
+
+  return input.revision === undefined
+    ? input.generatedOutput
+    : {
+        ...input.generatedOutput,
+        projectionRevisionId: input.revision.revisionId,
+        threadViewId: input.revision.threadViewId ?? input.generatedOutput.threadViewId,
+        generatedSessionId: input.revision.generatedSessionId ?? input.generatedOutput.generatedSessionId,
+        generatedFilePath: input.revision.generatedFilePath,
+        modelProvider: input.revision.modelProvider ?? input.generatedOutput.modelProvider,
+        modelId: input.revision.modelId ?? input.generatedOutput.modelId,
+        thinkingLevel: input.revision.thinkingLevel ?? input.generatedOutput.thinkingLevel,
       };
 }
 
@@ -301,22 +350,27 @@ export async function updateGeneratedThreadViewOutputMetadata(
       return refreshedThread;
     }
 
-    const nextGeneratedFilePath =
-      input.generatedFilePath ?? refreshedThread.value.thread.target.currentGeneratedFilePath;
+    const nextGeneratedOutput = buildNextGeneratedOutput({
+      generatedOutput: input.generatedOutput,
+      revision: input.revision,
+    });
     const nextThreadViewOutputSummary = buildNextThreadViewOutputSummary({
       thread: refreshedThread.value.thread,
       generatedFilePath: input.generatedFilePath,
-      generatedOutput: input.generatedOutput,
+      revision: input.revision,
+      generatedOutput: nextGeneratedOutput,
+    });
+    const nextTarget = buildNextThreadTarget({
+      thread: refreshedThread.value.thread,
+      generatedFilePath: input.generatedFilePath,
+      revision: input.revision,
     });
 
     return input.store.updateThreadMetadata({
       threadId: input.threadId,
       expectedSourceRevision: mutationCheck.value.sourceRevision,
       patch: {
-        target: {
-          ...refreshedThread.value.thread.target,
-          currentGeneratedFilePath: nextGeneratedFilePath,
-        },
+        target: nextTarget,
         threadViewOutputSummary: nextThreadViewOutputSummary,
         updatedAt: nowIso(input.now),
       },

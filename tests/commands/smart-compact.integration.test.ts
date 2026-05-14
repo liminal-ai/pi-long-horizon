@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { basename } from "node:path";
 import test from "node:test";
 
@@ -99,14 +99,16 @@ test("smart compact integration path writes, archives, and records generated out
     assert.ok(secondResult.generatedFilePath);
     assert.equal(secondResult.blockers.length, 0);
     assert.equal(secondResult.blockers.some((issue) => issue.code === "GENERATED_SESSION_OVER_LOWER_BOUND"), false);
-    assert.ok(secondResult.archivePath);
-    await access(secondResult.archivePath!);
-    assert.equal(await readFile(secondResult.archivePath!, "utf8"), firstContent);
+    assert.equal(secondResult.archivePath, undefined);
+    assert.notEqual(secondResult.generatedFilePath, firstResult.generatedFilePath);
+    assert.notEqual(await readFile(secondResult.generatedFilePath!, "utf8"), firstContent);
     assert.deepEqual(switchedTo, [firstResult.generatedFilePath!, secondResult.generatedFilePath!]);
 
     const thread = await seeded.threadStore.openThread(seeded.threadId);
     assert.equal(thread.ok, true);
     assert.equal(thread.value.thread.target.currentGeneratedFilePath, secondResult.generatedFilePath);
     assert.equal(thread.value.projections.at(-1)?.generatedFilePath, secondResult.generatedFilePath);
+    assert.equal(thread.value.thread.threadViewOutputSummary.currentProjectionRevisionId, secondResult.projectionRevisionId);
+    assert.equal(thread.value.thread.threadViewOutputSummary.currentThreadViewId, secondResult.threadViewId);
   });
 });

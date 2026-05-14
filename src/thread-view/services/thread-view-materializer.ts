@@ -19,6 +19,11 @@ import {
   okWorkbenchResult,
   type WorkbenchResult,
 } from "../domain/thread-view-errors.js";
+import {
+  applyLiveToolResultTruncation,
+  stringifyCanonicalRawMessageForPiVisibleEstimate,
+  type LiveToolResultTruncationOptions,
+} from "./live-tool-result-truncation.js";
 
 const UPPER_BAND_TYPES = ["full_fidelity", "smooth"] as const;
 const LOWER_BAND_TYPES = ["detailed", "brief"] as const;
@@ -290,6 +295,98 @@ function buildRawTurnMessage(
   };
 }
 
+function isMaterializedRawContent(content: ThreadViewMessageRecord["content"]): content is {
+  actorType?: unknown;
+  messageKind?: unknown;
+  parts: Array<{
+    partType?: unknown;
+    content?: unknown;
+  }>;
+  targetMetadata?: {
+    piRole?: unknown;
+  };
+} {
+  return (
+    typeof content === "object" &&
+    content !== null &&
+    Array.isArray((content as { parts?: unknown }).parts)
+  );
+}
+
+function isRawThreadViewToolResult(message: ThreadViewMessageRecord): boolean {
+  if (message.sourceKind !== "raw_turn_message" || !isMaterializedRawContent(message.content)) {
+    return false;
+  }
+
+  return (
+    message.content.actorType === "tool" ||
+    message.content.messageKind === "tool_result" ||
+    message.content.targetMetadata?.piRole === "toolResult" ||
+    message.content.parts.some((part) => part.partType === "tool_result")
+  );
+}
+
+function truncateRawThreadViewToolResult(
+  message: ThreadViewMessageRecord,
+  truncateText: (text: string) => string,
+): ThreadViewMessageRecord {
+  if (!isRawThreadViewToolResult(message) || !isMaterializedRawContent(message.content)) {
+    return message;
+  }
+
+  let changed = false;
+  const parts = message.content.parts.map((part) => {
+    if (part.partType !== "tool_result" || typeof part.content !== "object" || part.content === null) {
+      return part;
+    }
+
+    const output = (part.content as { output?: unknown }).output;
+    if (typeof output !== "string") {
+      return part;
+    }
+
+    const truncatedOutput = truncateText(output);
+    if (truncatedOutput === output) {
+      return part;
+    }
+
+    changed = true;
+    return {
+      ...part,
+      content: {
+        ...part.content,
+        output: truncatedOutput,
+      },
+    };
+  });
+
+  return changed
+    ? {
+        ...message,
+        content: {
+          ...message.content,
+          parts,
+        },
+      }
+    : message;
+}
+
+export function truncateRawThreadViewMessages(
+  messages: readonly ThreadViewMessageRecord[],
+  options: LiveToolResultTruncationOptions = {},
+): ThreadViewMessageRecord[] {
+  return applyLiveToolResultTruncation(
+    messages,
+    {
+      isRawZoneBoundary: () => false,
+      estimateText: (message) => stringifyCanonicalRawMessageForPiVisibleEstimate(message.content),
+      isEligibleToolResult: isRawThreadViewToolResult,
+      truncateToolResult: truncateRawThreadViewToolResult,
+    },
+    options,
+  ).items;
+}
+
 function buildSmoothTurnMessage(
   threadViewId: string,
   turn: TurnRecord,
@@ -512,7 +609,7 @@ function buildUpperBandMessages(input: {
 
   return {
     emittedMessages: concatenateBandMessages({
-      full_fidelity: fullFidelityMessages,
+      full_fidelity: truncateRawThreadViewMessages(fullFidelityMessages),
       smooth: smoothMessages,
     }),
     bandStatuses: {

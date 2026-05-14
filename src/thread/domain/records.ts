@@ -20,6 +20,7 @@ export const PART_TYPES = [
 ] as const;
 export const TURN_LIFECYCLE_STATUSES = ["open", "closed"] as const;
 export const TURN_REPAIR_STATUSES = ["ready", "repair_needed", "repair_failed", "unknown"] as const;
+export const TOKEN_COUNTING_MAINTENANCE_STATUSES = ["ready", "repair_needed", "unknown"] as const;
 export const IMPORT_STATUSES = ["complete", "partial", "failed"] as const;
 export const PROJECTION_STATUSES = ["available", "stale", "failed", "unknown"] as const;
 export const FIXTURE_SOURCE_TYPES = ["managed_thread", "pi_session"] as const;
@@ -32,6 +33,7 @@ export type MessageKind = (typeof MESSAGE_KINDS)[number];
 export type PartType = (typeof PART_TYPES)[number];
 export type TurnLifecycleStatus = (typeof TURN_LIFECYCLE_STATUSES)[number];
 export type TurnRepairStatus = (typeof TURN_REPAIR_STATUSES)[number];
+export type TokenCountingMaintenanceStatus = (typeof TOKEN_COUNTING_MAINTENANCE_STATUSES)[number];
 export type ImportStatus = (typeof IMPORT_STATUSES)[number];
 export type ProjectionStatus = (typeof PROJECTION_STATUSES)[number];
 export type FixtureSourceType = (typeof FIXTURE_SOURCE_TYPES)[number];
@@ -67,16 +69,28 @@ export interface ThreadRecord {
   };
   threadViewOutputSummary: {
     count: number;
+    currentProjectionRevisionId?: string;
+    currentThreadViewId?: string;
+    currentGeneratedSessionId?: string;
     currentGeneratedFilePath?: string;
     lastRevisionStatus?: ProjectionStatus;
     generatedOutput?: GeneratedOutputMetadata;
   };
   status: {
     turnState: TurnRepairStatus;
+    tokenCounting?: TokenCountingMaintenanceRecord;
   };
   indexes: {
     targetEventKeys: Record<string, string>;
   };
+}
+
+export interface TokenCountingMaintenanceRecord {
+  status: TokenCountingMaintenanceStatus;
+  updatedAt: string;
+  sourceRevision?: number;
+  issueCount?: number;
+  issues?: StewardIssue[];
 }
 
 export interface ThreadTargetMetadata {
@@ -169,8 +183,13 @@ export interface ProjectionRevisionRecord {
   threadId: string;
   threadViewId?: string;
   targetRuntime: TargetRuntime;
+  generatedSessionId?: string;
   generatedFilePath: string;
+  archivePath?: string;
   createdAt: string;
+  modelProvider?: string;
+  modelId?: string;
+  thinkingLevel?: string;
   sourceStateReference?: string;
   status: ProjectionStatus;
 }
@@ -269,6 +288,18 @@ export function createThreadRecord(input: CreateThreadRecordInput): ThreadRecord
 
   const currentGeneratedFilePath =
     input.threadViewOutputSummary?.currentGeneratedFilePath ?? input.target.currentGeneratedFilePath;
+  if (input.threadViewOutputSummary?.currentProjectionRevisionId) {
+    threadViewOutputSummary.currentProjectionRevisionId = input.threadViewOutputSummary.currentProjectionRevisionId;
+  }
+
+  if (input.threadViewOutputSummary?.currentThreadViewId) {
+    threadViewOutputSummary.currentThreadViewId = input.threadViewOutputSummary.currentThreadViewId;
+  }
+
+  if (input.threadViewOutputSummary?.currentGeneratedSessionId) {
+    threadViewOutputSummary.currentGeneratedSessionId = input.threadViewOutputSummary.currentGeneratedSessionId;
+  }
+
   if (currentGeneratedFilePath) {
     threadViewOutputSummary.currentGeneratedFilePath = currentGeneratedFilePath;
   }

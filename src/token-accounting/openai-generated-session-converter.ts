@@ -3,6 +3,7 @@ import type {
   WritePiThreadViewFileInput,
 } from "../thread-view/domain/pi-thread-view-file.js";
 import { createMaterializedRepresentationHash } from "./materialized-representation-counter.js";
+import { createHash } from "node:crypto";
 
 export interface OpenAIResponsesInputTextContent {
   type: "input_text";
@@ -68,6 +69,14 @@ export interface OpenAIResponsesGeneratedSessionConversion {
 
 export interface ConvertGeneratedSessionToOpenAIResponsesInputOptions {
   model?: string;
+}
+
+function normalizeOpenAICallId(originalCallId: string): string {
+  if (originalCallId.length <= 64) {
+    return originalCallId;
+  }
+
+  return `call_${createHash("sha256").update(originalCallId).digest("hex").slice(0, 59)}`;
 }
 
 function stableNormalize(value: unknown): unknown {
@@ -212,7 +221,11 @@ function entryText(entry: PiThreadViewEntry): string {
     .join("\n");
 }
 
-function assistantItems(entry: PiThreadViewEntry, index: number): OpenAIResponsesInputItem[] {
+function assistantItems(
+  entry: PiThreadViewEntry,
+  index: number,
+  normalizeCallId: (callId: string) => string,
+): OpenAIResponsesInputItem[] {
   const parts = structuredParts(entry.content);
   const outputText: OpenAIResponsesOutputTextContent[] = [];
   const toolCalls: OpenAIResponsesFunctionCall[] = [];
@@ -232,7 +245,7 @@ function assistantItems(entry: PiThreadViewEntry, index: number): OpenAIResponse
         toolCalls.push({
           type: "function_call",
           id: `fc_generated_${index + 1}_${partIndex + 1}`,
-          call_id: callId,
+          call_id: normalizeCallId(callId),
           name: extractToolName(part.content, entry.metadata),
           arguments: extractToolArguments(part.content),
           status: "completed",
@@ -264,7 +277,10 @@ function assistantItems(entry: PiThreadViewEntry, index: number): OpenAIResponse
   ];
 }
 
-function toolResultItem(entry: PiThreadViewEntry): OpenAIResponsesFunctionCallOutput {
+function toolResultItem(
+  entry: PiThreadViewEntry,
+  normalizeCallId: (callId: string) => string,
+): OpenAIResponsesFunctionCallOutput {
   const toolCallId = entry.metadata?.toolCallId;
   if (typeof toolCallId !== "string" || toolCallId.length === 0) {
     throw new Error("Tool result entry is missing metadata.toolCallId.");
@@ -272,13 +288,17 @@ function toolResultItem(entry: PiThreadViewEntry): OpenAIResponsesFunctionCallOu
 
   return {
     type: "function_call_output",
-    call_id: toolCallId,
+    call_id: normalizeCallId(toolCallId),
     output: entryText(entry),
     status: "completed",
   };
 }
 
-function entryToItems(entry: PiThreadViewEntry, index: number): OpenAIResponsesInputItem[] {
+function entryToItems(
+  entry: PiThreadViewEntry,
+  index: number,
+  normalizeCallId: (callId: string) => string,
+): OpenAIResponsesInputItem[] {
   if (entry.generatedSource !== "raw_turn_message") {
     return [
       {
@@ -290,11 +310,11 @@ function entryToItems(entry: PiThreadViewEntry, index: number): OpenAIResponsesI
   }
 
   if (entry.role === "assistant") {
-    return assistantItems(entry, index);
+    return assistantItems(entry, index, normalizeCallId);
   }
 
   if (entry.role === "toolResult") {
-    return [toolResultItem(entry)];
+    return [toolResultItem(entry, normalizeCallId)];
   }
 
   return [
@@ -316,8 +336,20 @@ export function convertGeneratedSessionToOpenAIResponsesInput(
   }
 
   const excluded: OpenAIResponsesGeneratedSessionConversion["excluded"] = [];
+  const callIdMap = new Map<string, string>();
+  const normalizeCallId = (callId: string): string => {
+    const existing = callIdMap.get(callId);
+    if (existing) {
+      return existing;
+    }
+
+    const normalized = normalizeOpenAICallId(callId);
+    callIdMap.set(callId, normalized);
+    return normalized;
+  };
+
   const items = input.file.entries.flatMap((entry, index) => {
-    const converted = entryToItems(entry, index);
+    const converted = entryToItems(entry, index, normalizeCallId);
     if (converted.length === 0) {
       excluded.push({ entryIndex: index, reason: "Entry has no OpenAI model-visible content." });
     }

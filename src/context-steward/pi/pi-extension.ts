@@ -9,7 +9,7 @@ import type {
   TurnEndEvent,
   TurnStartEvent,
 } from "@earendil-works/pi-coding-agent";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 import { runSmartCompact, type SmartCompactCommandDependencies } from "../../commands/smart-compact.js";
 import { formatCommandResult, type CommandResult } from "../commands/command-results.js";
@@ -29,12 +29,17 @@ import { attachExistingPiSession } from "../services/import-service.js";
 import { repairTurnState } from "../services/repair-service.js";
 import { openOrCreateManagedThread } from "../services/thread-service.js";
 import { checkTurnHealth, writeCapturedMessageTurns } from "../services/turn-service.js";
-import { ensureSmoothTurn } from "../../thread/async-thread/services/smooth-turn-service.js";
+import { maintainAsyncThread } from "../../thread/async-thread/services/async-thread-run-service.js";
 import { FileThreadStore } from "../store/file-thread-store.js";
-import type { ThreadStore } from "../store/thread-store.js";
+import type { ThreadSnapshot, ThreadStore } from "../store/thread-store.js";
 import type { SmartCompactCommandInput, SmartCompactCommandResult } from "../../thread-view/domain/pi-thread-view-file.js";
 import { FileThreadViewStore } from "../../thread-view/store/file-thread-view-store.js";
 import type { ThreadViewStore } from "../../thread-view/store/thread-view-store.js";
+import {
+  applyLiveToolResultTruncation,
+  stringifyPiVisibleContentForLiveEstimate,
+  type LiveToolResultTruncationOptions,
+} from "../../thread-view/services/live-tool-result-truncation.js";
 import { formatCompactionAuditReport } from "../../workbench/services/compaction-report-formatter.js";
 import { buildCompactionAuditReport } from "../../workbench/services/compaction-report-service.js";
 import { mapPiMessageEnd } from "./pi-message-mapper.js";
@@ -61,11 +66,18 @@ type PiCaptureEvent =
     };
 
 type PiExtensionCaptureContext = Pick<ExtensionContext, "cwd" | "sessionManager">;
+type PiExtensionSwitchContext = PiExtensionCaptureContext &
+  Partial<Pick<ExtensionCommandContext, "switchSession" | "ui">> &
+  Partial<{
+    model: ExtensionCommandContext["model"];
+    getThinkingLevel: () => string;
+  }>;
 
 export interface ContextStewardExtensionOptions {
   createStore?: (ctx: PiExtensionCaptureContext) => ThreadStore;
   createThreadViewStore?: (ctx: PiExtensionCaptureContext, threadStore: ThreadStore) => ThreadViewStore;
   openAIInputTokenCounter?: SmartCompactCommandDependencies["openAIInputTokenCounter"];
+  liveToolResultTruncation?: LiveToolResultTruncationOptions & { enabled?: boolean };
 }
 
 export interface MapPiCaptureEventInput {
@@ -91,6 +103,27 @@ function targetFromContext(ctx: PiExtensionCaptureContext): ThreadTargetMetadata
     sessionFilePath: ctx.sessionManager.getSessionFile(),
     cwd: ctx.cwd,
   };
+}
+
+function snapshotCaptureContext(ctx: PiExtensionCaptureContext): PiExtensionCaptureContext | undefined {
+  try {
+    const cwd = ctx.cwd;
+    const sessionId = ctx.sessionManager.getSessionId() || undefined;
+    const sessionFilePath = ctx.sessionManager.getSessionFile();
+
+    return {
+      cwd,
+      sessionManager: {
+        getSessionId: () => sessionId,
+        getSessionFile: () => sessionFilePath,
+      } as PiExtensionCaptureContext["sessionManager"],
+    };
+  } catch (error) {
+    if (isStalePiContextError(error)) {
+      return undefined;
+    }
+    throw error;
+  }
 }
 
 function defaultCreateStore(ctx: PiExtensionCaptureContext): ThreadStore {
@@ -127,6 +160,17 @@ function targetsMatch(left: ThreadTargetMetadata, right: ThreadTargetMetadata): 
 
 function activeLeafIdFromContext(ctx: PiExtensionCaptureContext): string | undefined {
   return ctx.sessionManager.getLeafId?.() ?? undefined;
+}
+
+function normalizePathForComparison(path: string | undefined): string | undefined {
+  const normalized = normalizeValue(path);
+  return normalized ? resolve(normalized) : undefined;
+}
+
+function samePath(left: string | undefined, right: string | undefined): boolean {
+  const normalizedLeft = normalizePathForComparison(left);
+  const normalizedRight = normalizePathForComparison(right);
+  return Boolean(normalizedLeft && normalizedRight && normalizedLeft === normalizedRight);
 }
 
 function importSessionManagerFromContext(ctx: PiExtensionCaptureContext): PiImportSessionManager | undefined {
@@ -188,6 +232,240 @@ function canAutoCreateManagedThreadForMessageEnd(input: {
   }
 
   return samePiMessage(activePathMessages[0]!.message, input.event.message);
+}
+
+function isPiTextContent(content: unknown): content is { type: "text"; text: string } {
+  return (
+    typeof content === "object" &&
+    content !== null &&
+    (content as { type?: unknown }).type === "text" &&
+    typeof (content as { text?: unknown }).text === "string"
+  );
+}
+
+function isPiToolResultMessage(message: AgentMessage): message is AgentMessage & {
+  role: "toolResult";
+  toolCallId?: string;
+  toolName?: string;
+  isError?: boolean;
+  content: unknown[];
+} {
+  return (
+    typeof message === "object" &&
+    message !== null &&
+    (message as { role?: unknown }).role === "toolResult" &&
+    Array.isArray((message as { content?: unknown }).content)
+  );
+}
+
+function isPiCompactedBoundaryMessage(message: AgentMessage): boolean {
+  return (
+    typeof message === "object" &&
+    message !== null &&
+    (message as { role?: unknown }).role === "custom" &&
+    (message as { customType?: unknown }).customType === "pi-long-horizon.compacted-content"
+  );
+}
+
+interface ActivePiSettings {
+  modelProvider?: string;
+  modelId?: string;
+  thinkingLevel?: string;
+}
+
+function modelFromUnknown(value: unknown): Pick<ActivePiSettings, "modelProvider" | "modelId"> {
+  if (typeof value !== "object" || value === null) {
+    return {};
+  }
+
+  const model = value as { provider?: unknown; modelId?: unknown; id?: unknown };
+  return {
+    modelProvider: typeof model.provider === "string" ? model.provider : undefined,
+    modelId:
+      typeof model.modelId === "string"
+        ? model.modelId
+        : typeof model.id === "string"
+          ? model.id
+          : undefined,
+  };
+}
+
+function settingsFromSessionContext(ctx: PiExtensionCaptureContext): ActivePiSettings {
+  const sessionManager = ctx.sessionManager as PiExtensionCaptureContext["sessionManager"] & {
+    buildSessionContext?: () => { model?: unknown; thinkingLevel?: unknown };
+  };
+  const sessionContext = sessionManager.buildSessionContext?.();
+  if (!sessionContext) {
+    return {};
+  }
+
+  return {
+    ...modelFromUnknown(sessionContext.model),
+    thinkingLevel: typeof sessionContext.thinkingLevel === "string" ? sessionContext.thinkingLevel : undefined,
+  };
+}
+
+function settingsFromSessionBranch(ctx: PiExtensionCaptureContext): ActivePiSettings {
+  const sessionManager = importSessionManagerFromContext(ctx);
+  if (!sessionManager) {
+    return {};
+  }
+
+  const entries = sessionManager.getBranch(activeLeafIdFromContext(ctx));
+  const settings: ActivePiSettings = {};
+  for (const entry of entries) {
+    if (entry.type === "thinking_level_change") {
+      const thinkingLevel = (entry as { thinkingLevel?: unknown }).thinkingLevel;
+      if (typeof thinkingLevel === "string") {
+        settings.thinkingLevel = thinkingLevel;
+      }
+      continue;
+    }
+
+    if (entry.type === "model_change") {
+      const model = modelFromUnknown(entry);
+      settings.modelProvider = model.modelProvider ?? settings.modelProvider;
+      settings.modelId = model.modelId ?? settings.modelId;
+      continue;
+    }
+
+    if (entry.type === "message" && "message" in entry) {
+      const message = (entry as { message?: { role?: unknown; provider?: unknown; model?: unknown } }).message;
+      if (message?.role === "assistant") {
+        if (typeof message.provider === "string") {
+          settings.modelProvider = message.provider;
+        }
+        if (typeof message.model === "string") {
+          settings.modelId = message.model;
+        }
+      }
+    }
+  }
+
+  return settings;
+}
+
+function resolveActivePiSettings(ctx: ExtensionCommandContext & { getThinkingLevel?: () => string }): ActivePiSettings {
+  const contextSettings = settingsFromSessionContext(ctx);
+  const branchSettings = settingsFromSessionBranch(ctx);
+  const contextModel = modelFromUnknown(ctx.model);
+  const thinkingLevel =
+    contextSettings.thinkingLevel ??
+    branchSettings.thinkingLevel ??
+    (typeof ctx.getThinkingLevel === "function" ? ctx.getThinkingLevel() : undefined);
+
+  return {
+    modelProvider: contextSettings.modelProvider ?? branchSettings.modelProvider ?? contextModel.modelProvider,
+    modelId: contextSettings.modelId ?? branchSettings.modelId ?? contextModel.modelId,
+    thinkingLevel,
+  };
+}
+
+function stringifyPiMessageForLiveEstimate(message: AgentMessage): string {
+  if (typeof message !== "object" || message === null) {
+    return String(message);
+  }
+
+  return stringifyPiVisibleContentForLiveEstimate((message as { content?: unknown }).content, message);
+}
+
+function truncatePiToolResultMessage(
+  message: AgentMessage,
+  truncateText: (text: string) => string,
+): AgentMessage {
+  if (!isPiToolResultMessage(message)) {
+    return message;
+  }
+
+  let changed = false;
+  const content = message.content.map((part) => {
+    if (!isPiTextContent(part)) {
+      return part;
+    }
+
+    const text = truncateText(part.text);
+    if (text === part.text) {
+      return part;
+    }
+
+    changed = true;
+    return {
+      ...part,
+      text,
+    };
+  });
+
+  return changed
+    ? ({
+        ...message,
+        content,
+      } as AgentMessage)
+    : message;
+}
+
+export function truncatePiLiveContextMessages(
+  messages: readonly AgentMessage[],
+  options: LiveToolResultTruncationOptions = {},
+): AgentMessage[] {
+  return applyLiveToolResultTruncation(
+    messages,
+    {
+      isRawZoneBoundary: isPiCompactedBoundaryMessage,
+      estimateText: stringifyPiMessageForLiveEstimate,
+      isEligibleToolResult: isPiToolResultMessage,
+      truncateToolResult: truncatePiToolResultMessage,
+    },
+    options,
+  ).items;
+}
+
+interface OriginalToolResultContent {
+  content: unknown[];
+  isError: boolean;
+  toolName: string;
+}
+
+function toolResultSideChannelKey(input: {
+  ctx: PiExtensionCaptureContext;
+  toolCallId: string | undefined;
+}): string | undefined {
+  if (!input.toolCallId) {
+    return undefined;
+  }
+
+  const sessionKey = input.ctx.sessionManager.getSessionId() || input.ctx.sessionManager.getSessionFile() || "unknown-session";
+  return `${sessionKey}:${input.toolCallId}`;
+}
+
+function restoreOriginalToolResultMessage(input: {
+  message: AgentMessage;
+  ctx: PiExtensionCaptureContext;
+  originals: Map<string, OriginalToolResultContent>;
+}): AgentMessage {
+  if (!isPiToolResultMessage(input.message)) {
+    return input.message;
+  }
+
+  const key = toolResultSideChannelKey({
+    ctx: input.ctx,
+    toolCallId: input.message.toolCallId,
+  });
+  if (!key) {
+    return input.message;
+  }
+
+  const original = input.originals.get(key);
+  if (!original) {
+    return input.message;
+  }
+
+  input.originals.delete(key);
+  return {
+    ...input.message,
+    toolName: original.toolName,
+    isError: original.isError,
+    content: structuredClone(original.content),
+  } as AgentMessage;
 }
 
 export function mapPiCaptureEventToActivity(
@@ -263,7 +541,24 @@ function isStewardResultErrorLike(
 }
 
 function isStalePiContextError(error: unknown): boolean {
-  return error instanceof Error && error.message.includes("This extension ctx is stale after session replacement or reload");
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "message" in error &&
+    typeof (error as { message?: unknown }).message === "string" &&
+    (error as { message: string }).message.includes("This extension ctx is stale after session replacement or reload")
+  );
+}
+
+function safeContextModelId(ctx: ExtensionContext): string | undefined {
+  try {
+    return ctx.model?.id;
+  } catch (error) {
+    if (isStalePiContextError(error)) {
+      return undefined;
+    }
+    throw error;
+  }
 }
 
 async function resolveManagedThreadForCommand(
@@ -288,6 +583,139 @@ async function resolveManagedThreadForCommand(
   }
 
   return ok(undefined);
+}
+
+function currentGeneratedRolloutFromSnapshot(snapshot: Pick<ThreadSnapshot, "thread" | "projections">): {
+  projectionRevisionId?: string;
+  generatedFilePath?: string;
+  generatedSessionId?: string;
+  threadViewId?: string;
+  modelProvider?: string;
+  modelId?: string;
+  thinkingLevel?: string;
+} {
+  const currentProjectionRevisionId = snapshot.thread.threadViewOutputSummary.currentProjectionRevisionId;
+  const projections = snapshot.projections as Array<{
+    revisionId?: string;
+    generatedFilePath?: string;
+    generatedSessionId?: string;
+    threadViewId?: string;
+    createdAt?: string;
+    status?: string;
+    modelProvider?: string;
+    modelId?: string;
+    thinkingLevel?: string;
+  }>;
+  const currentProjection = currentProjectionRevisionId
+    ? projections.find(
+        (projection) =>
+          projection.revisionId === currentProjectionRevisionId &&
+          projection.status === "available" &&
+          normalizeValue(projection.generatedFilePath),
+      )
+    : undefined;
+  const selectedProjection = currentProjection ?? projections
+    .filter((projection) => projection.status === "available" && normalizeValue(projection.generatedFilePath))
+    .sort((left, right) => (left.createdAt ?? "").localeCompare(right.createdAt ?? ""))
+    .at(-1);
+  if (selectedProjection?.generatedFilePath) {
+    return {
+      projectionRevisionId: selectedProjection.revisionId,
+      ...selectedProjection,
+    };
+  }
+
+  const generatedOutput = snapshot.thread.threadViewOutputSummary.generatedOutput;
+  if (
+    generatedOutput?.generatedFilePath &&
+    (generatedOutput.status === "available" || generatedOutput.status === "degraded")
+  ) {
+    return {
+      projectionRevisionId: generatedOutput.projectionRevisionId,
+      generatedFilePath: generatedOutput.generatedFilePath,
+      generatedSessionId: generatedOutput.generatedSessionId,
+      threadViewId: generatedOutput.threadViewId,
+      modelProvider: generatedOutput.modelProvider,
+      modelId: generatedOutput.modelId,
+      thinkingLevel: generatedOutput.thinkingLevel,
+    };
+  }
+
+  if (
+    snapshot.thread.threadViewOutputSummary.lastRevisionStatus === "available" &&
+    snapshot.thread.threadViewOutputSummary.currentGeneratedFilePath
+  ) {
+    return {
+      projectionRevisionId: snapshot.thread.threadViewOutputSummary.currentProjectionRevisionId,
+      generatedFilePath: snapshot.thread.threadViewOutputSummary.currentGeneratedFilePath,
+      generatedSessionId: snapshot.thread.threadViewOutputSummary.currentGeneratedSessionId,
+      threadViewId: snapshot.thread.threadViewOutputSummary.currentThreadViewId,
+    };
+  }
+
+  return {
+    generatedFilePath: snapshot.thread.target.currentGeneratedFilePath,
+  };
+}
+
+async function reconcileLatestGeneratedRollout(input: {
+  store: ThreadStore;
+  ctx: PiExtensionSwitchContext;
+  activeThread?: ThreadRecord;
+  onReplacementSession?: (ctx: ExtensionCommandContext) => void | Promise<void>;
+}): Promise<StewardResult<{ switched: boolean; thread?: ThreadRecord; generatedFilePath?: string }>> {
+  const thread = await resolveManagedThreadForCommand(input.store, input.ctx, input.activeThread);
+  if (!thread.ok) {
+    return thread;
+  }
+  if (!thread.value) {
+    return ok({ switched: false });
+  }
+
+  const snapshot = await input.store.openThread(thread.value.threadId);
+  if (!snapshot.ok) {
+    return snapshot;
+  }
+
+  const latestRollout = currentGeneratedRolloutFromSnapshot(snapshot.value);
+  const latestGeneratedFilePath = normalizeValue(latestRollout.generatedFilePath);
+  const currentSessionFile = input.ctx.sessionManager.getSessionFile();
+  const currentSessionId = input.ctx.sessionManager.getSessionId() || undefined;
+  const loadedProjectionRevisionId = await input.store.resolveProjectionRevisionIdMap({
+    runtime: "pi",
+    sessionId: currentSessionId,
+    sessionFilePath: currentSessionFile,
+  });
+  if (!loadedProjectionRevisionId.ok) {
+    return loadedProjectionRevisionId;
+  }
+  if (!loadedProjectionRevisionId.value) {
+    return ok({ switched: false, thread: snapshot.value.thread, generatedFilePath: latestGeneratedFilePath });
+  }
+
+  const alreadyOnCurrentProjection =
+    latestRollout.projectionRevisionId &&
+    loadedProjectionRevisionId.value === latestRollout.projectionRevisionId &&
+    (currentSessionId === latestRollout.generatedSessionId || samePath(currentSessionFile, latestGeneratedFilePath));
+
+  if (!latestGeneratedFilePath || alreadyOnCurrentProjection) {
+    return ok({ switched: false, thread: snapshot.value.thread, generatedFilePath: latestGeneratedFilePath });
+  }
+
+  if (typeof input.ctx.switchSession !== "function") {
+    return ok({ switched: false, thread: snapshot.value.thread, generatedFilePath: latestGeneratedFilePath });
+  }
+
+  const switchResult = await input.ctx.switchSession(latestGeneratedFilePath, {
+    withSession: async (ctx) => {
+      await input.onReplacementSession?.(ctx);
+    },
+  });
+  if (switchResult.cancelled) {
+    return ok({ switched: false, thread: snapshot.value.thread, generatedFilePath: latestGeneratedFilePath });
+  }
+
+  return ok({ switched: true, thread: snapshot.value.thread, generatedFilePath: latestGeneratedFilePath });
 }
 
 function statusSummary(thread: ThreadRecord, messageCount: number, turnCount: number): string {
@@ -744,16 +1172,14 @@ export async function executeSmartCompactCommand(input: {
   }
 
   try {
-    const getThinkingLevel = (
-      input.ctx as ExtensionCommandContext & { getThinkingLevel?: () => string }
-    ).getThinkingLevel;
+    const activeSettings = resolveActivePiSettings(input.ctx);
     const result = await runSmartCompact(
       {
         ...parsed.value,
         threadId: thread.value.threadId,
-        modelProvider: input.ctx.model?.provider,
-        modelId: input.ctx.model?.id,
-        thinkingLevel: getThinkingLevel?.(),
+        modelProvider: activeSettings.modelProvider,
+        modelId: activeSettings.modelId,
+        thinkingLevel: activeSettings.thinkingLevel,
       },
       {
         threadStore: input.store,
@@ -944,7 +1370,11 @@ export function registerContextStewardExtension(
 ): void {
   const createStore = options.createStore ?? defaultCreateStore;
   const createThreadViewStore = options.createThreadViewStore ?? defaultCreateThreadViewStore;
+  const liveTruncationOptions = options.liveToolResultTruncation ?? {};
+  const liveTruncationEnabled = liveTruncationOptions.enabled !== false;
+  const originalToolResults = new Map<string, OriginalToolResultContent>();
   let activeThread: ThreadRecord | undefined;
+  let activeSessionContext: PiExtensionCaptureContext | undefined;
 
   async function resolveCaptureThread(
     event: PiCaptureEvent,
@@ -1003,15 +1433,81 @@ export function registerContextStewardExtension(
     }
   }
 
-  pi.on("turn_end", async (event, ctx) => {
-    let resolved: Awaited<ReturnType<typeof resolveCaptureThread>>;
+  const reconcileCurrentSession = async (ctx: ExtensionContext) => {
     try {
-      resolved = await resolveCaptureThread(event, ctx);
+      if (typeof (ctx as Partial<ExtensionCommandContext>).switchSession !== "function") {
+        return;
+      }
+
+      const store = createStore(ctx);
+      const reconciled = await reconcileLatestGeneratedRollout({
+        store,
+        ctx: ctx as unknown as PiExtensionSwitchContext,
+        activeThread,
+        onReplacementSession: async (nextCtx) => {
+          const refreshedStore = createStore(nextCtx);
+          const refreshedThread = await resolveManagedThreadForCommand(refreshedStore, nextCtx, activeThread);
+          if (refreshedThread.ok && refreshedThread.value) {
+            activeThread = refreshedThread.value;
+          }
+        },
+      });
+      if (reconciled.ok && reconciled.value.thread) {
+        activeThread = reconciled.value.thread;
+      }
+      if (!reconciled.ok) {
+        ctx.ui?.notify?.(
+          formatCommandResult({
+            ok: false,
+            title: "Resume repair",
+            summary: reconciled.issues[0]?.message ?? "Could not reconcile latest generated PI session.",
+            issues: cloneIssues(reconciled.issues),
+          }),
+          "error",
+        );
+      }
     } catch (error) {
       if (isStalePiContextError(error)) {
         return;
       }
-      throw error;
+      ctx.ui?.notify?.(
+        formatCommandResult({
+          ok: false,
+          title: "Resume repair",
+          summary: "Could not reconcile latest generated PI session.",
+          issues: [
+            createStewardIssue({
+              code: "PI_RELOAD_FAILED",
+              message: "PI Long Horizon could not switch to the latest generated rollout on session start.",
+              cause: error instanceof Error ? error.message : String(error),
+            }),
+          ],
+        }),
+        "error",
+      );
+    }
+  };
+
+  pi.on("session_start", async (_event, ctx) => {
+    activeSessionContext = snapshotCaptureContext(ctx) ?? activeSessionContext;
+    await reconcileCurrentSession(ctx);
+  });
+
+  pi.on("turn_end", async (event, ctx) => {
+    let resolved: Awaited<ReturnType<typeof resolveCaptureThread>>;
+    let resolvedContext: PiExtensionCaptureContext = ctx;
+    try {
+      resolved = await resolveCaptureThread(event, ctx);
+    } catch (error) {
+      if (isStalePiContextError(error)) {
+        if (!activeSessionContext) {
+          return;
+        }
+        resolvedContext = activeSessionContext;
+        resolved = await resolveCaptureThread(event, activeSessionContext);
+      } else {
+        throw error;
+      }
     }
 
     const { store, thread } = resolved;
@@ -1019,19 +1515,81 @@ export function registerContextStewardExtension(
       return;
     }
 
-    const snapshot = await store.openThread(thread.threadId);
-    if (!snapshot.ok) {
-      return;
-    }
-    for (const turn of snapshot.value.turns) {
-      if (turn.lifecycleStatus === "closed" && !turn.smooth) {
-        await ensureSmoothTurn({ threadId: thread.threadId, turnId: turn.turnId }, { store });
-      }
-    }
+    await maintainAsyncThread(
+      { threadId: thread.threadId },
+      {
+        store,
+        openAIInputTokenCounter: options.openAIInputTokenCounter,
+        tokenCountModel: resolvedContext === ctx ? safeContextModelId(ctx as ExtensionContext) : undefined,
+      },
+    );
   });
 
   pi.on("message_end", async (event, ctx) => {
-    await captureEvent(event, ctx);
+    try {
+      await captureEvent(
+        {
+          ...event,
+          message: restoreOriginalToolResultMessage({
+            message: event.message,
+            ctx,
+            originals: originalToolResults,
+          }),
+        },
+        ctx,
+      );
+    } catch (error) {
+      if (!isStalePiContextError(error) || !activeSessionContext) {
+        throw error;
+      }
+
+      await captureEvent(
+        {
+          ...event,
+          message: restoreOriginalToolResultMessage({
+            message: event.message,
+            ctx: activeSessionContext,
+            originals: originalToolResults,
+          }),
+        },
+        activeSessionContext,
+      );
+    }
+  });
+
+  pi.on("tool_result", async (event, ctx) => {
+    let key: string | undefined;
+    try {
+      key = toolResultSideChannelKey({
+        ctx,
+        toolCallId: event.toolCallId,
+      });
+    } catch (error) {
+      if (!isStalePiContextError(error) || !activeSessionContext) {
+        throw error;
+      }
+      key = toolResultSideChannelKey({
+        ctx: activeSessionContext,
+        toolCallId: event.toolCallId,
+      });
+    }
+    if (key) {
+      originalToolResults.set(key, {
+        content: structuredClone(event.content),
+        isError: event.isError,
+        toolName: event.toolName,
+      });
+    }
+  });
+
+  pi.on("context", async (event) => {
+    if (!liveTruncationEnabled) {
+      return;
+    }
+
+    return {
+      messages: truncatePiLiveContextMessages(event.messages, liveTruncationOptions),
+    };
   });
 
   if (typeof pi.registerCommand !== "function") {

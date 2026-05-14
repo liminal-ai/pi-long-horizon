@@ -1060,8 +1060,9 @@ test("keeps the active generated path separate from the latest projection summar
 
     const snapshot = expectOk(await store.openThread(thread.threadId));
 
-    assert.equal(snapshot.thread.target.currentGeneratedFilePath, activeGeneratedPath);
+    assert.equal(snapshot.thread.target.currentGeneratedFilePath, latestProjectionPath);
     assert.equal(snapshot.thread.threadViewOutputSummary.currentGeneratedFilePath, latestProjectionPath);
+    assert.equal(snapshot.thread.threadViewOutputSummary.currentProjectionRevisionId, "projection-summary-001");
     assert.equal(snapshot.thread.threadViewOutputSummary.count, 1);
     assert.equal(snapshot.thread.threadViewOutputSummary.lastRevisionStatus, "available");
   });
@@ -1090,8 +1091,9 @@ test("returns refreshed projection summary details after recording a revision th
       }),
     );
 
-    assert.equal(updatedThread.target.currentGeneratedFilePath, activeGeneratedPath);
+    assert.equal(updatedThread.target.currentGeneratedFilePath, latestProjectionPath);
     assert.equal(updatedThread.threadViewOutputSummary.currentGeneratedFilePath, latestProjectionPath);
+    assert.equal(updatedThread.threadViewOutputSummary.currentProjectionRevisionId, "projection-summary-002");
     assert.equal(updatedThread.threadViewOutputSummary.count, 1);
     assert.equal(updatedThread.threadViewOutputSummary.lastRevisionStatus, "stale");
   });

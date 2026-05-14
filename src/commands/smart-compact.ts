@@ -78,11 +78,16 @@ export function isOpenAIInputTokenCountProvider(provider: string | undefined): b
 
 function buildGeneratedOutputMetadata(input: {
   threadId: string;
+  projectionRevisionId?: string;
   threadViewId?: string;
+  generatedSessionId?: string;
   generatedFilePath?: string;
   archivePath?: string;
   generatedAt: string;
   status: GeneratedOutputMetadata["status"];
+  modelProvider?: string;
+  modelId?: string;
+  thinkingLevel?: string;
   placeholderExplicit: boolean;
   requestedLowerBound?: number;
   generatedSessionTokenCountMetadata?: GeneratedSessionTokenCountRecord;
@@ -91,12 +96,17 @@ function buildGeneratedOutputMetadata(input: {
 }): GeneratedOutputMetadata {
   return {
     threadId: input.threadId,
+    projectionRevisionId: input.projectionRevisionId,
     threadViewId: input.threadViewId,
+    generatedSessionId: input.generatedSessionId,
     generatedFilePath: input.generatedFilePath,
     archivePath: input.archivePath,
     generatedAt: input.generatedAt,
     status: input.status,
     generatedSource: "thread_view",
+    modelProvider: input.modelProvider,
+    modelId: input.modelId,
+    thinkingLevel: input.thinkingLevel,
     placeholderExplicit: input.placeholderExplicit,
     requestedLowerBound: input.requestedLowerBound,
     generatedSessionTokenCount: input.generatedSessionTokenCountMetadata?.count,
@@ -374,10 +384,12 @@ export async function runSmartCompact(
       };
     }
 
+    const projectionRevisionId = createThreadViewOutputRevisionId();
     const buildResult = await buildDraftThreadView(input, {
       threadStore: dependencies.threadStore,
       threadViewStore: dependencies.threadViewStore,
       now: dependencies.now,
+      reuseExistingDraft: false,
     });
     const compactStatus = compactStatusFromBuildStatus(buildResult.status);
     const hasThresholdIssue = buildResult.blockers.some((issue) => issue.code === "LOWER_THRESHOLD_UNREACHED");
@@ -388,6 +400,7 @@ export async function runSmartCompact(
           threadId: input.threadId,
           generatedOutput: buildGeneratedOutputMetadata({
             threadId: input.threadId,
+            projectionRevisionId,
             threadViewId: buildResult.draftThreadViewId,
             generatedAt: (dependencies.now ?? (() => new Date()))().toISOString(),
             status: "degraded",
@@ -404,6 +417,7 @@ export async function runSmartCompact(
         threadId: input.threadId,
         requestedLowerBound: input.requestedLowerBound,
         requestedBandPercentages: input.requestedBandPercentages,
+        projectionRevisionId,
         threadViewId: buildResult.draftThreadViewId,
         compactStatus,
         blockers: buildResult.blockers,
@@ -445,13 +459,14 @@ export async function runSmartCompact(
       threadId: input.threadId,
       threadViewId: buildResult.draftThreadViewId,
       emittedMessages: threadViewSnapshot.value.view.emittedMessages,
-      sessionId: `sc-${input.threadId.replace("thread_", "").slice(0, 8)}-${buildResult.draftThreadViewId.replace("thread_view_", "").slice(0, 8)}-${Date.now().toString(36)}`,
+      sessionId: `sc-${input.threadId.replace("thread_", "").slice(0, 8)}-${projectionRevisionId.replace("projection_", "").slice(0, 8)}-${Date.now().toString(36)}`,
       cwd: threadSnapshot.value.thread.target.cwd ?? process.cwd(),
       parentSessionId: threadSnapshot.value.thread.target.sessionId,
       modelProvider: input.modelProvider,
       modelId: input.modelId,
       thinkingLevel: input.thinkingLevel,
       generatedAt: (dependencies.now ?? (() => new Date()))().toISOString(),
+      fileName: `${projectionRevisionId}-${buildResult.draftThreadViewId}.jsonl`,
     });
     const writeTimestamp = (
       dependencies.piThreadViewWriterOptions?.now ??
@@ -475,6 +490,7 @@ export async function runSmartCompact(
         threadId: input.threadId,
         generatedOutput: buildGeneratedOutputMetadata({
           threadId: input.threadId,
+          projectionRevisionId,
           threadViewId: buildResult.draftThreadViewId,
           generatedAt: writeTimestamp,
           status: finalCountResult.outputStatus,
@@ -491,6 +507,7 @@ export async function runSmartCompact(
         threadId: input.threadId,
         requestedLowerBound: input.requestedLowerBound,
         requestedBandPercentages: input.requestedBandPercentages,
+        projectionRevisionId,
         threadViewId: buildResult.draftThreadViewId,
         compactStatus: finalCountResult.outputStatus,
         blockers: finalIssues,
@@ -523,6 +540,7 @@ export async function runSmartCompact(
         threadId: input.threadId,
         requestedLowerBound: input.requestedLowerBound,
         requestedBandPercentages: input.requestedBandPercentages,
+        projectionRevisionId,
         threadViewId: buildResult.draftThreadViewId,
         compactStatus: "write_failed",
         blockers: [
@@ -543,6 +561,7 @@ export async function runSmartCompact(
         threadId: input.threadId,
         generatedOutput: buildGeneratedOutputMetadata({
           threadId: input.threadId,
+          projectionRevisionId,
           threadViewId: buildResult.draftThreadViewId,
           generatedAt: (dependencies.now ?? (() => new Date()))().toISOString(),
           status: "write_failed",
@@ -560,6 +579,7 @@ export async function runSmartCompact(
 
     const mappedGeneratedPiIdentities = await dependencies.threadStore.recordThreadIdMap({
       threadId: input.threadId,
+      projectionRevisionId,
       target: {
         runtime: "pi",
         sessionId: countedPiFile.sessionId,
@@ -571,6 +591,7 @@ export async function runSmartCompact(
         threadId: input.threadId,
         requestedLowerBound: input.requestedLowerBound,
         requestedBandPercentages: input.requestedBandPercentages,
+        projectionRevisionId,
         threadViewId: buildResult.draftThreadViewId,
         compactStatus: "blocked",
         blockers: mappedGeneratedPiIdentities.issues,
@@ -584,11 +605,16 @@ export async function runSmartCompact(
         threadId: input.threadId,
         generatedOutput: buildGeneratedOutputMetadata({
           threadId: input.threadId,
+          projectionRevisionId,
           threadViewId: buildResult.draftThreadViewId,
+          generatedSessionId: countedPiFile.sessionId,
           generatedFilePath: writeResult.generatedFilePath,
           archivePath: writeResult.archivePath,
           generatedAt: (dependencies.now ?? (() => new Date()))().toISOString(),
           status: "blocked",
+          modelProvider: countedPiFile.modelProvider,
+          modelId: countedPiFile.modelId,
+          thinkingLevel: countedPiFile.thinkingLevel,
           placeholderExplicit: countedPiFile.placeholderExplicit,
           requestedLowerBound: input.requestedLowerBound,
           generatedSessionTokenCountMetadata,
@@ -619,7 +645,9 @@ export async function runSmartCompact(
       generatedFilePath: writeResult.generatedFilePath,
       generatedOutput: buildGeneratedOutputMetadata({
         threadId: input.threadId,
+        projectionRevisionId,
         threadViewId: buildResult.draftThreadViewId,
+        generatedSessionId: countedPiFile.sessionId,
         generatedFilePath: writeResult.generatedFilePath,
         archivePath: writeResult.archivePath,
         generatedAt: (dependencies.now ?? (() => new Date()))().toISOString(),
@@ -628,6 +656,9 @@ export async function runSmartCompact(
           : finalCompactStatus === "degraded"
             ? "degraded"
             : "reload_failed",
+        modelProvider: countedPiFile.modelProvider,
+        modelId: countedPiFile.modelId,
+        thinkingLevel: countedPiFile.thinkingLevel,
         placeholderExplicit: countedPiFile.placeholderExplicit,
         requestedLowerBound: input.requestedLowerBound,
         generatedSessionTokenCountMetadata,
@@ -635,12 +666,17 @@ export async function runSmartCompact(
         issues: finalIssues,
       }),
       revision: {
-        revisionId: createThreadViewOutputRevisionId(),
+        revisionId: projectionRevisionId,
         threadId: input.threadId,
         threadViewId: buildResult.draftThreadViewId,
         targetRuntime: "pi",
+        generatedSessionId: countedPiFile.sessionId,
         generatedFilePath: writeResult.generatedFilePath,
+        archivePath: writeResult.archivePath,
         createdAt: (dependencies.now ?? (() => new Date()))().toISOString(),
+        modelProvider: countedPiFile.modelProvider,
+        modelId: countedPiFile.modelId,
+        thinkingLevel: countedPiFile.thinkingLevel,
         sourceStateReference: threadViewSnapshot.value.view.sourceStateReference,
         status: buildThreadViewOutputRevisionStatus(finalCompactStatus),
       },
@@ -651,6 +687,7 @@ export async function runSmartCompact(
       threadId: input.threadId,
       requestedLowerBound: input.requestedLowerBound,
       requestedBandPercentages: input.requestedBandPercentages,
+      projectionRevisionId,
       threadViewId: buildResult.draftThreadViewId,
       generatedFilePath: writeResult.generatedFilePath,
       archivePath: writeResult.archivePath,

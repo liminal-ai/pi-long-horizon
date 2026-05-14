@@ -192,6 +192,67 @@ test("conversion unwraps raw custom message content for model-visible token coun
   assert.equal(conversion.representationHash.startsWith("sha256:"), true);
 });
 
+test("conversion shortens overlong tool call ids consistently for OpenAI counting", () => {
+  const longToolCallId = "call_" + "x".repeat(90);
+  const file = makePiThreadViewFile({
+    threadId: "thread-openai-long-call-id",
+    threadViewId: "thread-view-openai-long-call-id",
+    modelProvider: "openai",
+    modelId: "gpt-5.4-mini",
+    entries: [
+      {
+        entryType: "message",
+        role: "assistant",
+        content: {
+          parts: [
+            {
+              partType: "tool_call",
+              content: {
+                toolCallId: longToolCallId,
+                toolName: "read_file",
+                arguments: { path: "build.log" },
+              },
+            },
+          ],
+        },
+        generatedSource: "raw_turn_message",
+      },
+      {
+        entryType: "message",
+        role: "toolResult",
+        content: "build failed at step test",
+        generatedSource: "raw_turn_message",
+        metadata: {
+          toolCallId: longToolCallId,
+          toolName: "read_file",
+        },
+      },
+    ],
+    entryCount: 2,
+  });
+
+  const conversion = convertGeneratedSessionToOpenAIResponsesInput({
+    threadId: file.threadId,
+    threadViewId: file.threadViewId,
+    file,
+  });
+
+  assert.equal(conversion.request.input[0]?.type, "function_call");
+  assert.equal(conversion.request.input[1]?.type, "function_call_output");
+  const mappedCallId = conversion.request.input[0]?.type === "function_call"
+    ? conversion.request.input[0].call_id
+    : undefined;
+  assert.ok(mappedCallId);
+  assert.ok(mappedCallId.length <= 64);
+  assert.notEqual(mappedCallId, longToolCallId);
+  assert.equal(
+    conversion.request.input[1]?.type === "function_call_output"
+      ? conversion.request.input[1].call_id
+      : undefined,
+    mappedCallId,
+  );
+});
+
 test("conversion uses PI writer JSON.stringify fallback for structured visible text", () => {
   const structuredContent = {
     parts: [

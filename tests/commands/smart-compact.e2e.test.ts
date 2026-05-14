@@ -363,8 +363,8 @@ test("smart compact E2E prepare flow repairs deterministic state and archives on
     });
 
     assertExactGeneratedSessionWritten(secondResult);
-    assert.ok(secondResult.archivePath);
-    await access(secondResult.archivePath!);
+    assert.equal(secondResult.archivePath, undefined);
+    assert.notEqual(secondResult.generatedFilePath, firstResult.generatedFilePath);
     assert.deepEqual(switchedTo, [firstResult.generatedFilePath!, secondResult.generatedFilePath!]);
   });
 });

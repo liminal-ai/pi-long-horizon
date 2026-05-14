@@ -70,17 +70,24 @@ interface RegisteredCommand {
   handler: (args: string, ctx: ExtensionCommandContext) => Promise<void>;
 }
 
+interface RegisteredEvent {
+  handler: (event: Record<string, unknown>, ctx: ExtensionCommandContext) => Promise<void>;
+}
+
 function createMockPiApi() {
   const commands = new Map<string, RegisteredCommand>();
+  const events = new Map<string, RegisteredEvent>();
 
   const api = {
-    on: () => undefined,
+    on: (name: string, handler: RegisteredEvent["handler"]) => {
+      events.set(name, { handler });
+    },
     registerCommand: (name: string, options: RegisteredCommand) => {
       commands.set(name, options);
     },
   } as unknown as ExtensionAPI;
 
-  return { api, commands };
+  return { api, commands, events };
 }
 
 function createCommandContext(
@@ -110,8 +117,11 @@ function createCommandContext(
   return { ctx, notifications };
 }
 
-function createSwitchingCommandContext(target: ReturnType<typeof makeThreadTarget>) {
-  const { ctx, notifications } = createCommandContext(target);
+function createSwitchingCommandContext(
+  target: ReturnType<typeof makeThreadTarget>,
+  sessionManagerOverrides: Record<string, unknown> = {},
+) {
+  const { ctx, notifications } = createCommandContext(target, sessionManagerOverrides);
   const replacementNotifications: Array<{ message: string; level: string }> = [];
   const switchedTo: string[] = [];
 
@@ -361,6 +371,137 @@ test("/lh-fixture renders created fixture id and failure code", async () => {
       failureContext.notifications[0]!.message,
       "Fixture failed: No managed thread exists for the current PI session. [FIXTURE_CREATE_FAILED]",
     );
+  });
+});
+
+test("session_start switches an older resumed PI session to the latest generated rollout for the same thread", async () => {
+  await withTempThreadStore(async ({ projectDir, storeRootDir }) => {
+    const baseSessionFile = `${projectDir}/pi/base-session.jsonl`;
+    const oldGeneratedSessionFile = `${projectDir}/.context-steward/threads/thread-resume/generated/old.jsonl`;
+    const generatedSessionFile = `${projectDir}/.context-steward/threads/thread-resume/generated/latest.jsonl`;
+    const target = makeThreadTarget({
+      sessionId: "session-base",
+      sessionFilePath: baseSessionFile,
+      cwd: projectDir,
+    });
+
+    await writePiSessionFile({
+      sessionFilePath: baseSessionFile,
+      sessionId: "session-base",
+      cwd: projectDir,
+      entries: [],
+    });
+    await writePiSessionFile({
+      sessionFilePath: oldGeneratedSessionFile,
+      sessionId: "session-generated-old",
+      cwd: projectDir,
+      entries: [],
+    });
+    await writePiSessionFile({
+      sessionFilePath: generatedSessionFile,
+      sessionId: "session-generated-latest",
+      cwd: projectDir,
+      entries: [],
+    });
+
+    const store = new FileThreadStore(storeRootDir);
+    const opened = await openOrCreateManagedThread({ target }, store);
+    assert.equal(opened.ok, true);
+    const thread = opened.value!;
+    const snapshot = await store.openThread(thread.threadId);
+    assert.equal(snapshot.ok, true);
+
+    assert.equal(
+      (
+        await store.writeProjectionRevision({
+          revisionId: "projection-old",
+          threadId: thread.threadId,
+          threadViewId: "thread-view-old",
+          targetRuntime: "pi",
+          generatedSessionId: "session-generated-old",
+          generatedFilePath: oldGeneratedSessionFile,
+          createdAt: "2026-05-10T00:00:00.000Z",
+          modelProvider: "openai-codex",
+          modelId: "gpt-5.4",
+          thinkingLevel: "high",
+          status: "available",
+        })
+      ).ok,
+      true,
+    );
+
+    assert.equal(
+      (
+        await store.updateThreadMetadata({
+          threadId: thread.threadId,
+          expectedSourceRevision: snapshot.value.thread.sourceRevision,
+          patch: {
+            target: {
+              ...snapshot.value.thread.target,
+              currentGeneratedFilePath: generatedSessionFile,
+            },
+            threadViewOutputSummary: {
+              count: 1,
+              currentProjectionRevisionId: "projection-latest",
+              currentThreadViewId: "thread-view-latest",
+              currentGeneratedSessionId: "session-generated-latest",
+              currentGeneratedFilePath: generatedSessionFile,
+              lastRevisionStatus: "available",
+              generatedOutput: {
+                threadId: thread.threadId,
+                projectionRevisionId: "projection-latest",
+                threadViewId: "thread-view-latest",
+                generatedSessionId: "session-generated-latest",
+                generatedFilePath: generatedSessionFile,
+                generatedAt: "2026-05-11T00:00:00.000Z",
+                status: "available",
+                generatedSource: "thread_view",
+                modelProvider: "openai-codex",
+                modelId: "gpt-5.5",
+                thinkingLevel: "low",
+                placeholderExplicit: false,
+              },
+            },
+          },
+        })
+      ).ok,
+      true,
+    );
+    assert.equal(
+      (
+        await store.writeProjectionRevision({
+          revisionId: "projection-latest",
+          threadId: thread.threadId,
+          threadViewId: "thread-view-latest",
+          targetRuntime: "pi",
+          generatedSessionId: "session-generated-latest",
+          generatedFilePath: generatedSessionFile,
+          createdAt: "2026-05-11T00:00:00.000Z",
+          modelProvider: "openai-codex",
+          modelId: "gpt-5.5",
+          thinkingLevel: "low",
+          status: "available",
+        })
+      ).ok,
+      true,
+    );
+
+    const { api, events } = createMockPiApi();
+    registerContextStewardExtension(api, {
+      createStore: () => store,
+    });
+    const sessionStart = events.get("session_start");
+    assert.ok(sessionStart);
+
+    const olderGeneratedTarget = makeThreadTarget({
+      sessionId: "session-generated-old",
+      sessionFilePath: oldGeneratedSessionFile,
+      cwd: projectDir,
+    });
+    const { ctx, switchedTo } = createSwitchingCommandContext(olderGeneratedTarget);
+    await sessionStart!.handler({ type: "session_start", reason: "resume" }, ctx);
+
+    assert.deepEqual(switchedTo, [generatedSessionFile]);
   });
 });
 
@@ -746,7 +887,15 @@ test("/lh-smart-compact accepts explicit inputs through the production command s
     const smartCompactCommand = commands.get("lh-smart-compact");
     assert.ok(smartCompactCommand);
 
-    const { ctx, notifications, replacementNotifications, switchedTo } = createSwitchingCommandContext(target);
+    const { ctx, notifications, replacementNotifications, switchedTo } = createSwitchingCommandContext(target, {
+      buildSessionContext: () => ({
+        model: {
+          provider: "openai-codex",
+          modelId: "gpt-5.5",
+        },
+        thinkingLevel: "low",
+      }),
+    });
     await smartCompactCommand!.handler(
       "--lower-bound 2000 --full 60 --smooth 40 --detailed 0 --brief 0 --mode prepare",
       ctx,
@@ -764,6 +913,12 @@ test("/lh-smart-compact accepts explicit inputs through the production command s
     const thread = await seeded.threadStore.openThread(seeded.threadId);
     assert.equal(thread.ok, true);
     assert.equal(thread.value.thread.target.currentGeneratedFilePath, switchedTo[0]);
+    assert.equal(thread.value.thread.threadViewOutputSummary.generatedOutput?.modelProvider, "openai-codex");
+    assert.equal(thread.value.thread.threadViewOutputSummary.generatedOutput?.modelId, "gpt-5.5");
+    assert.equal(thread.value.thread.threadViewOutputSummary.generatedOutput?.thinkingLevel, "low");
+    const generatedContent = await readFile(switchedTo[0]!, "utf8");
+    assert.match(generatedContent, /"type":"model_change","provider":"openai-codex","modelId":"gpt-5\.5"/);
+    assert.match(generatedContent, /"type":"thinking_level_change","thinkingLevel":"low"/);
     await access(switchedTo[0]!);
   });
 });
@@ -976,7 +1131,8 @@ test("/lh-smart-compact reloads through the session-switch path even when PI alr
     );
 
     assert.deepEqual(secondRun.notifications, []);
-    assert.deepEqual(secondRun.switchedTo, [currentGeneratedPath]);
+    assert.equal(secondRun.switchedTo.length, 1);
+    assert.notEqual(secondRun.switchedTo[0], currentGeneratedPath);
     assert.equal(secondRun.replacementNotifications.length, 1);
     assert.equal(secondRun.replacementNotifications[0]!.level, "info");
     assert.match(

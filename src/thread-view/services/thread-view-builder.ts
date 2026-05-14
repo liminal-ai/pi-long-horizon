@@ -88,6 +88,7 @@ export interface ThreadViewBuilderDependencies {
   materializer?: ThreadViewMaterializer;
   now?: () => Date;
   createDraftThreadViewId?: () => string;
+  reuseExistingDraft?: boolean;
 }
 
 export function estimateMaterializedMessageTokenCount(content: string | Record<string, unknown>): number {
@@ -633,7 +634,7 @@ async function openOrCreateDraftView(
     `Failed to list Thread Views for ${input.threadId}`,
   );
   const existingDraft = existingViews.find((view) => view.state === "draft");
-  if (existingDraft) {
+  if (existingDraft && dependencies.reuseExistingDraft !== false) {
     return existingDraft;
   }
 

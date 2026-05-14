@@ -106,6 +106,7 @@ export interface SmartCompactCommandResult {
   threadId: string;
   requestedLowerBound: number;
   requestedBandPercentages: ThreadViewBandPercentages;
+  projectionRevisionId?: string;
   threadViewId?: string;
   generatedFilePath?: string;
   archivePath?: string;

@@ -21,6 +21,7 @@ import { ensurePlaceholderArtifacts } from "./placeholder-artifact-service.js";
 import { ensureSmoothTurn } from "./smooth-turn-service.js";
 import { updateChunkState } from "./chunk-service.js";
 import {
+  countRawTurnMaterialized,
   OpenAIInputTokenCounter,
   type TokenCountRecord,
 } from "../../../token-accounting/index.js";
@@ -37,6 +38,17 @@ export interface AsyncThreadRunDependencies {
   >;
   tokenCountModel?: string;
   now?: () => Date;
+}
+
+export interface MaintainAsyncThreadInput {
+  threadId: string;
+}
+
+export interface MaintainAsyncThreadResult {
+  threadId: string;
+  artifactsReady: boolean;
+  tokenCountsReady: boolean;
+  blockers: StewardIssue[];
 }
 
 interface SelectionAwareReadinessPlan {
@@ -846,13 +858,24 @@ async function repairMissingArtifacts(
 async function repairOpenAITokenCounts(
   threadId: string,
   dependencies: AsyncThreadRunDependencies,
+  options: {
+    includeOpenRawTurns: boolean;
+    failureMessage: string;
+    missingCounterMessage: string;
+  } = {
+    includeOpenRawTurns: true,
+    failureMessage:
+      "OpenAI token counting failed during async preparation; strict smart compact cannot use heuristic token counts as success.",
+    missingCounterMessage:
+      "OpenAI materialized token counter is not configured; strict smart compact cannot use heuristic token counts as success.",
+  },
 ): Promise<StewardIssue[]> {
   const counter = dependencies.openAIInputTokenCounter;
   if (!counter) {
     return [
       tokenCountBlockedIssue({
         threadId,
-        message: "OpenAI materialized token counter is not configured; strict smart compact cannot use heuristic token counts as success.",
+        message: options.missingCounterMessage,
       }),
     ];
   }
@@ -868,6 +891,10 @@ async function repairOpenAITokenCounts(
 
   try {
     for (const turn of nextTurns) {
+      if (!options.includeOpenRawTurns && turn.lifecycleStatus !== "closed") {
+        continue;
+      }
+
       const messages = sortMessagesInSourceOrder(
         turn.messageIds
           .map((messageId) => messagesById.get(messageId))
@@ -931,7 +958,7 @@ async function repairOpenAITokenCounts(
       tokenCountIssueFromError(
         error,
         threadId,
-        "OpenAI raw or smooth turn token counting failed during async preparation; strict smart compact cannot use heuristic token counts as success.",
+        options.failureMessage,
       ),
     ];
   }
@@ -1039,7 +1066,7 @@ async function repairOpenAITokenCounts(
       tokenCountIssueFromError(
         error,
         threadId,
-        "OpenAI chunk or placeholder token counting failed during async preparation; strict smart compact cannot use heuristic token counts as success.",
+        options.failureMessage,
       ),
     ];
   }
@@ -1057,6 +1084,156 @@ async function repairOpenAITokenCounts(
   });
 
   return writeChunksResult.ok ? [] : writeChunksResult.issues;
+}
+
+async function persistDegradedRawTokenCountsForClosedTurns(
+  threadId: string,
+  dependencies: AsyncThreadRunDependencies,
+): Promise<StewardIssue[]> {
+  const snapshot = await dependencies.store.openThread(threadId);
+  if (!snapshot.ok) {
+    return snapshot.issues;
+  }
+
+  const messagesById = new Map(snapshot.value.messages.map((message) => [message.messageId, message]));
+  const nextTurns = structuredClone(snapshot.value.turns);
+  let turnsChanged = false;
+
+  for (const turn of nextTurns) {
+    if (turn.lifecycleStatus !== "closed") {
+      continue;
+    }
+
+    const messages = sortMessagesInSourceOrder(
+      turn.messageIds
+        .map((messageId) => messagesById.get(messageId))
+        .filter((message): message is MessageRecord => message !== undefined),
+    );
+    if (messages.length !== turn.messageIds.length) {
+      continue;
+    }
+
+    const expected = countRawTurnMaterialized({
+      turn,
+      messages,
+      now: dependencies.now,
+    });
+    if (
+      isOpenAIProviderInputCount({
+        record: turn.rawTokenCountMetadata,
+        expected,
+        model: dependencies.tokenCountModel,
+      }) ||
+      (
+        turn.rawTokenCountMetadata?.scope === expected.scope &&
+        turn.rawTokenCountMetadata.source === expected.source &&
+        turn.rawTokenCountMetadata.trustClass === expected.trustClass &&
+        turn.rawTokenCountMetadata.sourceRevision === expected.sourceRevision &&
+        turn.rawTokenCountMetadata.representationHash === expected.representationHash &&
+        turn.rawTokenCountMetadata.count === expected.count
+      )
+    ) {
+      continue;
+    }
+
+    turn.rawTokenCountMetadata = expected;
+    turnsChanged = true;
+  }
+
+  if (!turnsChanged) {
+    return [];
+  }
+
+  const writeTurnsResult = await dependencies.store.writeTurns({
+    threadId,
+    expectedSourceRevision: snapshot.value.thread.sourceRevision,
+    expectedMessageHighWatermark: snapshot.value.thread.messageHighWatermark,
+    expectedTurnsRevision: snapshot.value.thread.turnsRevision,
+    turns: nextTurns,
+    turnState: snapshot.value.thread.status.turnState,
+  });
+
+  return writeTurnsResult.ok ? [] : writeTurnsResult.issues;
+}
+
+async function persistTokenCountingMaintenanceStatus(input: {
+  threadId: string;
+  dependencies: AsyncThreadRunDependencies;
+  status: "ready" | "repair_needed";
+  issues: readonly StewardIssue[];
+}): Promise<StewardIssue[]> {
+  const snapshot = await input.dependencies.store.openThread(input.threadId);
+  if (!snapshot.ok) {
+    return snapshot.issues;
+  }
+
+  const updatedAt = (input.dependencies.now ?? (() => new Date()))().toISOString();
+  const writeResult = await input.dependencies.store.updateThreadMetadata({
+    threadId: input.threadId,
+    expectedSourceRevision: snapshot.value.thread.sourceRevision,
+    patch: {
+      status: {
+        ...snapshot.value.thread.status,
+        tokenCounting: {
+          status: input.status,
+          updatedAt,
+          sourceRevision: snapshot.value.thread.sourceRevision,
+          issueCount: input.issues.length,
+          issues: input.issues.map((issue) => createStewardIssue(issue)),
+        },
+      },
+      updatedAt,
+    },
+  });
+
+  return writeResult.ok ? [] : writeResult.issues;
+}
+
+export async function maintainAsyncThread(
+  input: MaintainAsyncThreadInput,
+  dependencies?: AsyncThreadRunDependencies,
+): Promise<MaintainAsyncThreadResult> {
+  if (!dependencies?.store) {
+    const blockers = [
+      createStewardIssue({
+        code: "STORE_UNAVAILABLE",
+        message: "maintainAsyncThread requires a thread store dependency.",
+        threadId: input.threadId,
+      }),
+    ];
+
+    return {
+      threadId: input.threadId,
+      artifactsReady: false,
+      tokenCountsReady: false,
+      blockers,
+    };
+  }
+
+  const artifactIssues = await repairMissingArtifacts(input.threadId, dependencies);
+  const degradedRawIssues = await persistDegradedRawTokenCountsForClosedTurns(input.threadId, dependencies);
+  const tokenCountIssues = await repairOpenAITokenCounts(input.threadId, dependencies, {
+    includeOpenRawTurns: false,
+    missingCounterMessage:
+      "OpenAI materialized token counter is not configured; async maintenance left exact materialized token counts repair-needed for smart compact prepare.",
+    failureMessage:
+      "OpenAI materialized token counting failed during async maintenance; deterministic artifacts were left with repair-needed heuristic counts for smart compact prepare.",
+  });
+  const tokenCountingIssues = [...degradedRawIssues, ...tokenCountIssues];
+  const persistedStatusIssues = await persistTokenCountingMaintenanceStatus({
+    threadId: input.threadId,
+    dependencies,
+    status: tokenCountingIssues.length === 0 ? "ready" : "repair_needed",
+    issues: tokenCountingIssues,
+  });
+  const blockers = [...artifactIssues, ...tokenCountingIssues, ...persistedStatusIssues].map((issue) => createStewardIssue(issue));
+
+  return {
+    threadId: input.threadId,
+    artifactsReady: artifactIssues.length === 0,
+    tokenCountsReady: tokenCountingIssues.length === 0 && persistedStatusIssues.length === 0,
+    blockers,
+  };
 }
 
 export async function prepareAsyncThread(

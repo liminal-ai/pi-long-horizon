@@ -23,6 +23,7 @@ export interface CreateThreadInput {
 export interface RecordThreadIdMapInput {
   threadId: string;
   target: ThreadTargetRef;
+  projectionRevisionId?: string;
 }
 
 export interface ThreadSnapshot {
@@ -84,6 +85,7 @@ export interface ThreadStore {
   openFixture(fixtureId: string): Promise<StewardResult<FixtureSnapshot>>;
   recordThreadIdMap(input: RecordThreadIdMapInput): Promise<StewardResult<void>>;
   resolveThreadIdMap(target: ThreadTargetRef): Promise<StewardResult<string | undefined>>;
+  resolveProjectionRevisionIdMap(target: ThreadTargetRef): Promise<StewardResult<string | undefined>>;
   findThreadByTarget(target: ThreadTargetRef): Promise<StewardResult<ThreadRecord | undefined>>;
   findManagedThread(target: ThreadTargetMetadata): Promise<StewardResult<ThreadRecord | undefined>>;
   assertCanMutate(threadId: string): Promise<StewardResult<ThreadRecord>>;

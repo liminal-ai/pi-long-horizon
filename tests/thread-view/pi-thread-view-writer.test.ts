@@ -435,14 +435,14 @@ test("assistant tool calls without real IDs fail fast", async () => {
   });
 });
 
-test("model and thinking settings serialize before message entries", async () => {
+test("model and thinking settings serialize before message entries and restore without defaults", async () => {
   await withTempFeature3Store(async (context) => {
     const file = makePiThreadViewFile({
       threadId: "thread-settings",
       threadViewId: "thread-view-settings",
       modelProvider: "openai-codex",
-      modelId: "gpt-5.4-mini",
-      thinkingLevel: "high",
+      modelId: "gpt-5.5",
+      thinkingLevel: "low",
       entries: [
         {
           entryType: "message",
@@ -476,18 +476,18 @@ test("model and thinking settings serialize before message entries", async () =>
     // contribute model state, so generated assistant metadata must stay aligned.
     assert.equal(modelEntry.type, "model_change");
     assert.equal(modelEntry.provider, "openai-codex");
-    assert.equal(modelEntry.modelId, "gpt-5.4-mini");
+    assert.equal(modelEntry.modelId, "gpt-5.5");
     assert.equal(thinkingEntry.type, "thinking_level_change");
-    assert.equal(thinkingEntry.thinkingLevel, "high");
+    assert.equal(thinkingEntry.thinkingLevel, "low");
     assert.equal(messageEntry.type, "message");
     assert.equal(messageEntry.parentId, "thread-view-thinking-level-change-001");
     assert.equal(messageEntry.message.provider, "openai-codex");
-    assert.equal(messageEntry.message.model, "gpt-5.4-mini");
+    assert.equal(messageEntry.message.model, "gpt-5.5");
     assert.deepEqual(sessionContext.model, {
       provider: "openai-codex",
-      modelId: "gpt-5.4-mini",
+      modelId: "gpt-5.5",
     });
-    assert.equal(sessionContext.thinkingLevel, "high");
+    assert.equal(sessionContext.thinkingLevel, "low");
   });
 });
 

@@ -10,6 +10,7 @@ import {
   capturePiEvent,
   mapPiCaptureEventToActivity,
   registerContextStewardExtension,
+  truncatePiLiveContextMessages,
 } from "../../src/context-steward/pi/pi-extension.js";
 import { mapPiMessageEnd } from "../../src/context-steward/pi/pi-message-mapper.js";
 import { captureFinalizedActivity } from "../../src/context-steward/services/capture-service.js";
@@ -350,6 +351,92 @@ test("captures a finalized PI tool result with tool metadata and typed parts", a
     assert.equal(captured.message.targetMetadata?.toolCallId, "call-777");
     assert.equal(captured.message.targetMetadata?.toolName, "bash");
     assert.equal(captured.message.tokenTelemetry, undefined);
+  });
+});
+
+test("live PI context truncates older tool results after the raw-zone threshold", () => {
+  const oldToolResult = makePiToolResultMessage({
+    toolCallId: "call-live-truncate",
+    content: [{ type: "text", text: "A".repeat(500) }],
+  });
+  const messages = [
+    makePiUserMessage({ content: "start" }),
+    oldToolResult,
+    makePiAssistantMessage({ content: [{ type: "text", text: "newer response" }] }),
+  ];
+
+  const truncated = truncatePiLiveContextMessages(messages, {
+    rawZoneTokenThreshold: 10,
+    truncatedCharLimit: 24,
+  });
+  const truncatedTool = truncated[1] as ReturnType<typeof makePiToolResultMessage>;
+
+  assert.equal((truncatedTool.content[0] as { text: string }).text, `${"A".repeat(24)}...`);
+  assert.equal((oldToolResult.content[0] as { text: string }).text, "A".repeat(500));
+});
+
+test("live PI context leaves tool results untouched before the raw-zone threshold", () => {
+  const messages = [
+    makePiUserMessage({ content: "start" }),
+    makePiToolResultMessage({
+      toolCallId: "call-live-no-truncate",
+      content: [{ type: "text", text: "short output" }],
+    }),
+    makePiAssistantMessage({ content: [{ type: "text", text: "newer response" }] }),
+  ];
+
+  const truncated = truncatePiLiveContextMessages(messages, {
+    rawZoneTokenThreshold: 10_000,
+    truncatedCharLimit: 24,
+  });
+  const tool = truncated[1] as ReturnType<typeof makePiToolResultMessage>;
+
+  assert.equal((tool.content[0] as { text: string }).text, "short output");
+});
+
+test("production hooks preserve canonical tool output when PI-visible tool result was truncated", async () => {
+  await withTempThreadStore(async ({ storeRootDir }) => {
+    const { store, thread, ctx } = await createManagedThread(storeRootDir);
+    const pi = new FakeExtensionApi();
+    const fullOutput = "canonical tool output ".repeat(40);
+
+    registerContextStewardExtension(pi as unknown as ExtensionAPI, {
+      createStore: () => store,
+      liveToolResultTruncation: {
+        rawZoneTokenThreshold: 10,
+        truncatedCharLimit: 24,
+      },
+    });
+    await pi.emit(
+      "tool_result",
+      {
+        type: "tool_result",
+        toolCallId: "call-side-channel",
+        toolName: "bash",
+        input: {},
+        content: [{ type: "text", text: fullOutput }],
+        details: undefined,
+        isError: false,
+      },
+      ctx,
+    );
+    await pi.emit(
+      "message_end",
+      {
+        type: "message_end",
+        message: makePiToolResultMessage({
+          toolCallId: "call-side-channel",
+          toolName: "bash",
+          content: [{ type: "text", text: "canonical tool output..." }],
+        }),
+      },
+      ctx,
+    );
+
+    const messages = expectOk(await store.readMessages(thread.threadId));
+    const output = (messages[0]?.parts[0]?.content as { output?: string }).output;
+
+    assert.equal(output, fullOutput);
   });
 });
 
@@ -1118,6 +1205,90 @@ test("production turn_end handler smooths closed turns and skips open turns", as
     assert.equal(typeof after.turns[0]?.smooth?.text, "string");
     assert.equal(after.turns[0]?.smooth?.tokenCountMetadata?.count !== undefined, true);
     assert.equal(after.turns[1]?.smooth, undefined);
+  });
+});
+
+test("production turn_end handler persists token-count maintenance failures", async () => {
+  await withTempThreadStore(async ({ storeRootDir, projectDir, resolveProjectPath }) => {
+    const target = makeThreadTarget({
+      sessionId: "session-production-turn-end-token-count-failure",
+      sessionFilePath: resolveProjectPath("pi", "session-production-turn-end-token-count-failure.jsonl"),
+      cwd: projectDir,
+    });
+    const { store, thread, ctx } = await createManagedThread(storeRootDir, target);
+
+    expectOk(
+      await capturePiEvent({
+        store,
+        threadId: thread.threadId,
+        event: { type: "message_end", message: makePiUserMessage({ content: "First prompt" }) },
+        ctx,
+      }),
+    );
+    expectOk(
+      await capturePiEvent({
+        store,
+        threadId: thread.threadId,
+        event: {
+          type: "message_end",
+          message: makePiAssistantMessage({
+            responseId: "response-turn-end-token-count-failure-001",
+            content: [{ type: "text", text: "First response" }],
+          }),
+        },
+        ctx,
+      }),
+    );
+    expectOk(
+      await capturePiEvent({
+        store,
+        threadId: thread.threadId,
+        event: { type: "message_end", message: makePiUserMessage({ content: "Second prompt" }) },
+        ctx,
+      }),
+    );
+
+    const pi = new FakeExtensionApi();
+    registerContextStewardExtension(pi as unknown as ExtensionAPI, {
+      createStore: () => store,
+      openAIInputTokenCounter: {
+        async countRawTurnMaterialized() {
+          throw new Error("simulated OpenAI count failure");
+        },
+        async countSmoothTurnMaterialized() {
+          throw new Error("simulated OpenAI count failure");
+        },
+        async countChunkSmoothMaterialized() {
+          throw new Error("simulated OpenAI count failure");
+        },
+        async countDetailedChunkMaterialized() {
+          throw new Error("simulated OpenAI count failure");
+        },
+        async countBriefChunkMaterialized() {
+          throw new Error("simulated OpenAI count failure");
+        },
+        async countGeneratedSession() {
+          throw new Error("simulated OpenAI count failure");
+        },
+      },
+    });
+    await pi.emit(
+      "turn_end",
+      {
+        type: "turn_end",
+        turnIndex: 2,
+        message: makePiAssistantMessage({ content: [{ type: "text", text: "Turn finished" }] }),
+        toolResults: [],
+      },
+      ctx,
+    );
+
+    const after = expectOk(await store.openThread(thread.threadId));
+    assert.equal(after.thread.status.tokenCounting?.status, "repair_needed");
+    assert.equal(after.thread.status.tokenCounting?.issueCount, 1);
+    assert.equal(after.thread.status.tokenCounting?.issues?.some((issue) => issue.code === "TOKEN_COUNT_BLOCKED"), true);
+    assert.equal(after.turns[0]?.rawTokenCountMetadata?.source, "pi_heuristic");
+    assert.equal(after.turns[0]?.smooth?.tokenCountMetadata?.source, "pi_heuristic");
   });
 });
 

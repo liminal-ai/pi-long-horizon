@@ -13,12 +13,17 @@ export type GeneratedOutputStatus = (typeof GENERATED_OUTPUT_STATUSES)[number];
 
 export interface GeneratedOutputMetadata {
   threadId: string;
+  projectionRevisionId?: string;
   threadViewId?: string;
+  generatedSessionId?: string;
   generatedFilePath?: string;
   archivePath?: string;
   generatedAt?: string;
   status: GeneratedOutputStatus;
   generatedSource: "thread_view";
+  modelProvider?: string;
+  modelId?: string;
+  thinkingLevel?: string;
   placeholderExplicit: boolean;
   requestedLowerBound?: number;
   generatedSessionTokenCount?: number;

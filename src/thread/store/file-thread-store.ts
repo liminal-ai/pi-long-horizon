@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { appendFile, mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 
 import { fail, ok, type StewardIssue, type StewardResult } from "../domain/errors.js";
@@ -69,8 +69,23 @@ interface ReconciledThreadIdMap {
 }
 
 interface ThreadIdMap {
-  schemaVersion: 1;
+  schemaVersion: 2;
   threadIdByPiIdentityKey: Record<string, string>;
+  projectionRevisionIdByPiIdentityKey: Record<string, string>;
+}
+
+interface SerializedThreadIdMap {
+  schemaVersion?: 1 | 2;
+  threadIdByPiIdentityKey?: Record<string, string>;
+  projectionRevisionIdByPiIdentityKey?: Record<string, string>;
+}
+
+interface ParsedPiSessionHeader {
+  sessionId?: string;
+  generatedAt?: string;
+  modelProvider?: string;
+  modelId?: string;
+  thinkingLevel?: string;
 }
 
 interface ThreadMutationLeaseFile {
@@ -132,10 +147,14 @@ function targetAssociationConflict(message: string): StewardIssue {
   };
 }
 
-function createThreadIdMap(threadIdByPiIdentityKey: Record<string, string> = {}): ThreadIdMap {
+function createThreadIdMap(
+  threadIdByPiIdentityKey: Record<string, string> = {},
+  projectionRevisionIdByPiIdentityKey: Record<string, string> = {},
+): ThreadIdMap {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     threadIdByPiIdentityKey: { ...threadIdByPiIdentityKey },
+    projectionRevisionIdByPiIdentityKey: { ...projectionRevisionIdByPiIdentityKey },
   };
 }
 
@@ -243,36 +262,93 @@ export class FileThreadStore implements ThreadStore {
     }
   }
 
-  async recordThreadIdMap(input: { threadId: string; target: ThreadTargetRef }): Promise<StewardResult<void>> {
+  async recordThreadIdMap(input: { threadId: string; target: ThreadTargetRef; projectionRevisionId?: string }): Promise<StewardResult<void>> {
     try {
       await this.ensureStoreReady();
       await this.readThreadRecord(input.threadId);
 
-      const keySet = this.deriveKeys(input.target);
+      return await this.recordPiIdentityMapping(input);
+    } catch (error) {
+      return fail(storeUnavailableIssue(error, "recordThreadIdMap", input.threadId));
+    }
+  }
+
+  async resolveProjectionRevisionIdMap(target: ThreadTargetRef): Promise<StewardResult<string | undefined>> {
+    try {
+      await this.ensureStoreReady();
+
+      const keySet = this.deriveKeys(target);
       if (!keySet.ok) {
         return keySet;
       }
 
       const map = await this.readThreadIdMap();
-      const nextMap = createThreadIdMap(map.threadIdByPiIdentityKey);
-      for (const key of [keySet.value.canonicalKey, ...keySet.value.aliasKeys]) {
-        const mappedThreadId = nextMap.threadIdByPiIdentityKey[key];
-        if (mappedThreadId && mappedThreadId !== input.threadId) {
-          return fail(
-            targetAssociationConflict(
-              `PI identity ${key} is already mapped to thread ${mappedThreadId} in threadId-map.json.`,
-            ),
-          );
-        }
-
-        nextMap.threadIdByPiIdentityKey[key] = input.threadId;
+      const canonicalProjectionRevisionId = map.projectionRevisionIdByPiIdentityKey[keySet.value.canonicalKey];
+      if (canonicalProjectionRevisionId) {
+        return ok(canonicalProjectionRevisionId);
       }
 
-      await this.writeJsonAtomic(this.threadIdMapPath, nextMap);
-      return ok(undefined);
+      const mappedProjectionRevisionIds = new Set<string>();
+      for (const key of keySet.value.aliasKeys) {
+        const projectionRevisionId = map.projectionRevisionIdByPiIdentityKey[key];
+        if (projectionRevisionId) {
+          mappedProjectionRevisionIds.add(projectionRevisionId);
+        }
+      }
+
+      if (mappedProjectionRevisionIds.size === 0) {
+        return ok(undefined);
+      }
+
+      if (mappedProjectionRevisionIds.size > 1) {
+        return fail(
+          targetAssociationConflict(
+            `PI identities for ${keySet.value.canonicalKey} map to multiple generated projections in threadId-map.json: ${[
+              ...mappedProjectionRevisionIds,
+            ].join(", ")}.`,
+          ),
+        );
+      }
+
+      return ok([...mappedProjectionRevisionIds][0]);
     } catch (error) {
-      return fail(storeUnavailableIssue(error, "recordThreadIdMap", input.threadId));
+      return fail(storeUnavailableIssue(error, "resolveProjectionRevisionIdMap"));
     }
+  }
+
+  private async recordPiIdentityMapping(input: {
+    threadId: string;
+    target: ThreadTargetRef;
+    projectionRevisionId?: string;
+  }): Promise<StewardResult<void>> {
+    const keySet = this.deriveKeys(input.target);
+    if (!keySet.ok) {
+      return keySet;
+    }
+
+    const map = await this.readThreadIdMap();
+    const nextMap = createThreadIdMap(
+      map.threadIdByPiIdentityKey,
+      map.projectionRevisionIdByPiIdentityKey,
+    );
+    for (const key of [keySet.value.canonicalKey, ...keySet.value.aliasKeys]) {
+      const mappedThreadId = nextMap.threadIdByPiIdentityKey[key];
+      if (mappedThreadId && mappedThreadId !== input.threadId) {
+        return fail(
+          targetAssociationConflict(
+            `PI identity ${key} is already mapped to thread ${mappedThreadId} in threadId-map.json.`,
+          ),
+        );
+      }
+
+      nextMap.threadIdByPiIdentityKey[key] = input.threadId;
+      if (input.projectionRevisionId) {
+        nextMap.projectionRevisionIdByPiIdentityKey[key] = input.projectionRevisionId;
+      }
+    }
+
+    await this.writeJsonAtomic(this.threadIdMapPath, nextMap);
+    return ok(undefined);
   }
 
   async resolveThreadIdMap(target: ThreadTargetRef): Promise<StewardResult<string | undefined>> {
@@ -726,15 +802,40 @@ export class FileThreadStore implements ThreadStore {
       nextProjections.sort((left, right) => left.createdAt.localeCompare(right.createdAt));
       await this.writeJsonAtomic(paths.projections, nextProjections);
 
-      const latest = nextProjections[nextProjections.length - 1];
+      const latest = this.selectCurrentProjection(nextProjections, record.revisionId);
       const nextThread = structuredClone(thread.value);
       nextThread.threadViewOutputSummary = {
+        ...nextThread.threadViewOutputSummary,
         count: nextProjections.length,
+        currentProjectionRevisionId: latest?.revisionId,
+        currentThreadViewId: latest?.threadViewId,
+        currentGeneratedSessionId: latest?.generatedSessionId,
         currentGeneratedFilePath: latest?.generatedFilePath,
         lastRevisionStatus: latest?.status,
       };
+      if (latest?.generatedFilePath) {
+        nextThread.target = {
+          ...nextThread.target,
+          currentGeneratedFilePath: latest.generatedFilePath,
+        };
+      }
       nextThread.updatedAt = new Date().toISOString();
       await this.writeThreadJsonAtomic(paths.thread, nextThread);
+
+      if (record.generatedSessionId || record.generatedFilePath) {
+        const mapResult = await this.recordPiIdentityMapping({
+          threadId: record.threadId,
+          target: {
+            runtime: record.targetRuntime,
+            sessionId: record.generatedSessionId,
+            sessionFilePath: record.generatedFilePath,
+          },
+          projectionRevisionId: record.revisionId,
+        });
+        if (!mapResult.ok) {
+          return mapResult;
+        }
+      }
 
       return ok(structuredClone(record));
     });
@@ -824,6 +925,7 @@ export class FileThreadStore implements ThreadStore {
       await this.cleanupNestedTempFiles(this.threadsDir);
       await this.cleanupNestedTempFiles(this.fixturesDir);
       await this.cleanupExpiredThreadMutationLeases();
+      await this.migrateGeneratedRolloutIdentities();
 
       const reconciled = await this.reconcileRootIndex();
       if (!reconciled.ok) {
@@ -860,6 +962,312 @@ export class FileThreadStore implements ThreadStore {
 
       return fail(storeUnavailableIssue(error, "openMappedManagedThread", threadId));
     }
+  }
+
+  private async migrateGeneratedRolloutIdentities(): Promise<void> {
+    const entries = await readdir(this.threadsDir, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") {
+        return [];
+      }
+
+      throw error;
+    });
+
+    for (const entry of entries) {
+      if (!entry.isDirectory()) {
+        continue;
+      }
+
+      const threadId = entry.name;
+      const paths = this.getThreadPaths(threadId);
+      if (!(await this.fileExists(paths.thread))) {
+        continue;
+      }
+
+      await this.migrateThreadGeneratedRolloutIdentities(threadId);
+    }
+  }
+
+  private async migrateThreadGeneratedRolloutIdentities(threadId: string): Promise<void> {
+    const paths = this.getThreadPaths(threadId);
+    const thread = await this.readThreadJsonFile(paths.thread);
+    const projections = await this.readJsonFile<ProjectionRevisionRecord[]>(paths.projections, []);
+    if (projections.length === 0) {
+      return;
+    }
+
+    const pathCounts = new Map<string, number>();
+    for (const projection of projections) {
+      if (!projection.generatedFilePath) {
+        continue;
+      }
+
+      pathCounts.set(projection.generatedFilePath, (pathCounts.get(projection.generatedFilePath) ?? 0) + 1);
+    }
+
+    const summary = thread.threadViewOutputSummary;
+    const needsMigration = projections.some((projection) => {
+      const hasUniqueGeneratedPath =
+        projection.generatedFilePath &&
+        basename(projection.generatedFilePath).startsWith(`${projection.revisionId}-`) &&
+        pathCounts.get(projection.generatedFilePath) === 1;
+      const isManagedGeneratedPath = projection.generatedFilePath
+        ? resolve(projection.generatedFilePath).startsWith(resolve(join(paths.threadDir, "generated")))
+        : false;
+
+      return (
+        projection.status === "available" &&
+        ((isManagedGeneratedPath && (!projection.threadViewId || !projection.generatedSessionId || !hasUniqueGeneratedPath)) ||
+          !summary.currentProjectionRevisionId ||
+          !summary.currentThreadViewId)
+      );
+    });
+    if (!needsMigration) {
+      return;
+    }
+
+    const sortedProjections = [...projections].sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+    const archivedSources = await this.listGeneratedRolloutArchivePaths(threadId);
+    const nextProjections: ProjectionRevisionRecord[] = [];
+    let archiveIndex = 0;
+
+    for (const projection of sortedProjections) {
+      const pathIsShared = projection.generatedFilePath
+        ? (pathCounts.get(projection.generatedFilePath) ?? 0) > 1
+        : false;
+      const pathAlreadyUnique =
+        projection.generatedFilePath &&
+        basename(projection.generatedFilePath).startsWith(`${projection.revisionId}-`) &&
+        (pathCounts.get(projection.generatedFilePath) ?? 0) === 1;
+      const isManagedGeneratedPath = projection.generatedFilePath
+        ? resolve(projection.generatedFilePath).startsWith(resolve(join(paths.threadDir, "generated")))
+        : false;
+      const shouldRewrite =
+        projection.status === "available" &&
+        isManagedGeneratedPath &&
+        (!pathAlreadyUnique || !projection.threadViewId || !projection.generatedSessionId);
+
+      if (!shouldRewrite) {
+        nextProjections.push(structuredClone(projection));
+        continue;
+      }
+
+      const sourcePath = pathIsShared ? archivedSources[archiveIndex++] ?? projection.generatedFilePath : projection.generatedFilePath;
+      if (!sourcePath || !(await this.fileExists(sourcePath))) {
+        nextProjections.push({
+          ...projection,
+          status: "stale",
+        });
+        continue;
+      }
+
+      const existingThreadViewId = projection.threadViewId;
+      const nextThreadViewId = pathIsShared || !existingThreadViewId
+        ? `thread_view_${randomUUID()}`
+        : existingThreadViewId;
+      const nextGeneratedFilePath = resolve(
+        join(paths.threadDir, "generated", `${projection.revisionId}-${nextThreadViewId}.jsonl`),
+      );
+      const sourceContent = await readFile(sourcePath, "utf8");
+      const parsed = this.parsePiSessionHeader(sourceContent);
+      const nextContent = this.rewriteGeneratedRolloutFileContent(sourceContent, {
+        threadId,
+        threadViewId: nextThreadViewId,
+        fileName: basename(nextGeneratedFilePath),
+      });
+      await mkdir(dirname(nextGeneratedFilePath), { recursive: true });
+      await writeFile(nextGeneratedFilePath, nextContent, "utf8");
+      await this.copyThreadViewForGeneratedRollout(threadId, existingThreadViewId, nextThreadViewId, projection, parsed);
+
+      nextProjections.push({
+        ...projection,
+        threadViewId: nextThreadViewId,
+        generatedSessionId: projection.generatedSessionId ?? parsed.sessionId,
+        generatedFilePath: nextGeneratedFilePath,
+        archivePath: sourcePath !== projection.generatedFilePath ? sourcePath : projection.archivePath,
+        modelProvider: projection.modelProvider ?? parsed.modelProvider,
+        modelId: projection.modelId ?? parsed.modelId,
+        thinkingLevel: projection.thinkingLevel ?? parsed.thinkingLevel,
+        status: parsed.sessionId || projection.generatedSessionId ? projection.status : "stale",
+      });
+    }
+
+    const currentProjection = this.selectCurrentProjection(nextProjections);
+    const nextThread: ThreadRecord = {
+      ...thread,
+      target: {
+        ...thread.target,
+        currentGeneratedFilePath: currentProjection?.generatedFilePath ?? thread.target.currentGeneratedFilePath,
+      },
+      threadViewOutputSummary: {
+        ...thread.threadViewOutputSummary,
+        count: nextProjections.length,
+        currentProjectionRevisionId: currentProjection?.revisionId,
+        currentThreadViewId: currentProjection?.threadViewId,
+        currentGeneratedSessionId: currentProjection?.generatedSessionId,
+        currentGeneratedFilePath: currentProjection?.generatedFilePath,
+        lastRevisionStatus: currentProjection?.status ?? thread.threadViewOutputSummary.lastRevisionStatus,
+        generatedOutput: thread.threadViewOutputSummary.generatedOutput
+          ? {
+              ...thread.threadViewOutputSummary.generatedOutput,
+              projectionRevisionId: currentProjection?.revisionId,
+              threadViewId: currentProjection?.threadViewId ?? thread.threadViewOutputSummary.generatedOutput.threadViewId,
+              generatedSessionId:
+                currentProjection?.generatedSessionId ?? thread.threadViewOutputSummary.generatedOutput.generatedSessionId,
+              generatedFilePath:
+                currentProjection?.generatedFilePath ?? thread.threadViewOutputSummary.generatedOutput.generatedFilePath,
+              modelProvider: currentProjection?.modelProvider ?? thread.threadViewOutputSummary.generatedOutput.modelProvider,
+              modelId: currentProjection?.modelId ?? thread.threadViewOutputSummary.generatedOutput.modelId,
+              thinkingLevel: currentProjection?.thinkingLevel ?? thread.threadViewOutputSummary.generatedOutput.thinkingLevel,
+            }
+          : thread.threadViewOutputSummary.generatedOutput,
+      },
+    };
+
+    await this.writeJsonAtomic(paths.projections, nextProjections);
+    await this.writeThreadJsonAtomic(paths.thread, nextThread);
+  }
+
+  private async listGeneratedRolloutArchivePaths(threadId: string): Promise<string[]> {
+    const archiveDir = join(this.getThreadPaths(threadId).threadDir, "archives", "pi-thread-views");
+    const entries = await readdir(archiveDir, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") {
+        return [];
+      }
+
+      throw error;
+    });
+
+    return entries
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".jsonl"))
+      .map((entry) => join(archiveDir, entry.name))
+      .sort();
+  }
+
+  private parsePiSessionHeader(content: string): ParsedPiSessionHeader {
+    const parsed: ParsedPiSessionHeader = {};
+    for (const line of content.split("\n")) {
+      if (!line.trim()) {
+        continue;
+      }
+
+      let entry: Record<string, unknown>;
+      try {
+        entry = JSON.parse(line) as Record<string, unknown>;
+      } catch {
+        continue;
+      }
+
+      if (entry.type === "session") {
+        parsed.sessionId = typeof entry.id === "string" ? entry.id : parsed.sessionId;
+        parsed.generatedAt = typeof entry.timestamp === "string" ? entry.timestamp : parsed.generatedAt;
+      }
+
+      if (entry.type === "model_change") {
+        parsed.modelProvider = typeof entry.provider === "string" ? entry.provider : parsed.modelProvider;
+        parsed.modelId = typeof entry.modelId === "string" ? entry.modelId : parsed.modelId;
+      }
+
+      if (entry.type === "thinking_level_change") {
+        parsed.thinkingLevel = typeof entry.thinkingLevel === "string" ? entry.thinkingLevel : parsed.thinkingLevel;
+      }
+    }
+
+    return parsed;
+  }
+
+  private rewriteGeneratedRolloutFileContent(
+    content: string,
+    input: { threadId: string; threadViewId: string; fileName: string },
+  ): string {
+    const lines = content.split("\n");
+    const rewritten = lines.map((line) => {
+      if (!line.trim()) {
+        return line;
+      }
+
+      let entry: Record<string, unknown>;
+      try {
+        entry = JSON.parse(line) as Record<string, unknown>;
+      } catch {
+        return line;
+      }
+
+      if (entry.type === "custom" && entry.customType === "pi-long-horizon.thread-view.output") {
+        const data = entry.data && typeof entry.data === "object" ? entry.data as Record<string, unknown> : {};
+        entry = {
+          ...entry,
+          data: {
+            ...data,
+            threadId: input.threadId,
+            threadViewId: input.threadViewId,
+            fileName: input.fileName,
+          },
+        };
+      }
+
+      return JSON.stringify(entry);
+    });
+
+    return rewritten.join("\n").replace(/\n*$/, "\n");
+  }
+
+  private async copyThreadViewForGeneratedRollout(
+    threadId: string,
+    sourceThreadViewId: string | undefined,
+    nextThreadViewId: string,
+    projection: ProjectionRevisionRecord,
+    parsed: ParsedPiSessionHeader,
+  ): Promise<void> {
+    const threadViewsDir = join(this.getThreadPaths(threadId).threadDir, "thread-views");
+    const sourcePath = sourceThreadViewId
+      ? join(threadViewsDir, sourceThreadViewId, "thread-view.json")
+      : undefined;
+    const targetPath = join(threadViewsDir, nextThreadViewId, "thread-view.json");
+    if (await this.fileExists(targetPath)) {
+      return;
+    }
+
+    let view: Record<string, unknown>;
+    if (sourcePath && await this.fileExists(sourcePath)) {
+      view = await this.readJsonFile<Record<string, unknown>>(sourcePath);
+    } else {
+      view = {
+        threadViewId: nextThreadViewId,
+        threadId,
+        state: "archived",
+        name: `Migrated generated rollout ${projection.createdAt}`,
+        purpose: "migrated generated rollout",
+        createdAt: parsed.generatedAt ?? projection.createdAt,
+        updatedAt: projection.createdAt,
+        sourceStateReference: projection.sourceStateReference,
+        fullFidelityBand: { bandType: "full_fidelity", targetTokenBudget: 0, sourceUnitType: "turn", selectedIds: [], renderedStatus: "unknown" },
+        smoothBand: { bandType: "smooth", targetTokenBudget: 0, sourceUnitType: "turn", selectedIds: [], renderedStatus: "unknown" },
+        detailedBand: { bandType: "detailed", targetTokenBudget: 0, sourceUnitType: "chunk", selectedIds: [], renderedStatus: "unknown" },
+        briefBand: { bandType: "brief", targetTokenBudget: 0, sourceUnitType: "chunk", selectedIds: [], renderedStatus: "unknown" },
+        emittedMessages: [],
+        status: projection.status === "available" ? "ready" : "unknown",
+      };
+    }
+
+    view = {
+      ...view,
+      threadViewId: nextThreadViewId,
+      threadId,
+      state: "archived",
+      name: typeof view.name === "string" ? view.name : `Migrated generated rollout ${projection.createdAt}`,
+      updatedAt: projection.createdAt,
+      sourceStateReference: projection.sourceStateReference ?? (view.sourceStateReference as string | undefined),
+      emittedMessages: Array.isArray(view.emittedMessages)
+        ? view.emittedMessages.map((message) =>
+            message && typeof message === "object"
+              ? { ...(message as Record<string, unknown>), threadViewId: nextThreadViewId }
+              : message,
+          )
+        : [],
+    };
+
+    await this.writeJsonAtomic(targetPath, view);
   }
 
   private async reconcileRootIndex(): Promise<StewardResult<ReconciledIndex>> {
@@ -929,7 +1337,10 @@ export class FileThreadStore implements ThreadStore {
 
   private async reconcileThreadIdMap(): Promise<StewardResult<ReconciledThreadIdMap>> {
     const currentMap = await this.readThreadIdMap();
-    const nextMap = createThreadIdMap(currentMap.threadIdByPiIdentityKey);
+    const nextMap = createThreadIdMap(
+      currentMap.threadIdByPiIdentityKey,
+      currentMap.projectionRevisionIdByPiIdentityKey,
+    );
     const entries = await readdir(this.threadsDir, { withFileTypes: true });
     const knownThreadIds = new Set<string>();
 
@@ -965,6 +1376,40 @@ export class FileThreadStore implements ThreadStore {
           nextMap.threadIdByPiIdentityKey[key] = thread.threadId;
         }
       }
+
+      const projections = await this.readJsonFile<ProjectionRevisionRecord[]>(
+        this.getThreadPaths(threadId).projections,
+        [],
+      );
+      for (const projection of projections) {
+        if (!projection.generatedSessionId && !projection.generatedFilePath) {
+          continue;
+        }
+
+        const target: ThreadTargetRef = {
+          runtime: projection.targetRuntime,
+          sessionId: projection.generatedSessionId,
+          sessionFilePath: projection.generatedFilePath,
+        };
+        const keySet = this.deriveKeys(target);
+        if (!keySet.ok) {
+          return keySet;
+        }
+
+        for (const key of [keySet.value.canonicalKey, ...keySet.value.aliasKeys]) {
+          const mappedThreadId = nextMap.threadIdByPiIdentityKey[key];
+          if (mappedThreadId && mappedThreadId !== thread.threadId) {
+            return fail(
+              targetAssociationConflict(
+                `PI identity ${key} is claimed by both thread ${mappedThreadId} and ${thread.threadId} in threadId-map.json.`,
+              ),
+            );
+          }
+
+          nextMap.threadIdByPiIdentityKey[key] = thread.threadId;
+          nextMap.projectionRevisionIdByPiIdentityKey[key] = projection.revisionId;
+        }
+      }
     }
 
     for (const [key, threadId] of Object.entries(nextMap.threadIdByPiIdentityKey)) {
@@ -979,7 +1424,10 @@ export class FileThreadStore implements ThreadStore {
 
     return ok({
       map: nextMap,
-      changed: JSON.stringify(currentMap.threadIdByPiIdentityKey) !== JSON.stringify(nextMap.threadIdByPiIdentityKey),
+      changed:
+        JSON.stringify(currentMap.threadIdByPiIdentityKey) !== JSON.stringify(nextMap.threadIdByPiIdentityKey) ||
+        JSON.stringify(currentMap.projectionRevisionIdByPiIdentityKey) !==
+          JSON.stringify(nextMap.projectionRevisionIdByPiIdentityKey),
     });
   }
 
@@ -1056,18 +1504,45 @@ export class FileThreadStore implements ThreadStore {
     }
 
     if (projections.length > 0) {
-      const latestProjection = [...projections]
-        .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
-        .at(-1);
+      const latestProjection = this.selectCurrentProjection(
+        projections,
+        nextThread.threadViewOutputSummary.currentProjectionRevisionId,
+      );
       nextThread.threadViewOutputSummary = {
         ...nextThread.threadViewOutputSummary,
         count: projections.length,
+        currentProjectionRevisionId: latestProjection?.revisionId,
+        currentThreadViewId: latestProjection?.threadViewId,
+        currentGeneratedSessionId: latestProjection?.generatedSessionId,
         currentGeneratedFilePath: latestProjection?.generatedFilePath,
         lastRevisionStatus: latestProjection?.status,
       };
+      if (latestProjection?.generatedFilePath) {
+        nextThread.target = {
+          ...nextThread.target,
+          currentGeneratedFilePath: latestProjection.generatedFilePath,
+        };
+      }
     }
 
     return nextThread;
+  }
+
+  private selectCurrentProjection(
+    projections: readonly ProjectionRevisionRecord[],
+    preferredRevisionId?: string,
+  ): ProjectionRevisionRecord | undefined {
+    const preferred = preferredRevisionId
+      ? projections.find((projection) => projection.revisionId === preferredRevisionId)
+      : undefined;
+    if (preferred && preferred.status === "available") {
+      return preferred;
+    }
+
+    return [...projections]
+      .filter((projection) => projection.status === "available")
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+      .at(-1);
   }
 
   private threadMutationLockPath(threadId: string): string {
@@ -1197,8 +1672,11 @@ export class FileThreadStore implements ThreadStore {
   }
 
   private async readThreadIdMap(): Promise<ThreadIdMap> {
-    const map = await this.readJsonFile<ThreadIdMap>(this.threadIdMapPath, createThreadIdMap());
-    return createThreadIdMap(map.threadIdByPiIdentityKey ?? {});
+    const map = await this.readJsonFile<SerializedThreadIdMap>(this.threadIdMapPath, createThreadIdMap());
+    return createThreadIdMap(
+      map.threadIdByPiIdentityKey ?? {},
+      map.projectionRevisionIdByPiIdentityKey ?? {},
+    );
   }
 
   private async collectThreadIdMapTargets(thread: ThreadRecord): Promise<ThreadTargetRef[]> {
