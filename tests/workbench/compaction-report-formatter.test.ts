@@ -60,6 +60,14 @@ function makeReport(): CompactionAuditReport {
       },
     ],
     degradedSmoothingCount: 0,
+    smoothingQuality: {
+      modelSmoothedCount: 1,
+      deterministicPreservedCount: 0,
+      degradedCount: 0,
+      failedCount: 0,
+      caughtUpCount: 1,
+      lowerBandFreshness: [],
+    },
     selectedChunks: [
       {
         chunkId: "chunk-001",

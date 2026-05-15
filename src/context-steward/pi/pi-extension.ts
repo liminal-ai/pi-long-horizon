@@ -51,6 +51,14 @@ import { PromptVisibleToolResultProjection } from "../../thread-view/services/pr
 import { refreshActivePromptProjectionFile } from "../../thread-view/targets/pi/active-prompt-projection-writer.js";
 import { formatCompactionAuditReport } from "../../workbench/services/compaction-report-formatter.js";
 import { buildCompactionAuditReport } from "../../workbench/services/compaction-report-service.js";
+import {
+  formatActiveRolloutInspectionJson,
+  inspectActiveThreadView,
+} from "../../workbench/services/active-rollout-inspection-service.js";
+import {
+  formatSmoothingInspectionJson,
+  inspectSmoothingStatus,
+} from "../../workbench/services/smoothing-inspection-service.js";
 import { mapPiMessageEnd } from "./pi-message-mapper.js";
 import type { PiImportSessionManager } from "./pi-session-importer.js";
 
@@ -1380,6 +1388,108 @@ export async function executeCompactReportCommand(input: {
   }
 }
 
+export async function executeActiveThreadViewStatusCommand(input: {
+  store: ThreadStore;
+  ctx: ExtensionCommandContext;
+  activeThread?: ThreadRecord;
+}): Promise<StewardResult<ContextStewardCommandExecutionResult>> {
+  const thread = await resolveManagedThreadForCommand(input.store, input.ctx, input.activeThread);
+  if (!thread.ok) {
+    return thread;
+  }
+
+  if (!thread.value) {
+    return ok({
+      result: {
+        ok: false,
+        title: "Active thread view",
+        summary: "No managed thread exists for the current PI session.",
+        issues: [],
+      },
+    });
+  }
+
+  try {
+    const report = await inspectActiveThreadView(
+      { threadId: thread.value.threadId },
+      { threadStore: input.store },
+    );
+    return ok({
+      thread: thread.value,
+      result: {
+        ok: true,
+        title: "Active thread view",
+        summary: formatActiveRolloutInspectionJson(report),
+        issues: [],
+        threadId: thread.value.threadId,
+      },
+    });
+  } catch (error) {
+    if (isStewardResultErrorLike(error)) {
+      return fail(...error.issues);
+    }
+    return fail(
+      createStewardIssue({
+        code: "STORE_UNAVAILABLE",
+        message: `Active thread view inspection failed for thread ${thread.value.threadId}.`,
+        threadId: thread.value.threadId,
+        cause: error instanceof Error ? error.message : String(error),
+      }),
+    );
+  }
+}
+
+export async function executeSmoothingStatusCommand(input: {
+  store: ThreadStore;
+  ctx: ExtensionCommandContext;
+  activeThread?: ThreadRecord;
+}): Promise<StewardResult<ContextStewardCommandExecutionResult>> {
+  const thread = await resolveManagedThreadForCommand(input.store, input.ctx, input.activeThread);
+  if (!thread.ok) {
+    return thread;
+  }
+
+  if (!thread.value) {
+    return ok({
+      result: {
+        ok: false,
+        title: "Smoothing status",
+        summary: "No managed thread exists for the current PI session.",
+        issues: [],
+      },
+    });
+  }
+
+  try {
+    const report = await inspectSmoothingStatus(
+      { threadId: thread.value.threadId },
+      { threadStore: input.store },
+    );
+    return ok({
+      thread: thread.value,
+      result: {
+        ok: true,
+        title: "Smoothing status",
+        summary: formatSmoothingInspectionJson(report),
+        issues: [],
+        threadId: thread.value.threadId,
+      },
+    });
+  } catch (error) {
+    if (isStewardResultErrorLike(error)) {
+      return fail(...error.issues);
+    }
+    return fail(
+      createStewardIssue({
+        code: "STORE_UNAVAILABLE",
+        message: `Smoothing status inspection failed for thread ${thread.value.threadId}.`,
+        threadId: thread.value.threadId,
+        cause: error instanceof Error ? error.message : String(error),
+      }),
+    );
+  }
+}
+
 export function registerContextStewardExtension(
   pi: ExtensionAPI,
   options: ContextStewardExtensionOptions = {},
@@ -2184,6 +2294,52 @@ export function registerContextStewardExtension(
         ].filter((part): part is string => part !== undefined).join("; "),
         issues: [],
       });
+    },
+  });
+
+  pi.registerCommand("lh-active-thread-view-status", {
+    description: "Inspect the active generated PI rollout as machine-readable JSON.",
+    handler: async (_args: string, ctx: ExtensionCommandContext) => {
+      const store = createStore(ctx);
+      const executed = await executeActiveThreadViewStatusCommand({
+        store,
+        ctx,
+        activeThread,
+      });
+      if (!executed.ok) {
+        notifyCommand(ctx, {
+          ok: false,
+          title: "Active thread view",
+          summary: executed.issues[0]?.message ?? "Active thread view inspection failed.",
+          issues: cloneIssues(executed.issues),
+        });
+        return;
+      }
+
+      notifyCommand(ctx, executed.value.result);
+    },
+  });
+
+  pi.registerCommand("lh-smoothing-status", {
+    description: "Inspect smooth component readiness and quality as machine-readable JSON.",
+    handler: async (_args: string, ctx: ExtensionCommandContext) => {
+      const store = createStore(ctx);
+      const executed = await executeSmoothingStatusCommand({
+        store,
+        ctx,
+        activeThread,
+      });
+      if (!executed.ok) {
+        notifyCommand(ctx, {
+          ok: false,
+          title: "Smoothing status",
+          summary: executed.issues[0]?.message ?? "Smoothing status inspection failed.",
+          issues: cloneIssues(executed.issues),
+        });
+        return;
+      }
+
+      notifyCommand(ctx, executed.value.result);
     },
   });
 

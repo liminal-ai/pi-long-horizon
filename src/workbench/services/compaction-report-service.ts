@@ -51,6 +51,28 @@ export interface CompactionAuditSelectedChunk {
   smoothCountPolicyStatus?: SelectedTokenAccounting["decision"]["status"];
   detailedCountPolicyStatus?: SelectedTokenAccounting["decision"]["status"];
   briefCountPolicyStatus?: SelectedTokenAccounting["decision"]["status"];
+  lowerBandFreshness?: LowerBandFreshnessEntry;
+}
+
+export interface LowerBandFreshnessEntry {
+  chunkId: string;
+  bandType: "detailed" | "brief";
+  status: "fresh" | "regenerated_during_prepare" | "blocked_or_stale" | "not_applicable";
+  artifactStatus?: string;
+  generatedFromComponentSmooth?: boolean;
+  artifactSmoothSourceRevision?: number;
+  currentSmoothSourceRevision?: number;
+  artifactSmoothSourceTokenCount?: number;
+  currentSmoothSourceTokenCount?: number;
+}
+
+export interface CompactionSmoothingQualityReport {
+  modelSmoothedCount?: number;
+  deterministicPreservedCount?: number;
+  degradedCount?: number;
+  failedCount?: number;
+  caughtUpCount?: number;
+  lowerBandFreshness: LowerBandFreshnessEntry[];
 }
 
 export interface CompactionAuditReport {
@@ -68,6 +90,7 @@ export interface CompactionAuditReport {
   bands: Record<BandType, CompactionAuditBandReport>;
   selectedTurns: CompactionAuditSelectedTurn[];
   degradedSmoothingCount: number;
+  smoothingQuality: CompactionSmoothingQualityReport;
   selectedChunks: CompactionAuditSelectedChunk[];
   blockers: StewardIssue[];
   reloadResult?: string;
@@ -114,6 +137,44 @@ function throwReportIssue(input: { code: StewardIssue["code"]; message: string; 
   ]);
 }
 
+function inspectLowerBandFreshness(input: {
+  chunkId: string;
+  bandType: "detailed" | "brief";
+  artifact: { status?: string; generatedFromComponentSmooth?: boolean; smoothSourceRevision?: number; smoothSourceTokenCount?: number } | undefined;
+  currentSmoothSourceRevision?: number;
+  currentSmoothSourceTokenCount?: number;
+}): LowerBandFreshnessEntry {
+  if (!input.artifact) {
+    return {
+      chunkId: input.chunkId,
+      bandType: input.bandType,
+      status: "blocked_or_stale",
+      currentSmoothSourceRevision: input.currentSmoothSourceRevision,
+      currentSmoothSourceTokenCount: input.currentSmoothSourceTokenCount,
+    };
+  }
+
+  const fresh =
+    input.artifact.status === "ready" &&
+    input.artifact.generatedFromComponentSmooth === true &&
+    input.currentSmoothSourceRevision !== undefined &&
+    input.artifact.smoothSourceRevision === input.currentSmoothSourceRevision &&
+    (input.currentSmoothSourceTokenCount === undefined ||
+      input.artifact.smoothSourceTokenCount === input.currentSmoothSourceTokenCount);
+
+  return {
+    chunkId: input.chunkId,
+    bandType: input.bandType,
+    status: fresh ? "fresh" : "blocked_or_stale",
+    artifactStatus: input.artifact.status,
+    generatedFromComponentSmooth: input.artifact.generatedFromComponentSmooth,
+    artifactSmoothSourceRevision: input.artifact.smoothSourceRevision,
+    currentSmoothSourceRevision: input.currentSmoothSourceRevision,
+    artifactSmoothSourceTokenCount: input.artifact.smoothSourceTokenCount,
+    currentSmoothSourceTokenCount: input.currentSmoothSourceTokenCount,
+  };
+}
+
 export async function buildCompactionAuditReport(
   input: BuildCompactionAuditReportInput,
   dependencies: BuildCompactionAuditReportDependencies,
@@ -149,6 +210,10 @@ export async function buildCompactionAuditReport(
   );
 
   const selectedTurns: CompactionAuditSelectedTurn[] = [];
+  let modelSmoothedCount = 0;
+  let deterministicPreservedCount = 0;
+  let failedCount = 0;
+  let caughtUpCount = 0;
   for (const bandType of ["full_fidelity", "smooth"] as const) {
     const band = bandRecordForType(view, bandType);
     for (const turnId of band.selectedIds) {
@@ -184,10 +249,25 @@ export async function buildCompactionAuditReport(
         rawCountPolicyStatus: rawAccounting.decision.status,
         smoothCountPolicyStatus: smoothAccounting?.decision.status,
       });
+      for (const component of turnResult.value.turn.smooth?.components ?? []) {
+        if (component.quality === "model_smoothed") {
+          modelSmoothedCount += 1;
+        }
+        if (component.quality === "deterministic_preserved") {
+          deterministicPreservedCount += 1;
+        }
+        if (component.status === "stale" || component.status === "invalid") {
+          failedCount += 1;
+        }
+        if (component.sourceRevision === turnResult.value.turn.sourceRevision) {
+          caughtUpCount += 1;
+        }
+      }
     }
   }
 
   const selectedChunks: CompactionAuditSelectedChunk[] = [];
+  const lowerBandFreshness: LowerBandFreshnessEntry[] = [];
   for (const bandType of ["detailed", "brief"] as const) {
     const band = bandRecordForType(view, bandType);
     for (const chunkId of band.selectedIds) {
@@ -233,6 +313,14 @@ export async function buildCompactionAuditReport(
       if (selectedBandAccounting) {
         accountingByBand.get(bandType)?.push(selectedBandAccounting);
       }
+      const freshness = inspectLowerBandFreshness({
+        chunkId,
+        bandType,
+        artifact: chunk.placeholders?.[bandType],
+        currentSmoothSourceRevision: currentSmoothSource?.sourceRevision,
+        currentSmoothSourceTokenCount: currentSmoothTokenCount,
+      });
+      lowerBandFreshness.push(freshness);
 
       selectedChunks.push({
         chunkId,
@@ -242,6 +330,7 @@ export async function buildCompactionAuditReport(
         briefTokenCount: briefAccounting?.count,
         detailedCountPolicyStatus: detailedAccounting?.decision.status,
         briefCountPolicyStatus: briefAccounting?.decision.status,
+        lowerBandFreshness: freshness,
       });
     }
   }
@@ -293,6 +382,14 @@ export async function buildCompactionAuditReport(
     degradedSmoothingCount: selectedTurns.filter(
       (turn) => turn.bandType === "smooth" && turn.smoothQuality === "degraded",
     ).length,
+    smoothingQuality: {
+      modelSmoothedCount,
+      deterministicPreservedCount,
+      degradedCount: selectedTurns.filter((turn) => turn.smoothQuality === "degraded").length,
+      failedCount,
+      caughtUpCount,
+      lowerBandFreshness,
+    },
     selectedChunks,
     blockers: scopedGeneratedOutput?.issues?.map((issue) => createStewardIssue(issue)) ?? [],
     reloadResult: scopedGeneratedOutput?.generatedFilePath ? scopedGeneratedOutput.status : undefined,

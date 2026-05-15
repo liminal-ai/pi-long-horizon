@@ -18,7 +18,7 @@ function formatTurn(turn: CompactionAuditSelectedTurn): string {
 }
 
 function formatChunk(chunk: CompactionAuditSelectedChunk): string {
-  return `- ${chunk.chunkId} [${chunk.bandType}]: smooth ${formatOptionalNumber(chunk.smoothTokenCount)}, detailed ${formatOptionalNumber(chunk.detailedTokenCount)}, brief ${formatOptionalNumber(chunk.briefTokenCount)}`;
+  return `- ${chunk.chunkId} [${chunk.bandType}]: smooth ${formatOptionalNumber(chunk.smoothTokenCount)}, detailed ${formatOptionalNumber(chunk.detailedTokenCount)}, brief ${formatOptionalNumber(chunk.briefTokenCount)}, freshness ${chunk.lowerBandFreshness?.status ?? "n/a"}`;
 }
 
 export function formatCompactionAuditReport(report: CompactionAuditReport): string {
@@ -34,6 +34,7 @@ export function formatCompactionAuditReport(report: CompactionAuditReport): stri
     `Generated session count trust: ${report.generatedSessionCountTrustClass ?? "n/a"}`,
     `Generated session count policy: ${report.generatedSessionCountPolicyStatus ?? "n/a"}`,
     `Degraded smoothing count: ${report.degradedSmoothingCount}`,
+    `Smoothing quality: model=${formatOptionalNumber(report.smoothingQuality.modelSmoothedCount)}, deterministic=${formatOptionalNumber(report.smoothingQuality.deterministicPreservedCount)}, degraded=${formatOptionalNumber(report.smoothingQuality.degradedCount)}, failed=${formatOptionalNumber(report.smoothingQuality.failedCount)}, caughtUp=${formatOptionalNumber(report.smoothingQuality.caughtUpCount)}`,
     `Generated file: ${report.generatedFilePath ?? "n/a"}`,
     `Archive: ${report.archivePath ?? "n/a"}`,
     "",
@@ -62,6 +63,18 @@ export function formatCompactionAuditReport(report: CompactionAuditReport): stri
     lines.push("- (none)");
   } else {
     lines.push(...report.selectedChunks.map(formatChunk));
+  }
+
+  lines.push("", "Lower-band freshness");
+  if (report.smoothingQuality.lowerBandFreshness.length === 0) {
+    lines.push("- (none)");
+  } else {
+    lines.push(
+      ...report.smoothingQuality.lowerBandFreshness.map(
+        (entry) =>
+          `- ${entry.chunkId} [${entry.bandType}]: ${entry.status} (artifact=${entry.artifactSmoothSourceRevision ?? "n/a"}, current=${entry.currentSmoothSourceRevision ?? "n/a"})`,
+      ),
+    );
   }
 
   lines.push("", "Blockers");

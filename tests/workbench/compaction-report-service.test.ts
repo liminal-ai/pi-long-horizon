@@ -254,6 +254,17 @@ test("buildCompactionAuditReport includes chunk-level detail for lower bands", a
         briefTokenCount: 18,
         detailedCountPolicyStatus: "usable",
         briefCountPolicyStatus: "usable",
+        lowerBandFreshness: {
+          chunkId: context.chunks.oldestClosed,
+          bandType: "detailed",
+          status: "fresh",
+          artifactStatus: "ready",
+          generatedFromComponentSmooth: true,
+          artifactSmoothSourceRevision: 1,
+          currentSmoothSourceRevision: 1,
+          artifactSmoothSourceTokenCount: 6,
+          currentSmoothSourceTokenCount: 6,
+        },
       },
       {
         chunkId: context.chunks.newerClosed,
@@ -263,8 +274,78 @@ test("buildCompactionAuditReport includes chunk-level detail for lower bands", a
         briefTokenCount: 17,
         detailedCountPolicyStatus: "usable",
         briefCountPolicyStatus: "usable",
+        lowerBandFreshness: {
+          chunkId: context.chunks.newerClosed,
+          bandType: "brief",
+          status: "fresh",
+          artifactStatus: "ready",
+          generatedFromComponentSmooth: true,
+          artifactSmoothSourceRevision: 1,
+          currentSmoothSourceRevision: 1,
+          artifactSmoothSourceTokenCount: 6,
+          currentSmoothSourceTokenCount: 6,
+        },
       },
     ]);
+  });
+});
+
+test("buildCompactionAuditReport includes smoothing quality counts and lower-band freshness", async () => {
+  await withTempFeature3Store(async (temp) => {
+    const context = await seedReportView(temp.storeRootDir);
+    const report = await buildCompactionAuditReport(
+      { threadId: context.threadId, threadViewId: context.threadViewId },
+      { threadStore: context.threadStore, threadViewStore: context.threadViewStore },
+    );
+
+    assert.equal(report.smoothingQuality.modelSmoothedCount, 0);
+    assert.equal(report.smoothingQuality.deterministicPreservedCount, 4);
+    assert.equal(report.smoothingQuality.degradedCount, 0);
+    assert.equal(report.smoothingQuality.failedCount, 0);
+    assert.equal(report.smoothingQuality.lowerBandFreshness.length, 2);
+    assert.equal(report.smoothingQuality.lowerBandFreshness[0]?.status, "fresh");
+  });
+});
+
+test("buildCompactionAuditReport marks mismatched lower-band provenance blocked_or_stale", async () => {
+  await withTempFeature3Store(async (temp) => {
+    const context = await seedReportView(temp.storeRootDir);
+    const chunksResult = await context.threadStore.readChunks(context.threadId);
+    assert.equal(chunksResult.ok, true);
+    const snapshot = await context.threadStore.openThread(context.threadId);
+    assert.equal(snapshot.ok, true);
+    const chunks = chunksResult.value.map((chunk) =>
+      chunk.chunkId === context.chunks.oldestClosed && chunk.placeholders?.detailed
+        ? {
+            ...chunk,
+            placeholders: {
+              ...chunk.placeholders,
+              detailed: {
+                ...chunk.placeholders.detailed,
+                smoothSourceRevision: 999,
+              },
+            },
+          }
+        : chunk,
+    );
+    const written = await context.threadStore.writeChunks({
+      threadId: context.threadId,
+      expectedSourceRevision: snapshot.value.thread.sourceRevision,
+      expectedMessageHighWatermark: snapshot.value.thread.messageHighWatermark,
+      expectedTurnsRevision: snapshot.value.thread.turnsRevision,
+      chunks,
+    });
+    assert.equal(written.ok, true);
+
+    const report = await buildCompactionAuditReport(
+      { threadId: context.threadId, threadViewId: context.threadViewId },
+      { threadStore: context.threadStore, threadViewStore: context.threadViewStore },
+    );
+
+    const freshness = report.smoothingQuality.lowerBandFreshness.find(
+      (entry) => entry.chunkId === context.chunks.oldestClosed && entry.bandType === "detailed",
+    );
+    assert.equal(freshness?.status, "blocked_or_stale");
   });
 });
 

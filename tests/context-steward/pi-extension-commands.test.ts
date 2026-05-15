@@ -1361,3 +1361,41 @@ test("/lh-prompt-projection-status reports live projection counters", async () =
     assert.match(notifications[0]!.message, /threshold=123; charLimit=17/);
   });
 });
+
+test("/lh-active-thread-view-status and /lh-smoothing-status report machine-readable JSON", async () => {
+  await withTempThreadStore(async ({ projectDir, storeRootDir, resolveProjectPath }) => {
+    const target = makeThreadTarget({
+      sessionId: "session-inspection-status",
+      sessionFilePath: resolveProjectPath("pi", "session-inspection-status.jsonl"),
+      cwd: projectDir,
+    });
+    await ensureTargetSessionFile(target);
+
+    const store = new FileThreadStore(storeRootDir);
+    const thread = expectOk(await openOrCreateManagedThread({ target }, store));
+    await capturePiMessage(store, thread.threadId, target, makePiUserMessage({ content: "Inspect this prompt" }));
+
+    const { api, commands } = createMockPiApi();
+    registerContextStewardExtension(api, {
+      createStore: () => store,
+    });
+    const activeCommand = commands.get("lh-active-thread-view-status");
+    const smoothingCommand = commands.get("lh-smoothing-status");
+    assert.ok(activeCommand);
+    assert.ok(smoothingCommand);
+
+    const { ctx, notifications } = createCommandContext(target);
+    await activeCommand!.handler("", ctx);
+    await smoothingCommand!.handler("", ctx);
+
+    assert.equal(notifications.length, 2);
+    const activeReport = JSON.parse(notifications[0]!.message.replace(/^Active thread view: /, ""));
+    const smoothingReport = JSON.parse(notifications[1]!.message.replace(/^Smoothing status: /, ""));
+    assert.equal(activeReport.threadId, thread.threadId);
+    assert.deepEqual(Object.keys(activeReport.bands), ["full_fidelity", "smooth", "detailed", "brief"]);
+    assert.equal(Array.isArray(activeReport.warnings), true);
+    assert.equal(smoothingReport.threadId, thread.threadId);
+    assert.equal(typeof smoothingReport.messageEndUserSmoothing.pending, "number");
+    assert.equal(typeof smoothingReport.completeSmoothReadiness.completeUnavailableCount, "number");
+  });
+});
