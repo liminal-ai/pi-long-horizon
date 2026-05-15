@@ -12,6 +12,7 @@ import {
   type TokenCountSourceDecision,
 } from "../../token-accounting/index.js";
 import type { ChunkState } from "../../thread/async-thread/domain/chunk-state.js";
+import { materializeSmoothTurnFromState } from "../../thread/async-thread/services/smooth-turn-service.js";
 import type { MessageRecord, ThreadRecord, TurnRecord } from "../../thread/domain/records.js";
 import type { ThreadStore } from "../../thread/store/thread-store.js";
 import {
@@ -196,17 +197,32 @@ export function resolveRawTurnTokenAccounting(input: {
 
 export function resolveSmoothTurnTokenAccounting(input: {
   turn: TurnRecord;
+  messages: readonly MessageRecord[];
   policyMode?: CounterSourcePolicyMode;
   now?: () => Date;
 }): SelectedTokenAccounting | undefined {
-  if (!input.turn.smooth?.text) {
+  const materialized = materializeSmoothTurnFromState({
+    turn: input.turn,
+    messages: input.messages,
+  });
+  if (
+    (materialized.status !== "ready" && materialized.status !== "degraded") ||
+    !materialized.text
+  ) {
     return undefined;
   }
 
+  const turn = {
+    ...input.turn,
+    smooth: {
+      ...input.turn.smooth,
+      text: materialized.text,
+    },
+  };
   const policyMode = input.policyMode ?? "prepare";
-  const expectedSourceRevision = input.turn.smooth.sourceRevision ?? input.turn.sourceRevision;
-  const persistedRecord = isFreshTokenCountRecord(input.turn.smooth.tokenCountMetadata, expectedSourceRevision)
-    ? input.turn.smooth.tokenCountMetadata
+  const expectedSourceRevision = turn.smooth?.sourceRevision ?? turn.sourceRevision;
+  const persistedRecord = isFreshTokenCountRecord(turn.smooth?.tokenCountMetadata, expectedSourceRevision)
+    ? turn.smooth?.tokenCountMetadata
     : undefined;
   const selectedPersisted = selectAccounting({
     records: persistedRecord ? [persistedRecord] : [],
@@ -218,7 +234,7 @@ export function resolveSmoothTurnTokenAccounting(input: {
     return selectedPersisted;
   }
 
-  const computedRecord = countSmoothTurnMaterialized(input.turn, { now: input.now });
+  const computedRecord = countSmoothTurnMaterialized(turn, { now: input.now });
   return selectAccounting({
     records: [computedRecord],
     requestedScope: "smooth_turn_materialized",
@@ -697,6 +713,7 @@ export async function buildDraftThreadView(
         }),
         smoothAccounting: resolveSmoothTurnTokenAccounting({
           turn,
+          messages,
           policyMode: accountingPolicyMode,
           now: dependencies.now,
         }),
@@ -719,8 +736,7 @@ export async function buildDraftThreadView(
       !fullFidelitySelection.selectedTurnIds.includes(candidate.turn.turnId) &&
       candidate.turn.turnOrder < oldestFullFidelityTurnOrder &&
       candidate.smoothAccounting !== undefined &&
-      candidate.smoothAccounting.count > 0 &&
-      candidate.turn.smooth?.text,
+      candidate.smoothAccounting.count > 0,
   );
   const smoothSelection = selectTurnIds(
     smoothCandidates,

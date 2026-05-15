@@ -20,7 +20,7 @@ import type { MessageRecord, TurnRecord } from "../../domain/records.js";
 import { createStewardIssue, StewardResultError, type StewardIssue } from "../../domain/errors.js";
 import type { ChunkState } from "../domain/chunk-state.js";
 import { ensurePlaceholderArtifacts } from "./placeholder-artifact-service.js";
-import { ensureSmoothTurn } from "./smooth-turn-service.js";
+import { ensureSmoothTurn, materializeSmoothTurnFromState } from "./smooth-turn-service.js";
 import { updateChunkState } from "./chunk-service.js";
 import {
   countRawTurnMaterialized,
@@ -327,28 +327,40 @@ function selectLowerBandChunkIds(
   };
 }
 
-function isSmoothTurnReady(turn: {
-  lifecycleStatus: string;
-  sourceRevision: number;
-  smooth?: {
-    status?: string;
-    text?: string;
-    tokenCountMetadata?: { count?: number };
-    sourceRevision?: number;
-  };
-}): boolean {
+function isSmoothTurnReady(turn: TurnRecord, messages: readonly MessageRecord[]): boolean {
   if (turn.lifecycleStatus !== "closed") {
     return true;
   }
 
   const smooth = turn.smooth;
+  const materialized = materializeSmoothTurnFromState({ turn, messages });
 
   return (
-    (smooth?.status === undefined || smooth?.status === "ready") &&
-    typeof smooth?.text === "string" &&
+    (materialized.status === "ready" || materialized.status === "degraded") &&
+    typeof materialized.text === "string" &&
+    materialized.text.length > 0 &&
     typeof smooth?.tokenCountMetadata?.count === "number" &&
     smooth.sourceRevision === turn.sourceRevision
   );
+}
+
+function withSmoothMaterializedText(turn: TurnRecord, messages: readonly MessageRecord[]): TurnRecord {
+  const materialized = materializeSmoothTurnFromState({ turn, messages });
+  if (
+    !turn.smooth ||
+    (materialized.status !== "ready" && materialized.status !== "degraded") ||
+    !materialized.text
+  ) {
+    return turn;
+  }
+
+  return {
+    ...turn,
+    smooth: {
+      ...turn.smooth,
+      text: materialized.text,
+    },
+  };
 }
 
 function areChunkPlaceholdersReady(chunk: ChunkState): boolean {
@@ -373,10 +385,12 @@ function areChunkPlaceholdersReady(chunk: ChunkState): boolean {
 
 function resolveSmoothTokenCount(
   turn: TurnRecord,
+  messages: readonly MessageRecord[],
 ): number {
-  if (isSmoothTurnReady(turn)) {
+  if (isSmoothTurnReady(turn, messages)) {
     return resolveSmoothTurnTokenAccounting({
       turn,
+      messages,
       policyMode: "prepare",
     })?.count ?? 0;
   }
@@ -447,15 +461,16 @@ function buildSelectionAwareReadinessPlan(input: {
   const messagesById = new Map(input.messages.map((message) => [message.messageId, message]));
   const tokenizedTurns = [...orderedTurns]
     .map((turn) => {
-      const rawTokenCount = sortMessagesInSourceOrder(
+      const messages = sortMessagesInSourceOrder(
         turn.messageIds
           .map((messageId) => messagesById.get(messageId))
           .filter((message): message is MessageRecord => message !== undefined),
-      ).reduce((total, message) => total + estimateRawMessageTokenCount(message), 0);
+      );
+      const rawTokenCount = messages.reduce((total, message) => total + estimateRawMessageTokenCount(message), 0);
       return {
         turn,
         rawTokenCount,
-        smoothTokenCount: resolveSmoothTokenCount(turn) || rawTokenCount,
+        smoothTokenCount: resolveSmoothTokenCount(turn, messages) || rawTokenCount,
       };
     })
     .sort((left, right) => right.turn.turnOrder - left.turn.turnOrder);
@@ -538,7 +553,14 @@ function buildReadinessBlockers(input: {
   const messagesById = new Map(input.messages.map((message) => [message.messageId, message]));
   const blockers = input.turns
     .filter((turn) => requiredSmoothTurnIds?.has(turn.turnId) ?? turn.lifecycleStatus === "closed")
-    .filter((turn) => turn.lifecycleStatus === "closed" && !isSmoothTurnReady(turn))
+    .filter((turn) => {
+      const messages = sortMessagesInSourceOrder(
+        turn.messageIds
+          .map((messageId) => messagesById.get(messageId))
+          .filter((message): message is MessageRecord => message !== undefined),
+      );
+      return turn.lifecycleStatus === "closed" && !isSmoothTurnReady(turn, messages);
+    })
     .map((turn) =>
       createAsyncThreadBlocker({
         code: turn.smooth?.status === "invalid" ? "SMOOTH_INVALID" : "SMOOTH_MISSING",
@@ -601,6 +623,7 @@ function buildReadinessBlockers(input: {
     if (requiredSmoothTurnIds?.has(turn.turnId)) {
       const expected = resolveSmoothTurnTokenAccounting({
         turn,
+        messages,
         policyMode: "prepare",
       })?.record;
       if (
@@ -846,13 +869,19 @@ async function repairMissingArtifacts(
   }
 
   stepStartedAt = Date.now();
+  const messagesById = new Map(threadSnapshot.value.messages.map((message) => [message.messageId, message]));
   for (const turn of threadSnapshot.value.turns) {
     if (turn.lifecycleStatus !== "closed") {
       continue;
     }
 
     closedTurns += 1;
-    if (isSmoothTurnReady(turn)) {
+    const messages = sortMessagesInSourceOrder(
+      turn.messageIds
+        .map((messageId) => messagesById.get(messageId))
+        .filter((message): message is MessageRecord => message !== undefined),
+    );
+    if (isSmoothTurnReady(turn, messages)) {
       continue;
     }
 
@@ -1079,17 +1108,19 @@ async function repairOpenAITokenCounts(
         continue;
       }
 
-      if (!turn.smooth?.text) {
+      const turnWithSmoothText = withSmoothMaterializedText(turn, messages);
+      if (!turnWithSmoothText.smooth?.text) {
         continue;
       }
 
       const expectedSmooth = resolveSmoothTurnTokenAccounting({
         turn,
+        messages,
         policyMode: "prepare",
       })?.record;
       if (
         !isOpenAIProviderInputCount({
-          record: turn.smooth.tokenCountMetadata,
+          record: turnWithSmoothText.smooth.tokenCountMetadata,
           expected: expectedSmooth,
           model: dependencies.tokenCountModel,
         })
@@ -1097,7 +1128,7 @@ async function repairOpenAITokenCounts(
         smoothCounts += 1;
         turn.smooth = {
           ...turn.smooth,
-          tokenCountMetadata: await counter.countSmoothTurnMaterialized(turn, {
+          tokenCountMetadata: await counter.countSmoothTurnMaterialized(turnWithSmoothText, {
             model: dependencies.tokenCountModel,
             now: dependencies.now,
           }),

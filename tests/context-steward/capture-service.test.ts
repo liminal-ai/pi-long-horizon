@@ -1231,14 +1231,16 @@ test("production turn_end handler smooths closed turns and skips open turns", as
 
     await waitForAssertion(async () => {
       const after = expectOk(await store.openThread(thread.threadId));
-      assert.equal(typeof after.turns[0]?.smooth?.text, "string");
+      assert.equal(after.turns[0]?.smooth?.schemaVersion, "component_smooth_turn_v1");
+      assert.equal(Array.isArray(after.turns[0]?.smooth?.components), true);
       assert.equal(typeof after.thread.status.tokenCounting?.status, "string");
     }, "background turn_end maintenance should smooth the closed turn");
 
     const after = expectOk(await store.openThread(thread.threadId));
     assert.equal(after.turns[0]?.lifecycleStatus, "closed");
     assert.equal(after.turns[1]?.lifecycleStatus, "open");
-    assert.equal(typeof after.turns[0]?.smooth?.text, "string");
+    assert.equal(after.turns[0]?.smooth?.text, undefined);
+    assert.equal(after.turns[0]?.smooth?.schemaVersion, "component_smooth_turn_v1");
     assert.equal(after.turns[0]?.smooth?.tokenCountMetadata?.count !== undefined, true);
     assert.equal(after.turns[1]?.smooth, undefined);
   });

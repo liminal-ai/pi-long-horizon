@@ -12,7 +12,9 @@ import {
   type TokenCountRecord,
   type TokenCountScope,
 } from "../../src/token-accounting/index.js";
+import type { TurnSmoothRecord } from "../../src/thread/domain/records.js";
 import type { ChunkState } from "../../src/thread/async-thread/domain/chunk-state.js";
+import { materializeSmoothTurnFromState } from "../../src/thread/async-thread/services/smooth-turn-service.js";
 import { appendSourceMessage, openOrCreateManagedThread } from "../../src/thread/services/thread-service.js";
 import { FileThreadStore } from "../../src/thread/store/file-thread-store.js";
 import { FileThreadViewStore } from "../../src/thread-view/store/file-thread-view-store.js";
@@ -26,7 +28,6 @@ import {
   makeThreadTarget,
   makeTurnRecord,
 } from "../../src/context-steward/test/fixtures.js";
-import { formatSmoothTurnFromMessages } from "../../src/thread-view/services/thread-view-materializer.js";
 
 interface SeededTurn {
   turnId: string;
@@ -74,6 +75,45 @@ function estimatedTokenCount(text: string): number {
   return estimateCompactedTextTokenCount(text);
 }
 
+function makeComponentSmooth(input: {
+  turnId: string;
+  messages: readonly MessageRecord[];
+  text?: string;
+  sourceRevision?: number;
+}): TurnSmoothRecord {
+  const sourceRevision = input.sourceRevision ?? 1;
+  const text = input.text ?? "s";
+  const components = input.messages.flatMap((message) =>
+    message.parts.map((part, partIndex) => {
+      const kind = message.actorType === "human" || message.messageKind === "prompt"
+        ? "user_prompt"
+        : "assistant_message";
+      return {
+        componentId: `${input.turnId}:${kind}:${message.messageId}:${part.partId}`,
+        kind,
+        status: "ready",
+        text: partIndex === 0 ? text : `${text} ${partIndex + 1}`,
+        quality: "deterministic_preserved",
+        sourceMessageIds: [message.messageId],
+        sourcePartIds: [part.partId],
+        sourceRevision: message.sourceRevision,
+        generatedAt: DEFAULT_TEST_TIMESTAMP,
+        strategy: kind === "assistant_message"
+          ? "deterministic_assistant_v1"
+          : "deterministic_user_prompt_preserved_v1",
+      } as NonNullable<TurnSmoothRecord["components"]>[number];
+    }),
+  );
+  return {
+    schemaVersion: "component_smooth_turn_v1",
+    status: "ready",
+    strategy: "component_smooth_turn_v1",
+    generatedAt: DEFAULT_TEST_TIMESTAMP,
+    sourceRevision,
+    components,
+  };
+}
+
 function testTokenCountMetadata(count: number, scope: TokenCountScope, sourceRevision = 1) {
   return {
     count,
@@ -106,10 +146,15 @@ function withProviderInputCounts(
   messages: readonly MessageRecord[],
 ): TurnRecord {
   const raw = providerInputCountFromExpected(countRawTurnMaterialized({ turn, messages }));
+  const materializedSmooth = materializeSmoothTurnFromState({ turn, messages });
+  const turnWithSmoothText =
+    turn.smooth && materializedSmooth.text
+      ? { ...turn, smooth: { ...turn.smooth, text: materializedSmooth.text } }
+      : turn;
   const smooth = turn.smooth
     ? {
         ...turn.smooth,
-        tokenCountMetadata: providerInputCountFromExpected(countSmoothTurnMaterialized(turn)),
+        tokenCountMetadata: providerInputCountFromExpected(countSmoothTurnMaterialized(turnWithSmoothText)),
       }
     : undefined;
 
@@ -299,13 +344,10 @@ export async function seedDeterministicRebuildThread(storeRootDir: string): Prom
           sourceRevision: 1,
           openedAt: oldest.messages[0].capturedAt,
           closedAt: oldest.messages[1].capturedAt,
-          smooth: {
-            text: formatSmoothTurnFromMessages(oldest.messages),
-            tokenCountMetadata: testTokenCountMetadata(estimatedTokenCount(formatSmoothTurnFromMessages(oldest.messages)), "smooth_turn_materialized", 1),
-            strategy: "deterministic_marker_sections_v1",
-            generatedAt: DEFAULT_TEST_TIMESTAMP,
-            sourceRevision: 1,
-          },
+          smooth: makeComponentSmooth({
+            turnId: oldest.turnId,
+            messages: oldest.messages,
+          }),
         }),
         makeTurnRecord({
           threadId: thread.threadId,
@@ -322,13 +364,10 @@ export async function seedDeterministicRebuildThread(storeRootDir: string): Prom
           sourceRevision: 1,
           openedAt: middleOlder.messages[0].capturedAt,
           closedAt: middleOlder.messages[1].capturedAt,
-          smooth: {
-            text: "middle older smooth compact",
-            tokenCountMetadata: testTokenCountMetadata(estimatedTokenCount("middle older smooth compact"), "smooth_turn_materialized", 1),
-            strategy: "deterministic_marker_sections_v1",
-            generatedAt: DEFAULT_TEST_TIMESTAMP,
-            sourceRevision: 1,
-          },
+          smooth: makeComponentSmooth({
+            turnId: middleOlder.turnId,
+            messages: middleOlder.messages,
+          }),
         }),
         makeTurnRecord({
           threadId: thread.threadId,
@@ -345,13 +384,10 @@ export async function seedDeterministicRebuildThread(storeRootDir: string): Prom
           sourceRevision: 1,
           openedAt: middleNewer.messages[0].capturedAt,
           closedAt: middleNewer.messages[1].capturedAt,
-          smooth: {
-            text: "middle newer smooth compact",
-            tokenCountMetadata: testTokenCountMetadata(estimatedTokenCount("middle newer smooth compact"), "smooth_turn_materialized", 1),
-            strategy: "deterministic_marker_sections_v1",
-            generatedAt: DEFAULT_TEST_TIMESTAMP,
-            sourceRevision: 1,
-          },
+          smooth: makeComponentSmooth({
+            turnId: middleNewer.turnId,
+            messages: middleNewer.messages,
+          }),
         }),
         makeTurnRecord({
           threadId: thread.threadId,
@@ -368,13 +404,10 @@ export async function seedDeterministicRebuildThread(storeRootDir: string): Prom
           sourceRevision: 1,
           openedAt: newest.messages[0].capturedAt,
           closedAt: newest.messages[1].capturedAt,
-          smooth: {
-            text: "newest smooth compact",
-            tokenCountMetadata: testTokenCountMetadata(estimatedTokenCount("newest smooth compact"), "smooth_turn_materialized", 1),
-            strategy: "deterministic_marker_sections_v1",
-            generatedAt: DEFAULT_TEST_TIMESTAMP,
-            sourceRevision: 1,
-          },
+          smooth: makeComponentSmooth({
+            turnId: newest.turnId,
+            messages: newest.messages,
+          }),
         }),
       ] as TurnRecord[]).map((turn) => {
         const seededTurn =

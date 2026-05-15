@@ -149,12 +149,39 @@ export interface TurnRecord {
 }
 
 export interface TurnSmoothRecord {
-  status?: "ready" | "missing" | "stale" | "invalid";
+  schemaVersion?: "component_smooth_turn_v1";
+  status?: "ready" | "missing" | "pending" | "degraded" | "stale" | "invalid";
   text?: string;
   tokenCountMetadata?: TokenCountRecord;
-  strategy?: "deterministic_marker_sections_v1";
+  strategy?: "deterministic_marker_sections_v1" | "component_smooth_turn_v1";
   generatedAt?: string;
   sourceRevision?: number;
+  components?: TurnSmoothComponentRecord[];
+  materialized?: TurnSmoothMaterializedRecord;
+}
+
+export interface TurnSmoothComponentRecord {
+  componentId: string;
+  kind: "user_prompt" | "assistant_message" | "tool_exchange" | "thinking";
+  status: "pending" | "ready" | "degraded" | "omitted" | "stale" | "invalid";
+  text?: string;
+  quality?: "model_smoothed" | "deterministic_preserved" | "deterministic_rendered" | "omitted_no_plaintext";
+  sourceMessageIds: string[];
+  sourcePartIds?: string[];
+  sourceRevision: number;
+  generatedAt?: string;
+  strategy:
+    | "gpt_5_4_mini_user_prompt_v1"
+    | "deterministic_user_prompt_preserved_v1"
+    | "deterministic_assistant_v1"
+    | "deterministic_tool_exchange_v1"
+    | "thinking_plaintext_or_omitted_v1";
+  actorLabel?: string;
+}
+
+export interface TurnSmoothMaterializedRecord {
+  sourceFingerprint?: string;
+  tokenCountMetadata?: TokenCountRecord;
 }
 
 export interface RepairMetadata {

@@ -152,6 +152,7 @@ export async function buildCompactionAuditReport(
       });
       const smoothAccounting = resolveSmoothTurnTokenAccounting({
         turn: turnResult.value.turn,
+        messages: turnResult.value.messages,
       });
       if (bandType === "full_fidelity") {
         accountingByBand.get("full_fidelity")?.push(rawAccounting);

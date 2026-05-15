@@ -11,7 +11,8 @@ import {
   type ChunkCloseSettings,
   validateChunkCloseSettings,
 } from "../domain/settings.js";
-import type { TurnRecord } from "../../domain/records.js";
+import type { MessageRecord, TurnRecord } from "../../domain/records.js";
+import { materializeSmoothTurnFromState } from "./smooth-turn-service.js";
 import { fail, ok, StewardResultError, type StewardIssue } from "../../domain/errors.js";
 import type { ThreadStore } from "../../store/thread-store.js";
 import { withSerializedThreadOperation } from "../../services/thread-service.js";
@@ -67,13 +68,18 @@ function isCurrentTokenCountMetadata(record: TokenCountRecord | undefined, expec
   );
 }
 
-function isCurrentSmoothTurn(turn: TurnRecord): boolean {
+function sortMessages(messages: readonly MessageRecord[]): MessageRecord[] {
+  return [...messages].sort((left, right) => left.sourceOrder - right.sourceOrder);
+}
+
+function isCurrentSmoothTurn(turn: TurnRecord, messages: readonly MessageRecord[]): boolean {
   if (turn.lifecycleStatus !== "closed") {
     return false;
   }
 
   const smooth = turn.smooth;
-  if (!smooth || smooth.status !== "ready" || !smooth.text) {
+  const materialized = materializeSmoothTurnFromState({ turn, messages });
+  if (!smooth || (materialized.status !== "ready" && materialized.status !== "degraded") || !materialized.text) {
     return false;
   }
 
@@ -81,7 +87,16 @@ function isCurrentSmoothTurn(turn: TurnRecord): boolean {
     return false;
   }
 
-  const expectedTokenCountMetadata = countSmoothTurnMaterialized(turn, { createdAt: smooth.generatedAt });
+  const expectedTokenCountMetadata = countSmoothTurnMaterialized(
+    {
+      ...turn,
+      smooth: {
+        ...smooth,
+        text: materialized.text,
+      },
+    },
+    { createdAt: smooth.generatedAt },
+  );
 
   return (
     smooth.sourceRevision === turn.sourceRevision &&
@@ -116,8 +131,9 @@ function createOpenChunk(
   };
 }
 
-function appendTurnToChunk(chunk: ChunkState, turn: TurnRecord): void {
-  const smoothText = turn.smooth?.text;
+function appendTurnToChunk(chunk: ChunkState, turn: TurnRecord, messages: readonly MessageRecord[]): void {
+  const materialized = materializeSmoothTurnFromState({ turn, messages });
+  const smoothText = materialized.text;
   const smoothTokenCount = turn.smooth?.tokenCountMetadata?.count;
 
   if (!smoothText || smoothTokenCount === undefined) {
@@ -227,8 +243,15 @@ export async function updateChunkState(
     }
 
     const assignedTurnIds = new Set(nextChunks.flatMap((chunk) => chunk.sourceTurnIds));
+    const messagesById = new Map(snapshotResult.value.messages.map((message) => [message.messageId, message]));
+    const turnMessages = (turn: TurnRecord) =>
+      sortMessages(
+        turn.messageIds
+          .map((messageId) => messagesById.get(messageId))
+          .filter((message): message is MessageRecord => message !== undefined),
+      );
     const eligibleTurns = sortTurns(snapshotResult.value.turns).filter(
-      (turn) => isCurrentSmoothTurn(turn) && !assignedTurnIds.has(turn.turnId),
+      (turn) => isCurrentSmoothTurn(turn, turnMessages(turn)) && !assignedTurnIds.has(turn.turnId),
     );
 
     for (const turn of eligibleTurns) {
@@ -240,7 +263,7 @@ export async function updateChunkState(
         updatedChunkIds.add(openChunk.chunkId);
       }
 
-      appendTurnToChunk(openChunk, turn);
+      appendTurnToChunk(openChunk, turn, turnMessages(turn));
       updatedChunkIds.add(openChunk.chunkId);
 
       if ((openChunk.smoothTokenCountMetadata?.count ?? 0) >= settings.hardMaxSmoothTokens) {

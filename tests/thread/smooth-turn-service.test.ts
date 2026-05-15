@@ -7,15 +7,16 @@ import { setTimeout as sleep } from "node:timers/promises";
 
 import {
   ensureSmoothTurn,
+  materializeSmoothTurn,
   persistSmoothTurnState,
   readSmoothTurnState,
 } from "../../src/thread/async-thread/services/smooth-turn-service.js";
-import { buildSmoothTurnText } from "../../src/thread/async-thread/services/smooth-turn-format.js";
 import { FileThreadStore } from "../../src/thread/store/file-thread-store.js";
 import { withTempThreadStore } from "../../src/thread/async-thread/test/temp-thread-store.js";
 import type { StewardResult } from "../../src/thread/domain/errors.js";
 import type { ThreadSnapshot } from "../../src/thread/store/thread-store.js";
 import type { ActorRecord, MessageRecord, TurnRecord } from "../../src/thread/domain/records.js";
+import type { SmoothTurnComponentState } from "../../src/thread/async-thread/domain/smooth-turn-state.js";
 import {
   DEFAULT_TEST_TIMESTAMP,
   makeActorRecord,
@@ -109,17 +110,57 @@ function buildGeneratedSmoothState(snapshot: ThreadSnapshot, turnId: string, gen
     .map((messageId) => messagesById.get(messageId))
     .filter((message) => message !== undefined)
     .sort((left, right) => left.sourceOrder - right.sourceOrder);
-  const formatted = buildSmoothTurnText(messages);
+  const components: SmoothTurnComponentState[] = messages.flatMap((message) =>
+    [...message.parts]
+      .sort((left, right) => left.partOrder - right.partOrder)
+      .map((part) => {
+        const text = typeof part.content === "string" ? part.content.replace(/\s+/g, " ").trim() : JSON.stringify(part.content);
+        const kind: SmoothTurnComponentState["kind"] =
+          part.partType === "reasoning"
+            ? "thinking"
+            : part.partType === "tool_call" || part.partType === "tool_result" || message.actorType === "tool" || message.messageKind === "tool_result"
+              ? "tool_exchange"
+              : message.actorType === "human" || message.messageKind === "prompt"
+                ? "user_prompt"
+                : "assistant_message";
+        const omitted = kind === "thinking" && text.length === 0;
+        if (text.length === 0 && !omitted) {
+          return undefined;
+        }
+        const strategy: SmoothTurnComponentState["strategy"] =
+          kind === "user_prompt"
+            ? "deterministic_user_prompt_preserved_v1"
+            : kind === "assistant_message"
+              ? "deterministic_assistant_v1"
+              : kind === "tool_exchange"
+                ? "deterministic_tool_exchange_v1"
+                : "thinking_plaintext_or_omitted_v1";
+
+        return {
+          componentId: `${turnId}:${kind}:${message.messageId}:${part.partId}`,
+          kind,
+          status: omitted ? "omitted" as const : "ready" as const,
+          text: omitted ? undefined : text,
+          quality: omitted ? "omitted_no_plaintext" as const : kind === "tool_exchange" ? "deterministic_rendered" as const : "deterministic_preserved" as const,
+          sourceMessageIds: [message.messageId],
+          sourcePartIds: [part.partId],
+          sourceRevision: message.sourceRevision,
+          generatedAt,
+          strategy,
+        };
+      })
+      .filter((component) => component !== undefined),
+  );
 
   return {
     turnId,
     threadId: snapshot.thread.threadId,
     status: "ready" as const,
-    text: formatted.text,
-    tokenCount: formatted.tokenCount,
-    strategy: formatted.strategy,
+    schemaVersion: "component_smooth_turn_v1" as const,
+    strategy: "component_smooth_turn_v1" as const,
     generatedAt,
     sourceRevision: turn.sourceRevision,
+    components,
   };
 }
 
@@ -259,10 +300,16 @@ test("closed turn receives smooth text", async () => {
 
     const persisted = await readTurn(store, "thread-smooth-001", "turn-smooth-001");
     assert.equal(persisted.smooth?.status, "ready");
-    assert.equal(persisted.smooth?.strategy, "deterministic_marker_sections_v1");
+    assert.equal(persisted.smooth?.schemaVersion, "component_smooth_turn_v1");
+    assert.equal(persisted.smooth?.strategy, "component_smooth_turn_v1");
     assert.equal(persisted.smooth?.generatedAt, DEFAULT_TEST_TIMESTAMP);
     assert.equal(persisted.smooth?.sourceRevision, response.sourceRevision);
-    assert.match(persisted.smooth?.text ?? "", /\[user\][\s\S]*\[assistant\]/);
+    assert.equal(persisted.smooth?.text, undefined);
+    const materialized = await materializeSmoothTurn(
+      { threadId: "thread-smooth-001", turnId: "turn-smooth-001" },
+      { store },
+    );
+    assert.match(materialized.text ?? "", /\[user\][\s\S]*\[assistant\]/);
     assert.equal(persisted.smooth?.tokenCountMetadata?.count, result.smoothTokenCount);
     assert.equal(persisted.smooth?.tokenCountMetadata?.scope, "smooth_turn_materialized");
     assert.equal(persisted.smooth?.tokenCountMetadata?.sourceRevision, response.sourceRevision);
@@ -375,10 +422,13 @@ test("smooth text preserves fixed actor section markers", async () => {
     ]);
 
     await ensureSmoothTurn({ threadId: "thread-smooth-markers", turnId: "turn-markers" }, { store });
-    const persisted = await readTurn(store, "thread-smooth-markers", "turn-markers");
+    const materialized = await materializeSmoothTurn(
+      { threadId: "thread-smooth-markers", turnId: "turn-markers" },
+      { store },
+    );
 
     assert.equal(
-      persisted.smooth?.text,
+      materialized.text,
       "[user]\nSummarize the flow.\n\n[assistant]\nI will inspect the thread.\n\n[thinking]\nChain of thought\n\n[tool]\ntool output",
     );
   });
@@ -438,9 +488,13 @@ test("one smooth text field per turn", async () => {
 
     await ensureSmoothTurn({ threadId: "thread-smooth-single", turnId: "turn-single" }, { store });
     const persisted = await readTurn(store, "thread-smooth-single", "turn-single");
+    const materialized = await materializeSmoothTurn(
+      { threadId: "thread-smooth-single", turnId: "turn-single" },
+      { store },
+    );
 
-    assert.equal(typeof persisted.smooth?.text, "string");
-    assert.equal(persisted.smooth?.text?.includes("Answer part one.\nAnswer part two."), true);
+    assert.equal(persisted.smooth?.text, undefined);
+    assert.equal(materialized.text?.includes("Answer part one.\nAnswer part two."), true);
   });
 });
 
@@ -485,14 +539,20 @@ test("whitespace normalization is deterministic", async () => {
     ]);
 
     await ensureSmoothTurn({ threadId: "thread-smooth-whitespace", turnId: "turn-whitespace" }, { store });
-    const first = await readTurn(store, "thread-smooth-whitespace", "turn-whitespace");
+    const first = await materializeSmoothTurn(
+      { threadId: "thread-smooth-whitespace", turnId: "turn-whitespace" },
+      { store },
+    );
 
     await ensureSmoothTurn({ threadId: "thread-smooth-whitespace", turnId: "turn-whitespace" }, { store });
-    const second = await readTurn(store, "thread-smooth-whitespace", "turn-whitespace");
+    const second = await materializeSmoothTurn(
+      { threadId: "thread-smooth-whitespace", turnId: "turn-whitespace" },
+      { store },
+    );
 
-    assert.equal(first.smooth?.text, second.smooth?.text);
+    assert.equal(first.text, second.text);
     assert.equal(
-      first.smooth?.text,
+      first.text,
       "[user]\nNeed stable spacing\n\n[assistant]\nSpacing stays deterministic.",
     );
   });
@@ -540,17 +600,20 @@ test("tool-output handling follows fixed policy", async () => {
     ]);
 
     await ensureSmoothTurn({ threadId: "thread-smooth-tool", turnId: "turn-tool" }, { store });
-    const persisted = await readTurn(store, "thread-smooth-tool", "turn-tool");
+    const materialized = await materializeSmoothTurn(
+      { threadId: "thread-smooth-tool", turnId: "turn-tool" },
+      { store },
+    );
 
     assert.equal(
-      persisted.smooth?.text?.includes("[tool]\ntoken1 token2 token3"),
+      materialized.text?.includes("[tool]\ntoken1 token2 token3"),
       true,
     );
     assert.equal(
-      persisted.smooth?.text?.includes("..."),
+      materialized.text?.includes("..."),
       true,
     );
-    assert.equal(persisted.smooth?.text?.includes("token100"), false);
+    assert.equal(materialized.text?.includes("token100"), false);
   });
 });
 
@@ -647,7 +710,7 @@ test("stale or invalid smooth output can be regenerated", async () => {
       },
       { store },
     );
-    assert.equal(before.smoothStatus, "invalid");
+    assert.equal(before.smoothStatus, "missing");
 
     const repaired = await ensureSmoothTurn(
       {
@@ -663,7 +726,7 @@ test("stale or invalid smooth output can be regenerated", async () => {
     assert.equal(repaired.smoothStatus, "ready");
     const persisted = await readTurn(store, "thread-smooth-repair", "turn-repair");
     assert.equal(persisted.smooth?.sourceRevision, response.sourceRevision);
-    assert.equal(persisted.smooth?.strategy, "deterministic_marker_sections_v1");
+    assert.equal(persisted.smooth?.strategy, "component_smooth_turn_v1");
     assert.notEqual(persisted.smooth?.text, "Old smooth");
   });
 });
@@ -769,9 +832,11 @@ test("stale whole-snapshot smooth writes do not clobber another turn's derived s
     const persistedA = await readTurn(store, "thread-smooth-stale-write", "turn-stale-write-a");
     const persistedB = await readTurn(store, "thread-smooth-stale-write", "turn-stale-write-b");
 
-    assert.equal(persistedA.smooth?.text, smoothA.text);
+    assert.equal(persistedA.smooth?.text, undefined);
+    assert.equal(persistedA.smooth?.schemaVersion, "component_smooth_turn_v1");
     assert.equal(persistedA.smooth?.generatedAt, smoothA.generatedAt);
-    assert.equal(persistedB.smooth?.text, smoothB.text);
+    assert.equal(persistedB.smooth?.text, undefined);
+    assert.equal(persistedB.smooth?.schemaVersion, "component_smooth_turn_v1");
     assert.equal(persistedB.smooth?.generatedAt, smoothB.generatedAt);
   });
 });
@@ -874,10 +939,20 @@ test("isolated smooth-turn writers retry instead of clobbering stale whole-snaps
     const persistedA = await readTurn(store, "thread-smooth-process-race", "turn-process-race-a");
     const persistedB = await readTurn(store, "thread-smooth-process-race", "turn-process-race-b");
     const thread = expectOk(await store.assertCanMutate("thread-smooth-process-race"));
+    const materializedA = await materializeSmoothTurn(
+      { threadId: "thread-smooth-process-race", turnId: "turn-process-race-a" },
+      { store },
+    );
+    const materializedB = await materializeSmoothTurn(
+      { threadId: "thread-smooth-process-race", turnId: "turn-process-race-b" },
+      { store },
+    );
 
-    assert.equal(persistedA.smooth?.text, "[user]\nProcess question A.\n\n[assistant]\nProcess answer A.");
+    assert.equal(persistedA.smooth?.text, undefined);
+    assert.equal(materializedA.text, "[user]\nProcess question A.\n\n[assistant]\nProcess answer A.");
     assert.equal(persistedA.smooth?.generatedAt, DEFAULT_TEST_TIMESTAMP);
-    assert.equal(persistedB.smooth?.text, "[user]\nProcess question B.\n\n[assistant]\nProcess answer B.");
+    assert.equal(persistedB.smooth?.text, undefined);
+    assert.equal(materializedB.text, "[user]\nProcess question B.\n\n[assistant]\nProcess answer B.");
     assert.equal(persistedB.smooth?.generatedAt, "2026-01-02T00:00:00.000Z");
     assert.equal(thread.turnsRevision, 3);
   });
@@ -940,13 +1015,321 @@ test("empty or noise-only sections are omitted without collapsing section order 
     ]);
 
     await ensureSmoothTurn({ threadId: "thread-smooth-noise", turnId: "turn-noise" }, { store });
-    const persisted = await readTurn(store, "thread-smooth-noise", "turn-noise");
+    const materialized = await materializeSmoothTurn(
+      { threadId: "thread-smooth-noise", turnId: "turn-noise" },
+      { store },
+    );
 
     assert.equal(
-      persisted.smooth?.text,
+      materialized.text,
       "[assistant]\nKeep this response.\n\n[tool]\ntool detail",
     );
-    assert.equal(persisted.smooth?.text?.includes("[user]"), false);
-    assert.equal(persisted.smooth?.text?.includes("[thinking]"), false);
+    assert.equal(materialized.text?.includes("[user]"), false);
+    assert.equal(materialized.text?.includes("[thinking]"), false);
+  });
+});
+
+test("component-first smooth state exposes readiness, provenance, and materialization", async () => {
+  await withTempThreadStore(async ({ storeRootDir }) => {
+    const store = new FileThreadStore(storeRootDir);
+    await createThread(store, "thread-smooth-components");
+
+    const user = makeActorRecord({ actorId: "actor-user-components", actorType: "human" });
+    const assistant = makeActorRecord({ actorId: "actor-assistant-components", actorType: "agent" });
+    const tool = makeActorRecord({ actorId: "actor-tool-components", actorType: "tool" });
+
+    const prompt = await appendCanonicalMessage(
+      store,
+      "thread-smooth-components",
+      user,
+      toPendingMessage({
+        messageId: "message-components-prompt",
+        actorId: user.actorId,
+        actorType: user.actorType,
+        messageKind: "prompt",
+        parts: [makePartRecord({ partId: "part-components-user", content: "Run the check." })],
+      }),
+    );
+    const response = await appendCanonicalMessage(
+      store,
+      "thread-smooth-components",
+      assistant,
+      toPendingMessage({
+        messageId: "message-components-response",
+        actorId: assistant.actorId,
+        actorType: assistant.actorType,
+        messageKind: "response",
+        parts: [
+          makePartRecord({ partId: "part-components-assistant", partOrder: 1, content: "I will run it." }),
+          makePartRecord({ partId: "part-components-thinking", partOrder: 2, partType: "reasoning", content: "   " }),
+          makePartRecord({ partId: "part-components-tool-call", partOrder: 3, partType: "tool_call", content: { command: "npm test" } }),
+        ],
+      }),
+    );
+    const toolResult = await appendCanonicalMessage(
+      store,
+      "thread-smooth-components",
+      tool,
+      toPendingMessage({
+        messageId: "message-components-tool-result",
+        actorId: tool.actorId,
+        actorType: tool.actorType,
+        messageKind: "tool_result",
+        parts: [makePartRecord({ partId: "part-components-tool-result", partType: "tool_result", content: "ok" })],
+      }),
+    );
+
+    await writeTurns(store, "thread-smooth-components", [
+      makeClosedTurn({
+        threadId: "thread-smooth-components",
+        turnId: "turn-components",
+        messages: [prompt, response, toolResult],
+      }),
+    ]);
+
+    const missing = await readSmoothTurnState({ threadId: "thread-smooth-components", turnId: "turn-components" }, { store });
+    assert.equal(missing.smoothStatus, "missing");
+
+    const ensured = await ensureSmoothTurn(
+      { threadId: "thread-smooth-components", turnId: "turn-components" },
+      { store, now: () => new Date(DEFAULT_TEST_TIMESTAMP) },
+    );
+    assert.equal(ensured.smoothStatus, "ready");
+
+    const state = await readSmoothTurnState({ threadId: "thread-smooth-components", turnId: "turn-components" }, { store });
+    assert.equal(state.schemaVersion, "component_smooth_turn_v1");
+    assert.equal(state.smoothStatus, "ready");
+    const persisted = await readTurn(store, "thread-smooth-components", "turn-components");
+    assert.equal(persisted.smooth?.text, undefined);
+    assert.deepEqual(state.components?.map((component) => component.kind), [
+      "user_prompt",
+      "assistant_message",
+      "thinking",
+      "tool_exchange",
+      "tool_exchange",
+    ]);
+    assert.equal(state.components?.find((component) => component.kind === "thinking")?.status, "omitted");
+    assert.equal(state.components?.find((component) => component.kind === "assistant_message")?.actorLabel, undefined);
+    assert.ok(state.components?.every((component) => component.sourceMessageIds.length > 0));
+    assert.ok(state.components?.every((component) => typeof component.sourceRevision === "number"));
+    assert.ok(state.components?.every((component) => component.generatedAt === DEFAULT_TEST_TIMESTAMP));
+
+    const materialized = await materializeSmoothTurn(
+      { threadId: "thread-smooth-components", turnId: "turn-components" },
+      { store },
+    );
+    assert.equal(materialized.status, "ready");
+    assert.match(materialized.text ?? "", /\[user\][\s\S]*\[assistant\][\s\S]*\[tool\]/);
+    assert.ok((materialized.tokenCount ?? 0) > 0);
+    assert.match(materialized.sourceFingerprint ?? "", /^sha256:/);
+    assert.equal(materialized.tokenCountMetadata?.scope, "smooth_turn_materialized");
+
+    const reopened = new FileThreadStore(storeRootDir);
+    const persistedState = await readSmoothTurnState(
+      { threadId: "thread-smooth-components", turnId: "turn-components" },
+      { store: reopened },
+    );
+    assert.equal(persistedState.components?.find((component) => component.kind === "thinking")?.status, "omitted");
+    assert.match(persistedState.materialized?.sourceFingerprint ?? "", /^sha256:/);
+  });
+});
+
+test("component-first readiness requires canonical assistant and tool source records", async () => {
+  await withTempThreadStore(async ({ storeRootDir }) => {
+    const store = new FileThreadStore(storeRootDir);
+    await createThread(store, "thread-smooth-missing-required-source");
+
+    const user = makeActorRecord({ actorId: "actor-user-missing-required", actorType: "human" });
+    const assistant = makeActorRecord({ actorId: "actor-assistant-missing-required", actorType: "agent" });
+    const tool = makeActorRecord({ actorId: "actor-tool-missing-required", actorType: "tool" });
+    const prompt = await appendCanonicalMessage(
+      store,
+      "thread-smooth-missing-required-source",
+      user,
+      toPendingMessage({
+        messageId: "message-missing-required-prompt",
+        actorId: user.actorId,
+        actorType: user.actorType,
+        messageKind: "prompt",
+        parts: [makePartRecord({ partId: "part-missing-required-user", content: "Run the missing-components case." })],
+      }),
+    );
+    const response = await appendCanonicalMessage(
+      store,
+      "thread-smooth-missing-required-source",
+      assistant,
+      toPendingMessage({
+        messageId: "message-missing-required-response",
+        actorId: assistant.actorId,
+        actorType: assistant.actorType,
+        messageKind: "response",
+        parts: [makePartRecord({ partId: "part-missing-required-assistant", content: "Running it now." })],
+      }),
+    );
+    const toolResult = await appendCanonicalMessage(
+      store,
+      "thread-smooth-missing-required-source",
+      tool,
+      toPendingMessage({
+        messageId: "message-missing-required-tool",
+        actorId: tool.actorId,
+        actorType: tool.actorType,
+        messageKind: "tool_result",
+        parts: [makePartRecord({ partId: "part-missing-required-tool", partType: "tool_result", content: "tool result" })],
+      }),
+    );
+
+    await writeTurns(store, "thread-smooth-missing-required-source", [
+      makeClosedTurn({
+        threadId: "thread-smooth-missing-required-source",
+        turnId: "turn-missing-required",
+        messages: [prompt, response, toolResult],
+        smooth: {
+          schemaVersion: "component_smooth_turn_v1",
+          status: "ready",
+          sourceRevision: toolResult.sourceRevision,
+          components: [
+            {
+              componentId: "turn-missing-required:user_prompt:message-missing-required-prompt:part-missing-required-user",
+              kind: "user_prompt",
+              status: "ready",
+              text: "Run the missing-components case.",
+              quality: "deterministic_preserved",
+              sourceMessageIds: [prompt.messageId],
+              sourcePartIds: ["part-missing-required-user"],
+              sourceRevision: prompt.sourceRevision,
+              generatedAt: DEFAULT_TEST_TIMESTAMP,
+              strategy: "deterministic_user_prompt_preserved_v1",
+            },
+          ],
+        },
+      }),
+    ]);
+
+    const state = await readSmoothTurnState(
+      { threadId: "thread-smooth-missing-required-source", turnId: "turn-missing-required" },
+      { store },
+    );
+    assert.equal(state.smoothStatus, "pending");
+
+    const materialized = await materializeSmoothTurn(
+      { threadId: "thread-smooth-missing-required-source", turnId: "turn-missing-required" },
+      { store },
+    );
+    assert.equal(materialized.status, "pending");
+    assert.equal(materialized.text, undefined);
+    assert.deepEqual(materialized.missingComponentIds?.sort(), ["assistant_message", "tool_exchange"]);
+  });
+});
+
+test("incomplete component-first smooth state does not materialize partial text", async () => {
+  await withTempThreadStore(async ({ storeRootDir }) => {
+    const store = new FileThreadStore(storeRootDir);
+    await createThread(store, "thread-smooth-incomplete-components");
+
+    const user = makeActorRecord({ actorId: "actor-user-incomplete", actorType: "human" });
+    const prompt = await appendCanonicalMessage(
+      store,
+      "thread-smooth-incomplete-components",
+      user,
+      toPendingMessage({
+        messageId: "message-incomplete-prompt",
+        actorId: user.actorId,
+        actorType: user.actorType,
+        messageKind: "prompt",
+        parts: [makePartRecord({ partId: "part-incomplete-user", content: "Needs smoothing." })],
+      }),
+    );
+
+    await writeTurns(store, "thread-smooth-incomplete-components", [
+      makeClosedTurn({
+        threadId: "thread-smooth-incomplete-components",
+        turnId: "turn-incomplete-components",
+        messages: [prompt],
+        smooth: {
+          schemaVersion: "component_smooth_turn_v1",
+          status: "pending",
+          sourceRevision: prompt.sourceRevision,
+          components: [
+            {
+              componentId: "turn-incomplete-components:user_prompt:message-incomplete-prompt:part-incomplete-user",
+              kind: "user_prompt",
+              status: "pending",
+              sourceMessageIds: [prompt.messageId],
+              sourcePartIds: ["part-incomplete-user"],
+              sourceRevision: prompt.sourceRevision,
+              strategy: "deterministic_user_prompt_preserved_v1",
+            },
+          ],
+        },
+      }),
+    ]);
+
+    const materialized = await materializeSmoothTurn(
+      { threadId: "thread-smooth-incomplete-components", turnId: "turn-incomplete-components" },
+      { store },
+    );
+    assert.equal(materialized.status, "pending");
+    assert.equal(materialized.text, undefined);
+    assert.deepEqual(materialized.missingComponentIds, [
+      "user_prompt",
+      "turn-incomplete-components:user_prompt:message-incomplete-prompt:part-incomplete-user",
+    ]);
+  });
+});
+
+test("obsolete monolithic smooth text is treated as missing and replaced", async () => {
+  await withTempThreadStore(async ({ storeRootDir }) => {
+    const store = new FileThreadStore(storeRootDir);
+    await createThread(store, "thread-smooth-obsolete-text");
+
+    const user = makeActorRecord({ actorId: "actor-user-obsolete-text", actorType: "human" });
+    const prompt = await appendCanonicalMessage(
+      store,
+      "thread-smooth-obsolete-text",
+      user,
+      toPendingMessage({
+        messageId: "message-obsolete-text-prompt",
+        actorId: user.actorId,
+        actorType: user.actorType,
+        messageKind: "prompt",
+        parts: [makePartRecord({ content: "Obsolete input." })],
+      }),
+    );
+
+    await writeTurns(store, "thread-smooth-obsolete-text", [
+      makeClosedTurn({
+        threadId: "thread-smooth-obsolete-text",
+        turnId: "turn-obsolete-text",
+        messages: [prompt],
+        smooth: {
+          status: "ready",
+          text: "[user]\nObsolete input.",
+          strategy: "deterministic_marker_sections_v1",
+          generatedAt: DEFAULT_TEST_TIMESTAMP,
+          sourceRevision: prompt.sourceRevision,
+        },
+      }),
+    ]);
+
+    const state = await readSmoothTurnState(
+      { threadId: "thread-smooth-obsolete-text", turnId: "turn-obsolete-text" },
+      { store },
+    );
+    assert.equal(state.smoothStatus, "missing");
+    assert.equal(state.smoothText, undefined);
+
+    await ensureSmoothTurn(
+      { threadId: "thread-smooth-obsolete-text", turnId: "turn-obsolete-text" },
+      { store, now: () => new Date(DEFAULT_TEST_TIMESTAMP) },
+    );
+    const regenerated = await readSmoothTurnState(
+      { threadId: "thread-smooth-obsolete-text", turnId: "turn-obsolete-text" },
+      { store },
+    );
+    assert.equal(regenerated.schemaVersion, "component_smooth_turn_v1");
+    assert.equal(regenerated.components?.[0]?.kind, "user_prompt");
+    const persisted = await readTurn(store, "thread-smooth-obsolete-text", "turn-obsolete-text");
+    assert.equal(persisted.smooth?.text, undefined);
   });
 });

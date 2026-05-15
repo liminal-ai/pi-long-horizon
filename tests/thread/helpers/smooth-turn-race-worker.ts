@@ -3,9 +3,9 @@ import { access, writeFile } from "node:fs/promises";
 import { setTimeout as sleep } from "node:timers/promises";
 
 import { persistSmoothTurnState } from "../../../src/thread/async-thread/services/smooth-turn-service.js";
-import { buildSmoothTurnText } from "../../../src/thread/async-thread/services/smooth-turn-format.js";
 import { FileThreadStore } from "../../../src/thread/store/file-thread-store.js";
 import type { ThreadSnapshot } from "../../../src/thread/store/thread-store.js";
+import type { SmoothTurnComponentState } from "../../../src/thread/async-thread/domain/smooth-turn-state.js";
 
 function env(name: string): string {
   const value = process.env[name];
@@ -33,17 +33,57 @@ function buildGeneratedSmoothState(snapshot: ThreadSnapshot, turnId: string, gen
     .map((messageId) => messagesById.get(messageId))
     .filter((message) => message !== undefined)
     .sort((left, right) => left.sourceOrder - right.sourceOrder);
-  const formatted = buildSmoothTurnText(messages);
+  const components: SmoothTurnComponentState[] = messages.flatMap((message) =>
+    [...message.parts]
+      .sort((left, right) => left.partOrder - right.partOrder)
+      .map((part) => {
+        const text = typeof part.content === "string" ? part.content.replace(/\s+/g, " ").trim() : JSON.stringify(part.content);
+        const kind: SmoothTurnComponentState["kind"] =
+          part.partType === "reasoning"
+            ? "thinking"
+            : part.partType === "tool_call" || part.partType === "tool_result" || message.actorType === "tool" || message.messageKind === "tool_result"
+              ? "tool_exchange"
+              : message.actorType === "human" || message.messageKind === "prompt"
+                ? "user_prompt"
+                : "assistant_message";
+        const omitted = kind === "thinking" && text.length === 0;
+        if (text.length === 0 && !omitted) {
+          return undefined;
+        }
+        const strategy: SmoothTurnComponentState["strategy"] =
+          kind === "user_prompt"
+            ? "deterministic_user_prompt_preserved_v1"
+            : kind === "assistant_message"
+              ? "deterministic_assistant_v1"
+              : kind === "tool_exchange"
+                ? "deterministic_tool_exchange_v1"
+                : "thinking_plaintext_or_omitted_v1";
+
+        return {
+          componentId: `${turnId}:${kind}:${message.messageId}:${part.partId}`,
+          kind,
+          status: omitted ? "omitted" as const : "ready" as const,
+          text: omitted ? undefined : text,
+          quality: omitted ? "omitted_no_plaintext" as const : kind === "tool_exchange" ? "deterministic_rendered" as const : "deterministic_preserved" as const,
+          sourceMessageIds: [message.messageId],
+          sourcePartIds: [part.partId],
+          sourceRevision: message.sourceRevision,
+          generatedAt,
+          strategy,
+        };
+      })
+      .filter((component) => component !== undefined),
+  );
 
   return {
     turnId,
     threadId: snapshot.thread.threadId,
     status: "ready" as const,
-    text: formatted.text,
-    tokenCount: formatted.tokenCount,
-    strategy: formatted.strategy,
+    schemaVersion: "component_smooth_turn_v1" as const,
+    strategy: "component_smooth_turn_v1" as const,
     generatedAt,
     sourceRevision: turn.sourceRevision,
+    components,
   };
 }
 

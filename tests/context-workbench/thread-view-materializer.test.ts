@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { StewardResult } from "../../src/context-steward/domain/errors.js";
-import type { MessageRecord } from "../../src/context-steward/domain/records.js";
+import type { MessageRecord, TurnSmoothRecord } from "../../src/context-steward/domain/records.js";
 import {
   appendSourceMessage,
   openOrCreateManagedThread,
@@ -15,10 +15,7 @@ import {
   makeThreadTarget,
   makeTurnRecord,
 } from "../../src/context-steward/test/fixtures.js";
-import {
-  ThreadViewMaterializer,
-  formatSmoothTurnFromMessages,
-} from "../../src/context-workbench/services/thread-view-materializer.js";
+import { ThreadViewMaterializer } from "../../src/context-workbench/services/thread-view-materializer.js";
 import { makeBandRecord, makeThreadView } from "../../src/context-workbench/test/fixtures.js";
 import { withTempWorkbenchStore } from "../../src/context-workbench/test/temp-workbench-store.js";
 
@@ -36,6 +33,40 @@ function makePendingMessage(overrides: Partial<MessageRecord> = {}) {
     ...pendingMessage
   } = message;
   return pendingMessage;
+}
+
+function makeComponentSmooth(turnId: string, messages: readonly MessageRecord[], count: number): TurnSmoothRecord {
+  return {
+    schemaVersion: "component_smooth_turn_v1",
+    status: "ready",
+    strategy: "component_smooth_turn_v1",
+    generatedAt: "2026-01-01T00:00:00.000Z",
+    sourceRevision: messages.at(-1)?.sourceRevision ?? 1,
+    tokenCountMetadata: { count, scope: "smooth_turn_materialized", source: "pi_heuristic", trustClass: "heuristic_estimate", representationHash: `sha256:test-smooth-${count}`, createdAt: "2026-01-01T00:00:00.000Z" },
+    components: messages.flatMap((message) =>
+      message.parts.map((part) => {
+        const kind = part.partType === "reasoning"
+          ? "thinking"
+          : part.partType === "tool_result" || message.messageKind === "tool_result" || message.actorType === "tool"
+            ? "tool_exchange"
+            : message.actorType === "human" || message.messageKind === "prompt"
+              ? "user_prompt"
+              : "assistant_message";
+        return {
+          componentId: `${turnId}:${kind}:${message.messageId}:${part.partId}`,
+          kind,
+          status: "ready",
+          text: String(part.content).replace(/\s+/g, " ").trim(),
+          quality: kind === "tool_exchange" ? "deterministic_rendered" : "deterministic_preserved",
+          sourceMessageIds: [message.messageId],
+          sourcePartIds: [part.partId],
+          sourceRevision: message.sourceRevision,
+          generatedAt: "2026-01-01T00:00:00.000Z",
+          strategy: kind === "tool_exchange" ? "deterministic_tool_exchange_v1" : kind === "assistant_message" ? "deterministic_assistant_v1" : kind === "thinking" ? "thinking_plaintext_or_omitted_v1" : "deterministic_user_prompt_preserved_v1",
+        } as NonNullable<TurnSmoothRecord["components"]>[number];
+      }),
+    ),
+  };
 }
 
 async function appendThreadMessage(input: {
@@ -202,10 +233,7 @@ async function seedMaterializerThread(storeRootDir: string) {
           sourceRevision: gammaResponse.sourceRevision,
           openedAt: alphaPrompt.capturedAt,
           closedAt: alphaTool.capturedAt,
-          smooth: {
-            text: formatSmoothTurnFromMessages(alphaMessages),
-            tokenCountMetadata: { count: 21, scope: "smooth_turn_materialized", source: "pi_heuristic", trustClass: "heuristic_estimate", representationHash: "sha256:test-smooth-21", createdAt: "2026-01-01T00:00:00.000Z" },
-          },
+          smooth: makeComponentSmooth("turn-materializer-alpha", alphaMessages, 21),
         }),
         makeTurnRecord({
           threadId: thread.threadId,
@@ -222,10 +250,7 @@ async function seedMaterializerThread(storeRootDir: string) {
           sourceRevision: gammaResponse.sourceRevision,
           openedAt: betaPrompt.capturedAt,
           closedAt: betaResponse.capturedAt,
-          smooth: {
-            text: formatSmoothTurnFromMessages(betaMessages),
-            tokenCountMetadata: { count: 12, scope: "smooth_turn_materialized", source: "pi_heuristic", trustClass: "heuristic_estimate", representationHash: "sha256:test-smooth-12", createdAt: "2026-01-01T00:00:00.000Z" },
-          },
+          smooth: makeComponentSmooth("turn-materializer-beta", betaMessages, 12),
         }),
         makeTurnRecord({
           threadId: thread.threadId,
@@ -452,6 +477,57 @@ test("missing smooth artifact is visible", async () => {
         .filter((message) => message.bandType === "smooth")
         .map((message) => message.sourceReference),
       [turns.alpha.turnId],
+    );
+  });
+});
+
+test("incomplete component smooth state is not emitted as partial smooth text", async () => {
+  await withTempWorkbenchStore(async ({ storeRootDir }) => {
+    const { materializer, thread, threadStore, turns } = await seedMaterializerThread(storeRootDir);
+    const snapshot = expectOk(await threadStore.openThread(thread.threadId));
+    const alpha = snapshot.turns.find((turn) => turn.turnId === turns.alpha.turnId);
+    assert.ok(alpha);
+    const onlyUserPrompt = alpha.smooth?.components?.filter((component) => component.kind === "user_prompt");
+
+    expectOk(
+      await threadStore.writeTurns({
+        threadId: thread.threadId,
+        expectedSourceRevision: snapshot.thread.sourceRevision,
+        expectedMessageHighWatermark: snapshot.thread.messageHighWatermark,
+        expectedTurnsRevision: snapshot.thread.turnsRevision,
+        turnState: snapshot.thread.status.turnState,
+        turns: snapshot.turns.map((turn) =>
+          turn.turnId === turns.alpha.turnId
+            ? {
+                ...turn,
+                smooth: {
+                  ...turn.smooth,
+                  schemaVersion: "component_smooth_turn_v1",
+                  status: "ready",
+                  strategy: "component_smooth_turn_v1",
+                  components: onlyUserPrompt,
+                },
+              }
+            : turn,
+        ),
+      }),
+    );
+
+    const draftView = makeThreadView({
+      threadId: thread.threadId,
+      smoothBand: makeBandRecord({
+        bandType: "smooth",
+        selectedIds: [turns.alpha.turnId],
+      }),
+    });
+
+    const result = expectOk(await materializer.materializeThreadView({ threadId: thread.threadId, draftView }));
+
+    assert.equal(result.smoothBand.renderedStatus, "missing_artifacts");
+    assert.equal(result.issues[0]?.code, "WORKBENCH_ARTIFACT_MISSING");
+    assert.deepEqual(
+      result.emittedMessages.filter((message) => message.bandType === "smooth"),
+      [],
     );
   });
 });

@@ -9,6 +9,7 @@ import { WorkbenchQueryService } from "../../src/workbench/services/workbench-qu
 import { FileThreadStore } from "../../src/thread/store/file-thread-store.js";
 import { FileThreadViewStore } from "../../src/thread-view/store/file-thread-view-store.js";
 import { estimateDeterministicTokenCount } from "../../src/thread/async-thread/domain/smooth-turn-state.js";
+import { materializeSmoothTurnFromState } from "../../src/thread/async-thread/services/smooth-turn-service.js";
 import { OpenAIInputTokenCounter } from "../../src/token-accounting/index.js";
 import { withTempFeature3Store } from "../../src/thread-view/test/fixtures.js";
 import {
@@ -291,10 +292,26 @@ test("smart compact E2E survives restart with persisted smooth chunk and placeho
     assert.equal(chunks.ok, true);
     assert.equal(thread.ok, true);
 
+    const messagesById = new Map(thread.value.messages.map((message) => [message.messageId, message]));
     assert.equal(
-      thread.value.turns.every(
-        (turn) => turn.lifecycleStatus !== "closed" || typeof turn.smooth?.text === "string",
-      ),
+      thread.value.turns.every((turn) => {
+        if (turn.lifecycleStatus !== "closed") {
+          return true;
+        }
+
+        const messages = turn.messageIds
+          .map((messageId) => messagesById.get(messageId))
+          .filter((message) => message !== undefined)
+          .sort((left, right) => left.sourceOrder - right.sourceOrder);
+        const materialized = materializeSmoothTurnFromState({ turn, messages });
+        return (
+          turn.smooth?.schemaVersion === "component_smooth_turn_v1" &&
+          turn.smooth.text === undefined &&
+          (materialized.status === "ready" || materialized.status === "degraded") &&
+          typeof materialized.text === "string" &&
+          materialized.text.length > 0
+        );
+      }),
       true,
     );
     assert.equal(chunks.value.some((chunk) => chunk.placeholders?.detailed?.status === "ready"), true);

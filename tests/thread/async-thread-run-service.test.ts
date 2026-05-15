@@ -133,6 +133,52 @@ test("missing smooth output blocks dependent work explicitly", async () => {
   });
 });
 
+test("incomplete component smooth state blocks dependent async work", async () => {
+  await withTempFeature3Store(async ({ storeRootDir }) => {
+    const context = await seedDeterministicRebuildThread(storeRootDir);
+    const snapshot = await context.threadStore.openThread(context.threadId);
+    assert.equal(snapshot.ok, true);
+    const target = snapshot.value.turns.find((turn) => turn.turnId === context.turns.middleNewer.turnId);
+    assert.ok(target);
+
+    await context.threadStore.writeTurns({
+      threadId: context.threadId,
+      expectedSourceRevision: snapshot.value.thread.sourceRevision,
+      expectedMessageHighWatermark: snapshot.value.thread.messageHighWatermark,
+      expectedTurnsRevision: snapshot.value.thread.turnsRevision,
+      turns: snapshot.value.turns.map((turn) =>
+        turn.turnId === context.turns.middleNewer.turnId
+          ? {
+              ...turn,
+              smooth: {
+                ...turn.smooth,
+                schemaVersion: "component_smooth_turn_v1",
+                status: "ready",
+                strategy: "component_smooth_turn_v1",
+                components: turn.smooth?.components?.filter((component) => component.kind === "user_prompt"),
+              },
+            }
+          : turn),
+      turnState: snapshot.value.thread.status.turnState,
+    });
+
+    const result = await prepareAsyncThread(
+      {
+        threadId: context.threadId,
+        mode: "strict",
+        requestedLowerBound: 30,
+        requestedBandPercentages: { fullFidelity: 50, smooth: 20, detailed: 20, brief: 10 },
+      },
+      {
+        store: context.threadStore,
+      },
+    );
+
+    assert.equal(result.smoothReady, false);
+    assert.equal(result.blockers.some((issue) => issue.code === "SMOOTH_MISSING"), true);
+  });
+});
+
 test("missing placeholder output blocks lower-band use explicitly", async () => {
   await withTempFeature3Store(async ({ storeRootDir }) => {
     const context = await seedMissingDetailedPlaceholderThread(storeRootDir);

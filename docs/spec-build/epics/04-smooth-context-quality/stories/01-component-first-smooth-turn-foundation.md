@@ -27,7 +27,6 @@ In scope:
 - Complete smooth Turn materialization contract for downstream compact/chunk/lower-band consumers
 - Persisted component data contract replacing the previous single `turn.smooth.text` field
 - Future-proof actor labels for multi-agent assistant responses
-- Migration/readability handling for existing `deterministic_marker_sections_v1` smooth records
 - Missing, stale, invalid, degraded, and ready states for component-first smooth Turns
 
 Out of scope:
@@ -76,16 +75,16 @@ Out of scope:
   - When: components are created
   - Then: components remain valid without assuming there is only one assistant forever
 
-**AC-1.4:** Existing smooth records remain usable during migration.
+**AC-1.4:** Obsolete monolithic smooth records do not remain a supported forward state.
 
-- **TC-1.4a: Legacy smooth text remains readable**
-  - Given: A Turn has existing `deterministic_marker_sections_v1` smooth text
+- **TC-1.4a: Obsolete monolithic smooth text is not treated as ready**
+  - Given: A closed Turn has only old monolithic smooth text and no component-first state
   - When: smooth state is inspected
-  - Then: the legacy state is reported clearly rather than discarded
-- **TC-1.4b: Legacy smooth state can be regenerated into component-first state**
-  - Given: A closed Turn has only legacy smooth state
+  - Then: the Turn reports missing component-first state rather than claiming smooth-ready
+- **TC-1.4b: Obsolete monolithic smooth state is replaced by component-first state**
+  - Given: A closed Turn has only old monolithic smooth text
   - When: component-first maintenance runs
-  - Then: component-first state can be created without mutating canonical messages
+  - Then: component-first state is created from canonical messages without preserving the old monolithic smooth text as a compatibility source
 
 **AC-1.5:** Component-first state exposes a complete smooth Turn materialization contract.
 
@@ -127,7 +126,7 @@ Component-first state replaces the previous single generated smooth field as the
 | Smooth state domain | `src/thread/async-thread/domain/smooth-turn-state.ts` |
 | Smooth service readiness | `src/thread/async-thread/services/smooth-turn-service.ts` |
 | Async readiness checks | `src/thread/async-thread/services/async-thread-run-service.ts` |
-| Thread record compatibility | `src/thread/domain/records.ts`, `src/thread/store/file-thread-store.ts` |
+| Thread record shape | `src/thread/domain/records.ts`, `src/thread/store/file-thread-store.ts` |
 | Workbench read surfaces | `src/workbench/services/workbench-query-service.ts` |
 
 #### Test Mapping
@@ -140,8 +139,8 @@ Component-first state replaces the previous single generated smooth field as the
 | TC-1.2b | `tests/thread/smooth-turn-service.test.ts` | omitted thinking does not block readiness |
 | TC-1.3a | `tests/thread/smooth-turn-service.test.ts` | component ordering follows canonical source order |
 | TC-1.3b | `tests/thread/smooth-turn-service.test.ts` | assistant actor labels are optional metadata |
-| TC-1.4a | `tests/thread/smooth-turn-service.test.ts` | legacy deterministic smooth state remains inspectable |
-| TC-1.4b | `tests/thread/smooth-turn-service.test.ts` | legacy smooth state can be regenerated into component-first state |
+| TC-1.4a | `tests/thread/smooth-turn-service.test.ts` | obsolete monolithic smooth text is not treated as ready |
+| TC-1.4b | `tests/thread/smooth-turn-service.test.ts` | obsolete monolithic smooth state is replaced by component-first state |
 | TC-1.5a | `tests/thread/smooth-turn-service.test.ts` | ready components materialize complete smooth turn text and token count |
 | TC-1.5b | `tests/thread/smooth-turn-service.test.ts` | incomplete components do not materialize as complete smooth text |
 | TC-1.6a | `tests/thread/smooth-turn-service.test.ts` | component records include source references |
@@ -155,9 +154,9 @@ Component-first state replaces the previous single generated smooth field as the
 
 Do not design the schema around one final assistant response. Assistant components should be message/component records with optional actor labels so future multi-agent conversations can render labels such as `[assistant:agent-one]` without changing the readiness model.
 
-The existing `turn.smooth.text` path is legacy input only. New component-first state replaces it as the source for new smooth-band assembly. Existing deterministic smooth records may remain readable and may be used to bootstrap component-first migration, but new code should not write a new full concatenated `turn.smooth.text` as the authoritative output.
+The existing `turn.smooth.text` path is obsolete. Component-first state replaces it as the source for smooth-band assembly. Do not add a compatibility shim, migration layer, or test fixture path that keeps old monolithic smooth text alive. If old monolithic state is encountered during maintenance, treat it as missing component-first state and regenerate from canonical messages.
 
-This story should explicitly preserve compatibility with downstream chunk and lower-band mechanics by defining how callers obtain the complete smooth Turn body and token count after component-first readiness is achieved.
+This story should update downstream callers that need smooth Turn text to obtain the complete assembled smooth Turn body and token count from component-first materialization rather than from `turn.smooth.text`.
 
 Component-first smooth state should include these persisted fields:
 
@@ -183,7 +182,7 @@ Component-first smooth state should include these persisted fields:
 #### Anti-Shim Requirements
 
 - Prove readiness from real Turn/Message/Part records, not synthetic component-only fixtures.
-- Prove legacy state compatibility against existing deterministic smooth records.
+- Prove obsolete monolithic smooth text is not treated as a ready forward state.
 - Do not mark a Turn ready by writing a placeholder monolithic string while required components are missing.
 - Prove new component-first writes replace the old generated `turn.smooth.text` path as the authoritative smooth source.
 
@@ -195,7 +194,7 @@ Component-first smooth state should include these persisted fields:
 
 #### Spec Deviations
 
-Intentional revision from Epic 3 deterministic mechanics: component-first smooth state replaces the previous single generated `turn.smooth.text` field as the authoritative smooth source for new work. Legacy deterministic smooth records remain migration/readability inputs only.
+Intentional revision from Epic 3 deterministic mechanics: component-first smooth state replaces the previous single generated `turn.smooth.text` field as the authoritative smooth source. This project has no external users, so old monolithic smooth records are not a supported compatibility surface.
 
 ### Definition of Done
 <!-- Jira: Definition of Done or Acceptance Criteria footer -->
@@ -203,5 +202,5 @@ Intentional revision from Epic 3 deterministic mechanics: component-first smooth
 - [ ] All 12 TCs pass (TC-1.1a through TC-1.6b)
 - [ ] Component-first smooth readiness persists and survives process restart
 - [ ] Component state includes source provenance and materialized source fingerprint
-- [ ] Existing smooth records remain inspectable or repairable
+- [ ] Obsolete monolithic smooth text is not used as a compatibility fallback
 - [ ] `npm run verify` passes

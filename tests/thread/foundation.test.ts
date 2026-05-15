@@ -9,6 +9,7 @@ import {
   StaleThreadMutationError,
 } from "../../src/thread/store/mutation-coordinator.js";
 import {
+  assembleSmoothTurnTextFromComponents,
   estimateDeterministicTokenCount,
   normalizeDeterministicText,
 } from "../../src/thread/async-thread/domain/smooth-turn-state.js";
@@ -123,7 +124,8 @@ test("Feature 3 fixture builders and temp stores create usable scaffolding", asy
     threadViewId: threadView.threadViewId,
   });
 
-  assert.equal(smooth.text, "Smooth turn text");
+  assert.equal(smooth.text, undefined);
+  assert.equal(assembleSmoothTurnTextFromComponents(smooth.components), "[user]\nSmooth turn text");
   assert.equal(openChunk.lifecycleStatus, "open");
   assert.equal(openChunk.closedAt, undefined);
   assert.equal(openChunk.closeReason, undefined);

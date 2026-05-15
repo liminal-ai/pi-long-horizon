@@ -124,12 +124,26 @@ test("smooth turn and chunk materialized counters produce scoped records with so
   const turn = makeTurnRecord({
     sourceRevision: 3,
     smooth: {
+      schemaVersion: "component_smooth_turn_v1",
       status: "ready",
-      text: "smooth turn text",
       tokenCountMetadata: { count: 3, scope: "smooth_turn_materialized", source: "pi_heuristic", trustClass: "heuristic_estimate", representationHash: "sha256:test-smooth-3", createdAt: CREATED_AT },
-      strategy: "deterministic_marker_sections_v1",
+      strategy: "component_smooth_turn_v1",
       generatedAt: DEFAULT_TEST_TIMESTAMP,
       sourceRevision: 4,
+      components: [
+        {
+          componentId: "turn-001:user_prompt:message-001:part-001",
+          kind: "user_prompt",
+          status: "ready",
+          text: "smooth turn text",
+          quality: "deterministic_preserved",
+          sourceMessageIds: ["message-001"],
+          sourcePartIds: ["part-001"],
+          sourceRevision: 4,
+          generatedAt: DEFAULT_TEST_TIMESTAMP,
+          strategy: "deterministic_user_prompt_preserved_v1",
+        },
+      ],
     },
   });
   const chunk = makeChunkState({

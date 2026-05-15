@@ -1,5 +1,6 @@
 import type { StewardIssue } from "../../thread/domain/errors.js";
 import type { ChunkState } from "../../thread/async-thread/domain/chunk-state.js";
+import { materializeSmoothTurnFromState } from "../../thread/async-thread/services/smooth-turn-service.js";
 import type { MessageRecord, ThreadRecord, TurnRecord } from "../../thread/domain/records.js";
 import type { ThreadStore } from "../../thread/store/thread-store.js";
 import {
@@ -390,6 +391,7 @@ export function truncateRawThreadViewMessages(
 function buildSmoothTurnMessage(
   threadViewId: string,
   turn: TurnRecord,
+  content: string,
   messageOrder: number,
 ): ThreadViewMessageRecord {
   return {
@@ -404,7 +406,7 @@ function buildSmoothTurnMessage(
     sourceKind: "smooth_turn",
     sourceReference: turn.turnId,
     messageOrder,
-    content: turn.smooth?.text ?? "",
+    content,
   };
 }
 
@@ -592,7 +594,17 @@ function buildUpperBandMessages(input: {
       return;
     }
 
-    if (!turn.smooth?.text) {
+    const turnMessages = sortMessagesInSourceOrder(
+      turn.messageIds
+        .map((messageId) => messagesById.get(messageId))
+        .filter((message): message is MessageRecord => message !== undefined),
+    );
+    const materialized = materializeSmoothTurnFromState({ turn, messages: turnMessages });
+    if (
+      turnMessages.length !== turn.messageIds.length ||
+      (materialized.status !== "ready" && materialized.status !== "degraded") ||
+      !materialized.text
+    ) {
       issues.push(
         createWorkbenchIssue({
           code: "WORKBENCH_ARTIFACT_MISSING",
@@ -604,7 +616,7 @@ function buildUpperBandMessages(input: {
       return;
     }
 
-    smoothMessages.push(buildSmoothTurnMessage(input.view.threadViewId, turn, turnIndex + 1));
+    smoothMessages.push(buildSmoothTurnMessage(input.view.threadViewId, turn, materialized.text, turnIndex + 1));
   });
 
   return {

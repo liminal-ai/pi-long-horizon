@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { StewardResult } from "../../src/context-steward/domain/errors.js";
-import type { MessageRecord } from "../../src/context-steward/domain/records.js";
+import type { MessageRecord, TurnRecord } from "../../src/context-steward/domain/records.js";
 import {
   appendSourceMessage,
   openOrCreateManagedThread,
@@ -40,6 +40,47 @@ function makePendingMessage(overrides: Partial<MessageRecord> = {}) {
     ...pendingMessage
   } = message;
   return pendingMessage;
+}
+
+function withComponentSmooth(turn: TurnRecord, text: string, count: number): TurnRecord {
+  const responseMessageId = turn.messageIds.find((messageId) => messageId !== turn.initiatingMessageId) ?? turn.initiatingMessageId;
+  return makeTurnRecord({
+    ...turn,
+    smooth: {
+      schemaVersion: "component_smooth_turn_v1",
+      status: "ready",
+      strategy: "component_smooth_turn_v1",
+      generatedAt: "2026-01-01T00:00:00.000Z",
+      sourceRevision: turn.sourceRevision,
+      tokenCountMetadata: { count, scope: "smooth_turn_materialized", source: "pi_heuristic", trustClass: "heuristic_estimate", representationHash: `sha256:test-smooth-${count}`, createdAt: "2026-01-01T00:00:00.000Z" },
+      components: [
+        {
+          componentId: `${turn.turnId}:user_prompt:${turn.initiatingMessageId}:smooth-test-part`,
+          kind: "user_prompt",
+          status: "ready",
+          text,
+          quality: "deterministic_preserved",
+          sourceMessageIds: [turn.initiatingMessageId],
+          sourcePartIds: ["smooth-test-part"],
+          sourceRevision: turn.sourceRevision,
+          generatedAt: "2026-01-01T00:00:00.000Z",
+          strategy: "deterministic_user_prompt_preserved_v1",
+        },
+        {
+          componentId: `${turn.turnId}:assistant_message:${responseMessageId}:smooth-test-response-part`,
+          kind: "assistant_message",
+          status: "ready",
+          text,
+          quality: "deterministic_preserved",
+          sourceMessageIds: [responseMessageId],
+          sourcePartIds: ["smooth-test-response-part"],
+          sourceRevision: turn.sourceRevision,
+          generatedAt: "2026-01-01T00:00:00.000Z",
+          strategy: "deterministic_assistant_v1",
+        },
+      ],
+    },
+  });
 }
 
 async function createLifecycleHarness(
@@ -662,20 +703,16 @@ test("band updates persist upper-band selections and materialized emitted output
       "session-update-upper-bands",
     );
     await writeThreadTurns(threadStore, thread.threadId, [
-      makeTurnRecord({
-        ...turns.first,
-        smooth: {
-          text: "[user]\nPlease summarize the migration risks.\n\n[assistant]\nMigration risks center on stale state and activation timing.",
-          tokenCountMetadata: { count: 18, scope: "smooth_turn_materialized", source: "pi_heuristic", trustClass: "heuristic_estimate", representationHash: "sha256:test-smooth-18", createdAt: "2026-01-01T00:00:00.000Z" },
-        },
-      }),
-      makeTurnRecord({
-        ...turns.second,
-        smooth: {
-          text: "[user]\nNow isolate the rollout fallback.\n\n[assistant]\nThe fallback keeps the active context intact while the draft is revised.",
-          tokenCountMetadata: { count: 19, scope: "smooth_turn_materialized", source: "pi_heuristic", trustClass: "heuristic_estimate", representationHash: "sha256:test-smooth-19", createdAt: "2026-01-01T00:00:00.000Z" },
-        },
-      }),
+      withComponentSmooth(
+        turns.first,
+        "Please summarize the migration risks.\nMigration risks center on stale state and activation timing.",
+        18,
+      ),
+      withComponentSmooth(
+        turns.second,
+        "Now isolate the rollout fallback.\nThe fallback keeps the active context intact while the draft is revised.",
+        19,
+      ),
     ]);
 
     const draft = expectOk(await editService.createDraftThreadView({ threadId: thread.threadId }));

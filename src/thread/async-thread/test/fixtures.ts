@@ -26,16 +26,35 @@ export function makeSmoothTurnState(overrides: Partial<SmoothTurnState> = {}): S
   const text = overrides.text ?? "Deterministic smooth turn text";
   const normalizedText = normalizeDeterministicText(text);
   const count = overrides.tokenCountMetadata?.count ?? (overrides.status === "missing" ? undefined : estimateDeterministicTokenCount(normalizedText));
+  const components = overrides.components ?? (
+    overrides.status === "missing"
+      ? undefined
+      : [
+          {
+            componentId: `${overrides.turnId ?? "turn-001"}:user_prompt:message-001:part-001`,
+            kind: "user_prompt" as const,
+            status: "ready" as const,
+            text: normalizedText,
+            quality: "deterministic_preserved" as const,
+            sourceMessageIds: ["message-001"],
+            sourcePartIds: ["part-001"],
+            sourceRevision: overrides.sourceRevision ?? 1,
+            generatedAt: overrides.generatedAt ?? DEFAULT_TEST_TIMESTAMP,
+            strategy: "deterministic_user_prompt_preserved_v1" as const,
+          },
+        ]
+  );
 
   return cloneSmoothTurnState({
     turnId: overrides.turnId ?? "turn-001",
     threadId: overrides.threadId ?? "thread-001",
+    schemaVersion: overrides.schemaVersion ?? (components ? "component_smooth_turn_v1" : undefined),
     status: overrides.status ?? "ready",
-    text: overrides.status === "missing" ? undefined : normalizedText,
     tokenCountMetadata: count === undefined ? undefined : makeTokenCountRecord(count, "smooth_turn_materialized"),
-    strategy: overrides.strategy ?? "deterministic_marker_sections_v1",
+    strategy: overrides.strategy ?? (components ? "component_smooth_turn_v1" : undefined),
     generatedAt: overrides.generatedAt ?? DEFAULT_TEST_TIMESTAMP,
     sourceRevision: overrides.sourceRevision ?? 1,
+    components,
   });
 }
 

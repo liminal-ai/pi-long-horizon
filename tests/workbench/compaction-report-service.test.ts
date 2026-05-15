@@ -198,11 +198,11 @@ test("buildCompactionAuditReport computes per-band token accounting", async () =
       { threadStore: context.threadStore, threadViewStore: context.threadViewStore },
     );
     assert.equal(report.bands.full_fidelity.actualTokenCount, 127);
-    assert.equal(report.bands.smooth.actualTokenCount, 7);
+    assert.equal(report.bands.smooth.actualTokenCount, 6);
     assert.equal(report.bands.detailed.actualTokenCount, 22);
     assert.equal(report.bands.brief.actualTokenCount, 17);
     assert.equal(report.bands.full_fidelity.countPolicyStatus, "usable");
-    assert.equal(report.resultingTokenCount, 173);
+    assert.equal(report.resultingTokenCount, 172);
   });
 });
 
@@ -219,7 +219,7 @@ test("buildCompactionAuditReport includes turn-level detail for upper bands", as
         turnId: context.turns.oldest.turnId,
         bandType: "full_fidelity",
         rawTokenCount: 127,
-        smoothTokenCount: 7,
+        smoothTokenCount: 6,
         rawCountPolicyStatus: "usable",
         smoothCountPolicyStatus: "usable",
       },
@@ -227,7 +227,7 @@ test("buildCompactionAuditReport includes turn-level detail for upper bands", as
         turnId: context.turns.middleOlder.turnId,
         bandType: "smooth",
         rawTokenCount: 135,
-        smoothTokenCount: 7,
+        smoothTokenCount: 6,
         rawCountPolicyStatus: "usable",
         smoothCountPolicyStatus: "usable",
       },
