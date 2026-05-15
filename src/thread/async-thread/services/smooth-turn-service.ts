@@ -380,7 +380,7 @@ function buildSmoothComponents(input: {
       components.push({
         componentId: buildComponentId(input.turn.turnId, kind, message.messageId, part.partId),
         kind,
-        status: omitted ? "omitted" : "ready",
+        status: omitted ? "omitted" : kind === "user_prompt" ? "degraded" : "ready",
         text: omitted ? undefined : text,
         quality: componentQuality(kind, omitted),
         sourceMessageIds: [message.messageId],

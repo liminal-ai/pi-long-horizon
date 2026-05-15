@@ -113,6 +113,7 @@ export interface SmartCompactCommandResult {
   compactStatus: "success" | "blocked" | "degraded" | "write_failed" | "reload_failed";
   blockers: StewardIssue[];
   resultingTokenCount?: number;
+  degradedSmoothingCount?: number;
   generatedSessionTokenCount?: number;
   generatedSessionTokenCountMetadata?: TokenCountRecord;
   generatedSessionCountPolicy?: TokenCountSourceDecision;

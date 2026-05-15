@@ -25,6 +25,10 @@ export interface PlaceholderArtifactRecord {
     | "deterministic_truncate_30"
     | "deterministic_truncate_5";
   generatedAt?: string;
+  smoothSourceFingerprint?: string;
+  smoothSourceRevision?: number;
+  smoothSourceTokenCount?: number;
+  generatedFromComponentSmooth?: boolean;
 }
 
 export interface PlaceholderArtifactState {

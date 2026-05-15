@@ -7,6 +7,7 @@ import {
   type PlaceholderArtifactRecord,
   type PlaceholderArtifactState,
 } from "../domain/placeholder-artifact-state.js";
+import { createHash } from "node:crypto";
 import {
   DEFAULT_PLACEHOLDER_BUILD_SETTINGS,
   clonePlaceholderBuildSettings,
@@ -78,6 +79,36 @@ function backfillChunkSmoothTokenCountMetadata(chunk: ChunkState): boolean {
   return true;
 }
 
+export function createSmoothChunkSourceFingerprint(smoothText: string | undefined): string | undefined {
+  const normalized = normalizeDeterministicText(smoothText ?? "");
+  if (!normalized) {
+    return undefined;
+  }
+
+  const digest = createHash("sha256").update(normalized).digest("hex");
+  return `sha256:${digest}`;
+}
+
+export function isPlaceholderFreshForChunk(
+  chunk: ChunkState,
+  record: PlaceholderArtifactRecord | undefined,
+  smoothText: string | undefined = chunk.smoothText,
+  smoothSourceRevision: number | undefined = chunk.sourceRevision,
+  smoothSourceTokenCount: number | undefined = chunk.smoothTokenCountMetadata?.count,
+): boolean {
+  const smoothSourceFingerprint = createSmoothChunkSourceFingerprint(smoothText);
+  if (!record || !smoothSourceFingerprint) {
+    return false;
+  }
+
+  return (
+    record.smoothSourceFingerprint === smoothSourceFingerprint &&
+    record.smoothSourceRevision === smoothSourceRevision &&
+    record.smoothSourceTokenCount === smoothSourceTokenCount &&
+    record.generatedFromComponentSmooth === true
+  );
+}
+
 function validateChunkForPlaceholderBuild(chunk: ChunkState): StewardIssue[] {
   const issues: StewardIssue[] = [];
 
@@ -117,6 +148,7 @@ function validateChunkForPlaceholderBuild(chunk: ChunkState): StewardIssue[] {
 }
 
 function buildPlaceholderRecord(input: {
+  chunk: ChunkState;
   kind: PlaceholderArtifactKind;
   smoothText: string;
   settings: PlaceholderBuildSettings;
@@ -142,6 +174,10 @@ function buildPlaceholderRecord(input: {
     text,
     strategy,
     generatedAt: input.generatedAt,
+    smoothSourceFingerprint: createSmoothChunkSourceFingerprint(input.smoothText),
+    smoothSourceRevision: input.chunk.sourceRevision,
+    smoothSourceTokenCount: input.chunk.smoothTokenCountMetadata?.count,
+    generatedFromComponentSmooth: true,
   };
 }
 
@@ -182,6 +218,10 @@ function isCurrentPlaceholderRecord(
     record.kind === expected.kind &&
     record.status === "ready" &&
     record.text === expected.text &&
+    record.smoothSourceFingerprint === expected.smoothSourceFingerprint &&
+    record.smoothSourceRevision === expected.smoothSourceRevision &&
+    record.smoothSourceTokenCount === expected.smoothSourceTokenCount &&
+    record.generatedFromComponentSmooth === true &&
     isCurrentTokenCountMetadata(record.tokenCountMetadata, expected.tokenCountMetadata!) &&
     record.strategy === expected.strategy &&
     typeof record.generatedAt === "string" &&
@@ -251,6 +291,7 @@ export async function ensurePlaceholderArtifacts(
     const detailed = withPlaceholderTokenCountMetadata({
       chunk,
       record: buildPlaceholderRecord({
+        chunk,
         kind: "detailed",
         smoothText: chunk.smoothText ?? "",
         settings,
@@ -260,6 +301,7 @@ export async function ensurePlaceholderArtifacts(
     const brief = withPlaceholderTokenCountMetadata({
       chunk,
       record: buildPlaceholderRecord({
+        chunk,
         kind: "brief",
         smoothText: chunk.smoothText ?? "",
         settings,

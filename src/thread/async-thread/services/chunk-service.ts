@@ -146,6 +146,75 @@ function appendTurnToChunk(chunk: ChunkState, turn: TurnRecord, messages: readon
   backfillChunkSmoothTokenCountMetadata(chunk);
 }
 
+export function materializeChunkSmoothTextFromTurns(input: {
+  chunk: ChunkState;
+  turnsById: ReadonlyMap<string, TurnRecord>;
+  messagesById: ReadonlyMap<string, MessageRecord>;
+}): { text: string; sourceRevision: number } | undefined {
+  const parts: string[] = [];
+  let sourceRevision = input.chunk.sourceRevision ?? 0;
+
+  for (const turnId of input.chunk.sourceTurnIds) {
+    const turn = input.turnsById.get(turnId);
+    if (!turn) {
+      return undefined;
+    }
+
+    const messages = sortMessages(
+      turn.messageIds
+        .map((messageId) => input.messagesById.get(messageId))
+        .filter((message): message is MessageRecord => message !== undefined),
+    );
+    if (messages.length !== turn.messageIds.length) {
+      return undefined;
+    }
+
+    const materialized = materializeSmoothTurnFromState({ turn, messages });
+    if ((materialized.status !== "ready" && materialized.status !== "degraded") || !materialized.text) {
+      return undefined;
+    }
+
+    parts.push(materialized.text);
+    sourceRevision = Math.max(sourceRevision, turn.sourceRevision);
+  }
+
+  return parts.length > 0
+    ? {
+        text: parts.join("\n\n"),
+        sourceRevision,
+      }
+    : undefined;
+}
+
+function refreshClosedChunkFromSmoothTurns(input: {
+  chunk: ChunkState;
+  turnsById: ReadonlyMap<string, TurnRecord>;
+  messagesById: ReadonlyMap<string, MessageRecord>;
+}): boolean {
+  if (input.chunk.lifecycleStatus !== "closed") {
+    return false;
+  }
+
+  const materialized = materializeChunkSmoothTextFromTurns(input);
+  if (!materialized) {
+    return false;
+  }
+
+  if (
+    input.chunk.smoothText === materialized.text &&
+    input.chunk.sourceRevision === materialized.sourceRevision &&
+    backfillChunkSmoothTokenCountMetadata(input.chunk) === false
+  ) {
+    return false;
+  }
+
+  input.chunk.smoothText = materialized.text;
+  input.chunk.sourceRevision = materialized.sourceRevision;
+  input.chunk.placeholders = undefined;
+  backfillChunkSmoothTokenCountMetadata(input.chunk);
+  return true;
+}
+
 function backfillChunkSmoothTokenCountMetadata(chunk: ChunkState): boolean {
   if (!chunk.smoothText) {
     return false;
@@ -244,6 +313,12 @@ export async function updateChunkState(
 
     const assignedTurnIds = new Set(nextChunks.flatMap((chunk) => chunk.sourceTurnIds));
     const messagesById = new Map(snapshotResult.value.messages.map((message) => [message.messageId, message]));
+    const turnsById = new Map(snapshotResult.value.turns.map((turn) => [turn.turnId, turn]));
+    for (const chunk of nextChunks) {
+      if (refreshClosedChunkFromSmoothTurns({ chunk, turnsById, messagesById })) {
+        updatedChunkIds.add(chunk.chunkId);
+      }
+    }
     const turnMessages = (turn: TurnRecord) =>
       sortMessages(
         turn.messageIds

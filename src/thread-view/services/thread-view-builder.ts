@@ -12,6 +12,8 @@ import {
   type TokenCountSourceDecision,
 } from "../../token-accounting/index.js";
 import type { ChunkState } from "../../thread/async-thread/domain/chunk-state.js";
+import { materializeChunkSmoothTextFromTurns } from "../../thread/async-thread/services/chunk-service.js";
+import { isPlaceholderFreshForChunk } from "../../thread/async-thread/services/placeholder-artifact-service.js";
 import { materializeSmoothTurnFromState } from "../../thread/async-thread/services/smooth-turn-service.js";
 import type { MessageRecord, ThreadRecord, TurnRecord } from "../../thread/domain/records.js";
 import type { ThreadStore } from "../../thread/store/thread-store.js";
@@ -47,6 +49,7 @@ const BAND_STATUS_BY_RESULT = {
 const DEGRADED_RESULT_ISSUE_CODES = new Set([
   "LOWER_THRESHOLD_UNREACHED",
   "TOKEN_COUNT_DEGRADED",
+  "SMOOTH_DEGRADED",
 ]);
 
 type BandAllocationKey = (typeof BAND_ALLOCATION_KEYS)[number];
@@ -278,6 +281,11 @@ export function resolveChunkPlaceholderTokenAccounting(input: {
   bandType: "detailed" | "brief";
   policyMode?: CounterSourcePolicyMode;
   now?: () => Date;
+  currentSmoothSource?: {
+    text: string;
+    sourceRevision: number;
+    tokenCount: number;
+  };
 }): SelectedTokenAccounting | undefined {
   const policyMode = input.policyMode ?? "prepare";
   const placeholder = input.bandType === "detailed"
@@ -285,6 +293,18 @@ export function resolveChunkPlaceholderTokenAccounting(input: {
     : input.chunk.placeholders?.brief;
 
   if (!placeholder?.text) {
+    return undefined;
+  }
+
+  if (
+    !isPlaceholderFreshForChunk(
+      input.chunk,
+      placeholder,
+      input.currentSmoothSource?.text,
+      input.currentSmoothSource?.sourceRevision,
+      input.currentSmoothSource?.tokenCount,
+    )
+  ) {
     return undefined;
   }
 
@@ -310,6 +330,36 @@ export function resolveChunkPlaceholderTokenAccounting(input: {
     requestedScope: input.bandType === "detailed" ? "detailed_chunk_materialized" : "brief_chunk_materialized",
     policyMode,
   });
+}
+
+function resolveCurrentChunkSmoothSource(input: {
+  chunk: ChunkState;
+  turnsById: ReadonlyMap<string, TurnRecord>;
+  messagesById: ReadonlyMap<string, MessageRecord>;
+  now?: () => Date;
+}): { text: string; sourceRevision: number; tokenCount: number } | undefined {
+  const materialized = materializeChunkSmoothTextFromTurns({
+    chunk: input.chunk,
+    turnsById: input.turnsById,
+    messagesById: input.messagesById,
+  });
+  if (!materialized) {
+    return undefined;
+  }
+
+  const tokenCount = countChunkSmoothMaterialized(
+    {
+      ...input.chunk,
+      smoothText: materialized.text,
+      sourceRevision: materialized.sourceRevision,
+    },
+    { now: input.now },
+  ).count;
+
+  return {
+    ...materialized,
+    tokenCount,
+  };
 }
 
 function allocateBandBudgets(
@@ -460,6 +510,8 @@ function selectLowerBandChunkIds(
   budget: number,
   bandType: "detailed" | "brief",
   policyMode: CounterSourcePolicyMode,
+  turnsById: ReadonlyMap<string, TurnRecord>,
+  messagesById: ReadonlyMap<string, MessageRecord>,
   now?: () => Date,
 ): LowerBandSelectionResult {
   if (budget <= 0 || candidates.length === 0) {
@@ -482,15 +534,42 @@ function selectLowerBandChunkIds(
     const placeholder = bandType === "detailed"
       ? candidate.chunk.placeholders?.detailed
       : candidate.chunk.placeholders?.brief;
+    const currentSmoothSource = resolveCurrentChunkSmoothSource({
+      chunk: candidate.chunk,
+      turnsById,
+      messagesById,
+      now,
+    });
     const accounting = resolveChunkPlaceholderTokenAccounting({
       chunk: candidate.chunk,
       bandType,
       policyMode,
       now,
+      currentSmoothSource,
     });
 
     if (selectedChunkIds.length === 0) {
       if (!placeholder?.text || !accounting) {
+        if (
+          placeholder?.text &&
+          currentSmoothSource &&
+          !isPlaceholderFreshForChunk(
+            candidate.chunk,
+            placeholder,
+            currentSmoothSource.text,
+            currentSmoothSource.sourceRevision,
+            currentSmoothSource.tokenCount,
+          )
+        ) {
+          blockers.push(
+            createStewardIssue({
+              code: "CHUNK_PLACEHOLDER_MISSING",
+              message: `Chunk ${candidate.chunk.chunkId} has stale ${bandType} placeholder provenance for the current component smooth source.`,
+              threadId: candidate.chunk.threadId,
+              cause: "placeholder_smooth_source_stale",
+            }),
+          );
+        }
         break;
       }
 
@@ -502,6 +581,26 @@ function selectLowerBandChunkIds(
     }
 
     if (!placeholder?.text || !accounting) {
+      if (
+        placeholder?.text &&
+        currentSmoothSource &&
+        !isPlaceholderFreshForChunk(
+          candidate.chunk,
+          placeholder,
+          currentSmoothSource.text,
+          currentSmoothSource.sourceRevision,
+          currentSmoothSource.tokenCount,
+        )
+      ) {
+        blockers.push(
+          createStewardIssue({
+            code: "CHUNK_PLACEHOLDER_MISSING",
+            message: `Chunk ${candidate.chunk.chunkId} has stale ${bandType} placeholder provenance for the current component smooth source.`,
+            threadId: candidate.chunk.threadId,
+            cause: "placeholder_smooth_source_stale",
+          }),
+        );
+      }
       break;
     }
 
@@ -550,6 +649,39 @@ function buildDegradedAccountingIssues(input: {
   }
 
   return issues;
+}
+
+function buildDegradedSmoothingIssues(input: {
+  threadId: string;
+  selectedTurnIds: readonly string[];
+  turnsById: ReadonlyMap<string, TurnRecord>;
+  messagesById: ReadonlyMap<string, MessageRecord>;
+}): StewardIssue[] {
+  return input.selectedTurnIds.flatMap((turnId) => {
+    const turn = input.turnsById.get(turnId);
+    if (!turn) {
+      return [];
+    }
+
+    const messages = sortMessagesInSourceOrder(
+      turn.messageIds
+        .map((messageId) => input.messagesById.get(messageId))
+        .filter((message): message is MessageRecord => message !== undefined),
+    );
+    const materialized = materializeSmoothTurnFromState({ turn, messages });
+    if (materialized.status !== "degraded") {
+      return [];
+    }
+
+    return [
+      createStewardIssue({
+        code: "SMOOTH_DEGRADED",
+        message: `Turn ${turn.turnId} used degraded deterministic-preserved user prompt smoothing.`,
+        threadId: input.threadId,
+        cause: "user_prompt_deterministic_preserved",
+      }),
+    ];
+  });
 }
 
 function buildBandRecord(
@@ -759,6 +891,8 @@ export async function buildDraftThreadView(
     budgets.detailed,
     "detailed",
     accountingPolicyMode,
+    turnsById,
+    messagesById,
     dependencies.now,
   );
   const briefSelection = detailedSelection.blockers.length > 0
@@ -774,6 +908,8 @@ export async function buildDraftThreadView(
         budgets.brief,
         "brief",
         accountingPolicyMode,
+        turnsById,
+        messagesById,
         dependencies.now,
       );
   const selectedDetailedChunkIds = orderSelectedChunks(
@@ -797,6 +933,12 @@ export async function buildDraftThreadView(
       { bandLabel: "Detailed", selectedAccounting: detailedSelection.selectedAccounting },
       { bandLabel: "Brief", selectedAccounting: briefSelection.selectedAccounting },
     ],
+  });
+  const degradedSmoothingIssues = buildDegradedSmoothingIssues({
+    threadId: input.threadId,
+    selectedTurnIds: smoothSelection.selectedTurnIds,
+    turnsById,
+    messagesById,
   });
 
   const draftView = await openOrCreateDraftView(input, threadSnapshot.thread, budgets, dependencies);
@@ -851,6 +993,7 @@ export async function buildDraftThreadView(
     ...materialized.issues,
     ...thresholdBlockers,
     ...degradedAccountingIssues,
+    ...degradedSmoothingIssues,
   ];
   const resultStatus = inferResultStatus(blockers, resultingTokenCount, input.requestedLowerBound);
   const updatedAt = (dependencies.now ?? (() => new Date()))().toISOString();

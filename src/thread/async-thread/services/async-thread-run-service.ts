@@ -19,10 +19,11 @@ import type { ThreadStore } from "../../store/thread-store.js";
 import type { MessageRecord, TurnRecord } from "../../domain/records.js";
 import { createStewardIssue, StewardResultError, type StewardIssue } from "../../domain/errors.js";
 import type { ChunkState } from "../domain/chunk-state.js";
-import { ensurePlaceholderArtifacts } from "./placeholder-artifact-service.js";
+import { ensurePlaceholderArtifacts, isPlaceholderFreshForChunk } from "./placeholder-artifact-service.js";
 import { ensureSmoothTurn, materializeSmoothTurnFromState } from "./smooth-turn-service.js";
-import { updateChunkState } from "./chunk-service.js";
+import { materializeChunkSmoothTextFromTurns, updateChunkState } from "./chunk-service.js";
 import {
+  countChunkSmoothMaterialized,
   countRawTurnMaterialized,
   OpenAIInputTokenCounter,
   type TokenCountRecord,
@@ -376,11 +377,33 @@ function areChunkPlaceholdersReady(chunk: ChunkState): boolean {
     typeof detailed.text === "string" &&
     detailed.text.length > 0 &&
     typeof detailed.tokenCountMetadata?.count === "number" &&
+    isPlaceholderFreshForChunk(chunk, detailed) &&
     brief?.status === "ready" &&
     typeof brief.text === "string" &&
     brief.text.length > 0 &&
-    typeof brief.tokenCountMetadata?.count === "number"
+    typeof brief.tokenCountMetadata?.count === "number" &&
+    isPlaceholderFreshForChunk(chunk, brief)
   );
+}
+
+function resolveCurrentChunkSmoothSource(input: {
+  chunk: ChunkState;
+  turnsById: ReadonlyMap<string, TurnRecord>;
+  messagesById: ReadonlyMap<string, MessageRecord>;
+}): { text: string; sourceRevision: number; tokenCount: number } | undefined {
+  const materialized = materializeChunkSmoothTextFromTurns(input);
+  if (!materialized) {
+    return undefined;
+  }
+
+  return {
+    ...materialized,
+    tokenCount: countChunkSmoothMaterialized({
+      ...input.chunk,
+      smoothText: materialized.text,
+      sourceRevision: materialized.sourceRevision,
+    }).count,
+  };
 }
 
 function resolveSmoothTokenCount(
@@ -644,6 +667,7 @@ function buildReadinessBlockers(input: {
   }
 
   const turnIds = new Set(input.turns.map((turn) => turn.turnId));
+  const turnsById = new Map(input.turns.map((turn) => [turn.turnId, turn]));
   const openChunks = input.chunks.filter((chunk) => chunk.lifecycleStatus === "open");
   if (openChunks.length > 1) {
     blockers.push(
@@ -715,14 +739,35 @@ function buildReadinessBlockers(input: {
 
     const detailed = chunk.placeholders?.detailed;
     const brief = chunk.placeholders?.brief;
+    const currentSmoothSource = resolveCurrentChunkSmoothSource({ chunk, turnsById, messagesById });
     const missingDetailed =
       (requiredDetailedChunkIds?.has(chunk.chunkId) ?? true) &&
       requiredPlaceholderBands.detailed &&
-      (detailed?.status !== "ready" || !detailed.text || typeof detailed.tokenCountMetadata?.count !== "number");
+      (detailed?.status !== "ready" ||
+        !detailed.text ||
+        typeof detailed.tokenCountMetadata?.count !== "number" ||
+        !currentSmoothSource ||
+        !isPlaceholderFreshForChunk(
+          chunk,
+          detailed,
+          currentSmoothSource.text,
+          currentSmoothSource.sourceRevision,
+          currentSmoothSource.tokenCount,
+        ));
     const missingBrief =
       (requiredBriefChunkIds?.has(chunk.chunkId) ?? true) &&
       requiredPlaceholderBands.brief &&
-      (brief?.status !== "ready" || !brief.text || typeof brief.tokenCountMetadata?.count !== "number");
+      (brief?.status !== "ready" ||
+        !brief.text ||
+        typeof brief.tokenCountMetadata?.count !== "number" ||
+        !currentSmoothSource ||
+        !isPlaceholderFreshForChunk(
+          chunk,
+          brief,
+          currentSmoothSource.text,
+          currentSmoothSource.sourceRevision,
+          currentSmoothSource.tokenCount,
+        ));
 
     if (missingDetailed || missingBrief) {
       const requiredBands = [
@@ -1245,6 +1290,18 @@ async function repairOpenAITokenCounts(
           model: dependencies.tokenCountModel,
           now: dependencies.now,
         });
+        if (chunk.placeholders?.detailed) {
+          chunk.placeholders.detailed = {
+            ...chunk.placeholders.detailed,
+            smoothSourceTokenCount: chunk.smoothTokenCountMetadata.count,
+          };
+        }
+        if (chunk.placeholders?.brief) {
+          chunk.placeholders.brief = {
+            ...chunk.placeholders.brief,
+            smoothSourceTokenCount: chunk.smoothTokenCountMetadata.count,
+          };
+        }
         chunksChanged = true;
       }
 

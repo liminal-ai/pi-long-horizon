@@ -1,6 +1,9 @@
 import type { StewardIssue } from "../../thread/domain/errors.js";
 import type { ChunkState } from "../../thread/async-thread/domain/chunk-state.js";
+import { materializeChunkSmoothTextFromTurns } from "../../thread/async-thread/services/chunk-service.js";
+import { isPlaceholderFreshForChunk } from "../../thread/async-thread/services/placeholder-artifact-service.js";
 import { materializeSmoothTurnFromState } from "../../thread/async-thread/services/smooth-turn-service.js";
+import { countChunkSmoothMaterialized } from "../../token-accounting/index.js";
 import type { MessageRecord, ThreadRecord, TurnRecord } from "../../thread/domain/records.js";
 import type { ThreadStore } from "../../thread/store/thread-store.js";
 import {
@@ -466,6 +469,8 @@ function validateTurnSelections(
 function validateLowerBandSelections(
   threadId: string,
   orderedChunks: readonly ChunkState[],
+  turnsById: ReadonlyMap<string, TurnRecord>,
+  messagesById: ReadonlyMap<string, MessageRecord>,
   band: BandRecord,
 ): StewardIssue[] {
   if (band.sourceUnitType !== "chunk") {
@@ -507,11 +512,29 @@ function validateLowerBandSelections(
     }
 
     const placeholder = band.bandType === "detailed" ? chunk.placeholders?.detailed : chunk.placeholders?.brief;
-    if (!placeholder?.text) {
+    const currentSmoothSource = materializeChunkSmoothTextFromTurns({ chunk, turnsById, messagesById });
+    const currentSmoothSourceTokenCount = currentSmoothSource
+      ? countChunkSmoothMaterialized({
+          ...chunk,
+          smoothText: currentSmoothSource.text,
+          sourceRevision: currentSmoothSource.sourceRevision,
+        }).count
+      : undefined;
+    if (
+      !placeholder?.text ||
+      !currentSmoothSource ||
+      !isPlaceholderFreshForChunk(
+        chunk,
+        placeholder,
+        currentSmoothSource.text,
+        currentSmoothSource.sourceRevision,
+        currentSmoothSourceTokenCount,
+      )
+    ) {
       issues.push(
         createWorkbenchIssue({
           code: "WORKBENCH_ARTIFACT_MISSING",
-          message: `Chunk ${chunkId} is missing the ${band.bandType} placeholder artifact required for materialization.`,
+          message: `Chunk ${chunkId} is missing a fresh ${band.bandType} placeholder artifact required for materialization.`,
           threadId,
         }),
       );
@@ -705,7 +728,13 @@ export class ThreadViewMaterializer {
     );
     const smoothValidation = validateTurnSelections(input.threadId, orderedTurns, input.draftView.smoothBand);
     const lowerBandValidation = LOWER_BAND_TYPES.flatMap((bandType) =>
-      validateLowerBandSelections(input.threadId, orderedChunks, getBand(input.draftView, bandType)),
+      validateLowerBandSelections(
+        input.threadId,
+        orderedChunks,
+        turnsById,
+        indexMessages(threadSnapshot.value.messages),
+        getBand(input.draftView, bandType),
+      ),
     );
     if (
       fullFidelityValidation.length > 0 ||

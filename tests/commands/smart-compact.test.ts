@@ -929,7 +929,10 @@ test("first smart compact can bootstrap deterministic artifacts", async () => {
 
     const thread = await seeded.threadStore.openThread(seeded.threadId);
     assert.equal(thread.ok, true);
-    assert.equal(thread.value.turns.every((turn) => turn.smooth?.status === "ready"), true);
+    assert.equal(
+      thread.value.turns.every((turn) => turn.smooth?.status === "ready" || turn.smooth?.status === "degraded"),
+      true,
+    );
   });
 });
 

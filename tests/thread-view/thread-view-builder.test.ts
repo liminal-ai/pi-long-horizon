@@ -439,6 +439,68 @@ test("closed chunk can enter lower band", async () => {
   });
 });
 
+test("strict lower-band selection rejects placeholders stale against current component smooth source", async () => {
+  await withTempFeature3Store(async ({ storeRootDir }) => {
+    const context = await seedDeterministicRebuildThread(storeRootDir);
+    const snapshot = await context.threadStore.openThread(context.threadId);
+    assert.equal(snapshot.ok, true);
+    const turns = snapshot.value.turns.map((turn) =>
+      turn.turnId === context.turns.middleOlder.turnId
+        ? {
+            ...turn,
+            smooth: turn.smooth
+              ? {
+                  ...turn.smooth,
+                  components: turn.smooth.components?.map((component) =>
+                    component.kind === "user_prompt"
+                      ? {
+                          ...component,
+                          text: "model smoothed replacement text that makes persisted chunk placeholders stale",
+                          quality: "model_smoothed" as const,
+                          strategy: "gpt_5_4_mini_user_prompt_v1" as const,
+                        }
+                      : component,
+                  ),
+                }
+              : turn.smooth,
+          }
+        : turn,
+    );
+    const writeResult = await context.threadStore.writeTurns({
+      threadId: context.threadId,
+      expectedSourceRevision: snapshot.value.thread.sourceRevision,
+      expectedMessageHighWatermark: snapshot.value.thread.messageHighWatermark,
+      expectedTurnsRevision: snapshot.value.thread.turnsRevision,
+      turns,
+      turnState: snapshot.value.thread.status.turnState,
+    });
+    assert.equal(writeResult.ok, true);
+
+    const result = await buildDraftThreadView(
+      {
+        threadId: context.threadId,
+        requestedLowerBound: STAGE7_READY_LOWER_BOUND,
+        requestedBandPercentages: STAGE7_READY_BAND_PERCENTAGES,
+        mode: "strict",
+      },
+      {
+        threadStore: context.threadStore,
+        threadViewStore: context.threadViewStore,
+      },
+    );
+
+    assert.equal(result.status, "blocked");
+    assert.equal(
+      result.blockers.some(
+        (issue) =>
+          issue.code === "CHUNK_PLACEHOLDER_MISSING" &&
+          issue.cause === "placeholder_smooth_source_stale",
+      ),
+      true,
+    );
+  });
+});
+
 test("open chunk cannot enter lower band", async () => {
   await withTempFeature3Store(async ({ storeRootDir }) => {
     const context = await seedDeterministicRebuildThread(storeRootDir);

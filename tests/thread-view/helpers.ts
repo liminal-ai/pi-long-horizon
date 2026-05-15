@@ -14,6 +14,8 @@ import {
 } from "../../src/token-accounting/index.js";
 import type { TurnSmoothRecord } from "../../src/thread/domain/records.js";
 import type { ChunkState } from "../../src/thread/async-thread/domain/chunk-state.js";
+import { materializeChunkSmoothTextFromTurns } from "../../src/thread/async-thread/services/chunk-service.js";
+import { createSmoothChunkSourceFingerprint } from "../../src/thread/async-thread/services/placeholder-artifact-service.js";
 import { materializeSmoothTurnFromState } from "../../src/thread/async-thread/services/smooth-turn-service.js";
 import { appendSourceMessage, openOrCreateManagedThread } from "../../src/thread/services/thread-service.js";
 import { FileThreadStore } from "../../src/thread/store/file-thread-store.js";
@@ -166,19 +168,29 @@ function withProviderInputCounts(
 }
 
 function withProviderInputChunkCounts(chunk: ChunkState): ChunkState {
-  const placeholders = chunk.placeholders
+  const smoothTokenCountMetadata = chunk.smoothText
+    ? providerInputCountFromExpected(countChunkSmoothMaterialized(chunk))
+    : chunk.smoothTokenCountMetadata;
+  const smoothSourceFingerprint = createSmoothChunkSourceFingerprint(chunk.smoothText);
+  const placeholdersWithProvenance = chunk.placeholders
     ? {
         ...chunk.placeholders,
         detailed: chunk.placeholders.detailed
           ? {
               ...chunk.placeholders.detailed,
-              tokenCountMetadata: providerInputCountFromExpected(countDetailedChunkMaterialized(chunk)),
+              smoothSourceFingerprint,
+              smoothSourceRevision: chunk.sourceRevision,
+              smoothSourceTokenCount: smoothTokenCountMetadata?.count,
+              generatedFromComponentSmooth: true,
             }
           : undefined,
         brief: chunk.placeholders.brief
           ? {
               ...chunk.placeholders.brief,
-              tokenCountMetadata: providerInputCountFromExpected(countBriefChunkMaterialized(chunk)),
+              smoothSourceFingerprint,
+              smoothSourceRevision: chunk.sourceRevision,
+              smoothSourceTokenCount: smoothTokenCountMetadata?.count,
+              generatedFromComponentSmooth: true,
             }
           : undefined,
       }
@@ -186,14 +198,30 @@ function withProviderInputChunkCounts(chunk: ChunkState): ChunkState {
 
   const nextChunk = {
     ...chunk,
-    placeholders,
+    smoothTokenCountMetadata,
+    placeholders: placeholdersWithProvenance,
   };
+  const placeholders = placeholdersWithProvenance
+    ? {
+        ...placeholdersWithProvenance,
+        detailed: placeholdersWithProvenance.detailed
+          ? {
+              ...placeholdersWithProvenance.detailed,
+              tokenCountMetadata: providerInputCountFromExpected(countDetailedChunkMaterialized(nextChunk)),
+            }
+          : undefined,
+        brief: placeholdersWithProvenance.brief
+          ? {
+              ...placeholdersWithProvenance.brief,
+              tokenCountMetadata: providerInputCountFromExpected(countBriefChunkMaterialized(nextChunk)),
+            }
+          : undefined,
+      }
+    : undefined;
 
   return {
     ...nextChunk,
-    smoothTokenCountMetadata: chunk.smoothText
-      ? providerInputCountFromExpected(countChunkSmoothMaterialized(nextChunk))
-      : chunk.smoothTokenCountMetadata,
+    placeholders,
   };
 }
 
@@ -425,6 +453,24 @@ export async function seedDeterministicRebuildThread(storeRootDir: string): Prom
   );
 
   const postTurnsSnapshot = expectOk(await threadStore.openThread(thread.threadId));
+  const turnsById = new Map(postTurnsSnapshot.turns.map((turn) => [turn.turnId, turn]));
+  const messagesById = new Map(postTurnsSnapshot.messages.map((message) => [message.messageId, message]));
+  const smoothChunkTextForTurn = (turnId: string) => {
+    const turn = turnsById.get(turnId);
+    assert.ok(turn);
+    const chunk = makeChunkState({
+      threadId: thread.threadId,
+      sourceTurnIds: [turnId],
+      smoothText: "",
+      placeholders: undefined,
+    });
+    const materialized = materializeChunkSmoothTextFromTurns({ chunk, turnsById, messagesById });
+    assert.ok(materialized);
+    return materialized.text;
+  };
+  const oldestChunkSmoothText = smoothChunkTextForTurn(oldest.turnId);
+  const newerChunkSmoothText = smoothChunkTextForTurn(middleOlder.turnId);
+  const openChunkSmoothText = smoothChunkTextForTurn(middleNewer.turnId);
   expectOk(
     await threadStore.writeChunks({
       threadId: thread.threadId,
@@ -436,8 +482,8 @@ export async function seedDeterministicRebuildThread(storeRootDir: string): Prom
           chunkId: "chunk-oldest-closed",
           threadId: thread.threadId,
           sourceTurnIds: [oldest.turnId],
-          smoothText: "oldest closed chunk smooth text",
-          smoothTokenCountMetadata: testTokenCountMetadata(estimatedTokenCount("oldest closed chunk smooth text"), "chunk_smooth_materialized", 1),
+          smoothText: oldestChunkSmoothText,
+          smoothTokenCountMetadata: testTokenCountMetadata(estimatedTokenCount(oldestChunkSmoothText), "chunk_smooth_materialized", 1),
           placeholders: makePlaceholderArtifactState({
             threadId: thread.threadId,
             chunkId: "chunk-oldest-closed",
@@ -467,8 +513,8 @@ export async function seedDeterministicRebuildThread(storeRootDir: string): Prom
           chunkId: "chunk-newer-closed",
           threadId: thread.threadId,
           sourceTurnIds: [middleOlder.turnId],
-          smoothText: "newer closed chunk smooth text",
-          smoothTokenCountMetadata: testTokenCountMetadata(estimatedTokenCount("newer closed chunk smooth text"), "chunk_smooth_materialized", 1),
+          smoothText: newerChunkSmoothText,
+          smoothTokenCountMetadata: testTokenCountMetadata(estimatedTokenCount(newerChunkSmoothText), "chunk_smooth_materialized", 1),
           placeholders: makePlaceholderArtifactState({
             threadId: thread.threadId,
             chunkId: "chunk-newer-closed",
@@ -499,8 +545,8 @@ export async function seedDeterministicRebuildThread(storeRootDir: string): Prom
           threadId: thread.threadId,
           lifecycleStatus: "open",
           sourceTurnIds: [middleNewer.turnId],
-          smoothText: "open recent chunk smooth text",
-          smoothTokenCountMetadata: testTokenCountMetadata(estimatedTokenCount("open recent chunk smooth text"), "chunk_smooth_materialized", 1),
+          smoothText: openChunkSmoothText,
+          smoothTokenCountMetadata: testTokenCountMetadata(estimatedTokenCount(openChunkSmoothText), "chunk_smooth_materialized", 1),
           placeholders: undefined,
         }),
       ] as ChunkState[]).map(withProviderInputChunkCounts),
@@ -554,26 +600,42 @@ export async function seedNoClosedChunkThread(storeRootDir: string) {
 export async function seedMissingDetailedPlaceholderThread(storeRootDir: string) {
   const context = await seedDeterministicRebuildThread(storeRootDir);
   const snapshot = expectOk(await context.threadStore.openThread(context.threadId));
+  const turnsById = new Map(snapshot.turns.map((turn) => [turn.turnId, turn]));
+  const messagesById = new Map(snapshot.messages.map((message) => [message.messageId, message]));
+  const smoothChunkTextForTurn = (turnId: string) => {
+    const chunk = makeChunkState({
+      threadId: context.threadId,
+      sourceTurnIds: [turnId],
+      smoothText: "",
+      placeholders: undefined,
+    });
+    const materialized = materializeChunkSmoothTextFromTurns({ chunk, turnsById, messagesById });
+    assert.ok(materialized);
+    return materialized.text;
+  };
+  const oldestChunkSmoothText = smoothChunkTextForTurn(context.turns.oldest.turnId);
+  const newerChunkSmoothText = smoothChunkTextForTurn(context.turns.middleOlder.turnId);
+  const openChunkSmoothText = smoothChunkTextForTurn(context.turns.middleNewer.turnId);
   expectOk(
     await context.threadStore.writeChunks({
       threadId: context.threadId,
       expectedSourceRevision: snapshot.thread.sourceRevision,
       expectedMessageHighWatermark: snapshot.thread.messageHighWatermark,
       expectedTurnsRevision: snapshot.thread.turnsRevision,
-      chunks: [
+      chunks: ([
         makeChunkState({
           chunkId: context.chunks.oldestClosed,
           threadId: context.threadId,
           sourceTurnIds: [context.turns.oldest.turnId],
-          smoothText: "oldest closed chunk smooth text",
-          smoothTokenCountMetadata: testTokenCountMetadata(estimatedTokenCount("oldest closed chunk smooth text"), "chunk_smooth_materialized", 1),
+          smoothText: oldestChunkSmoothText,
+          smoothTokenCountMetadata: testTokenCountMetadata(estimatedTokenCount(oldestChunkSmoothText), "chunk_smooth_materialized", 1),
         }),
         makeChunkState({
           chunkId: context.chunks.newerClosed,
           threadId: context.threadId,
           sourceTurnIds: [context.turns.middleOlder.turnId],
-          smoothText: "newer closed chunk smooth text",
-          smoothTokenCountMetadata: testTokenCountMetadata(estimatedTokenCount("newer closed chunk smooth text"), "chunk_smooth_materialized"),
+          smoothText: newerChunkSmoothText,
+          smoothTokenCountMetadata: testTokenCountMetadata(estimatedTokenCount(newerChunkSmoothText), "chunk_smooth_materialized"),
           placeholders: {
             chunkId: context.chunks.newerClosed,
             threadId: context.threadId,
@@ -597,11 +659,11 @@ export async function seedMissingDetailedPlaceholderThread(storeRootDir: string)
           threadId: context.threadId,
           lifecycleStatus: "open",
           sourceTurnIds: [context.turns.middleNewer.turnId],
-          smoothText: "open recent chunk smooth text",
-          smoothTokenCountMetadata: testTokenCountMetadata(estimatedTokenCount("open recent chunk smooth text"), "chunk_smooth_materialized", 1),
+          smoothText: openChunkSmoothText,
+          smoothTokenCountMetadata: testTokenCountMetadata(estimatedTokenCount(openChunkSmoothText), "chunk_smooth_materialized", 1),
           placeholders: undefined,
         }),
-      ],
+      ] as ChunkState[]).map(withProviderInputChunkCounts),
     }),
   );
 

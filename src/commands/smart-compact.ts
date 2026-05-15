@@ -75,6 +75,10 @@ function compactStatusFromBuildStatus(
   return status;
 }
 
+function countDegradedSmoothingIssues(issues: readonly { code: string }[]): number {
+  return issues.filter((issue) => issue.code === "SMOOTH_DEGRADED").length;
+}
+
 export function isOpenAIInputTokenCountProvider(provider: string | undefined): boolean {
   return provider === "openai" || provider === "openai-codex";
 }
@@ -395,6 +399,7 @@ export async function runSmartCompact(
       reuseExistingDraft: false,
     });
     const compactStatus = compactStatusFromBuildStatus(buildResult.status);
+    const degradedSmoothingCount = countDegradedSmoothingIssues(buildResult.blockers);
     const hasThresholdIssue = buildResult.blockers.some((issue) => issue.code === "LOWER_THRESHOLD_UNREACHED");
     if (compactStatus === "blocked" || hasThresholdIssue) {
       if (compactStatus === "degraded") {
@@ -425,6 +430,7 @@ export async function runSmartCompact(
         compactStatus,
         blockers: buildResult.blockers,
         resultingTokenCount: buildResult.resultingTokenCount,
+        degradedSmoothingCount,
       };
     }
     const buildIssues = compactStatus === "degraded" ? buildResult.blockers : [];
@@ -521,6 +527,7 @@ export async function runSmartCompact(
         compactStatus: finalCountResult.outputStatus,
         blockers: finalIssues,
         resultingTokenCount: buildResult.resultingTokenCount,
+        degradedSmoothingCount: countDegradedSmoothingIssues(finalIssues),
         generatedSessionTokenCount: finalCountResult.generatedSessionTokenCountMetadata?.count,
         generatedSessionTokenCountMetadata: finalCountResult.generatedSessionTokenCountMetadata,
         generatedSessionCountPolicy: finalCountResult.generatedSessionCountPolicy,
@@ -561,6 +568,7 @@ export async function runSmartCompact(
           }),
         ],
         resultingTokenCount: buildResult.resultingTokenCount,
+        degradedSmoothingCount,
         generatedSessionTokenCount: generatedSessionTokenCountMetadata.count,
         generatedSessionTokenCountMetadata,
         generatedSessionCountPolicy,
@@ -605,6 +613,7 @@ export async function runSmartCompact(
         compactStatus: "blocked",
         blockers: mappedGeneratedPiIdentities.issues,
         resultingTokenCount: buildResult.resultingTokenCount,
+        degradedSmoothingCount,
         generatedSessionTokenCount: generatedSessionTokenCountMetadata.count,
         generatedSessionTokenCountMetadata,
         generatedSessionCountPolicy,
@@ -703,6 +712,7 @@ export async function runSmartCompact(
       compactStatus: finalCompactStatus,
       blockers: finalIssues,
       resultingTokenCount: buildResult.resultingTokenCount,
+      degradedSmoothingCount: countDegradedSmoothingIssues(finalIssues),
       generatedSessionTokenCount: generatedSessionTokenCountMetadata.count,
       generatedSessionTokenCountMetadata,
       generatedSessionCountPolicy,

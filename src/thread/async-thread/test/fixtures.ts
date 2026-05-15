@@ -17,6 +17,7 @@ import {
   normalizeDeterministicText,
   type SmoothTurnState,
 } from "../domain/smooth-turn-state.js";
+import { createSmoothChunkSourceFingerprint } from "../services/placeholder-artifact-service.js";
 import { assertTokenCountRecord, type TokenCountScope } from "../../../token-accounting/index.js";
 
 export { DEFAULT_TEST_TIMESTAMP, makeThreadSnapshot };
@@ -79,6 +80,8 @@ export function makePlaceholderArtifactState(
     "Deterministic detailed text\n\n[deterministic-placeholder:detailed] [not-semantic-summary]";
   const defaultBriefText =
     "Deterministic brief text\n\n[deterministic-placeholder:brief] [not-semantic-summary]";
+  const defaultSmoothText = "Combined smooth chunk text";
+  const defaultSmoothTokenCount = estimateDeterministicTokenCount(defaultSmoothText);
 
   return clonePlaceholderArtifactState({
     chunkId,
@@ -95,6 +98,10 @@ export function makePlaceholderArtifactState(
             ),
             strategy: "deterministic_truncate_30",
             generatedAt: DEFAULT_TEST_TIMESTAMP,
+            smoothSourceFingerprint: createSmoothChunkSourceFingerprint(defaultSmoothText),
+            smoothSourceRevision: 1,
+            smoothSourceTokenCount: defaultSmoothTokenCount,
+            generatedFromComponentSmooth: true,
           }
         : overrides.detailed,
     brief:
@@ -109,6 +116,10 @@ export function makePlaceholderArtifactState(
             ),
             strategy: "deterministic_truncate_5",
             generatedAt: DEFAULT_TEST_TIMESTAMP,
+            smoothSourceFingerprint: createSmoothChunkSourceFingerprint(defaultSmoothText),
+            smoothSourceRevision: 1,
+            smoothSourceTokenCount: defaultSmoothTokenCount,
+            generatedFromComponentSmooth: true,
           }
         : overrides.brief,
   });

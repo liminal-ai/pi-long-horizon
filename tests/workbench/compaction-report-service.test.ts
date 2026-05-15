@@ -220,6 +220,7 @@ test("buildCompactionAuditReport includes turn-level detail for upper bands", as
         bandType: "full_fidelity",
         rawTokenCount: 127,
         smoothTokenCount: 6,
+        smoothQuality: "ready",
         rawCountPolicyStatus: "usable",
         smoothCountPolicyStatus: "usable",
       },
@@ -228,6 +229,7 @@ test("buildCompactionAuditReport includes turn-level detail for upper bands", as
         bandType: "smooth",
         rawTokenCount: 135,
         smoothTokenCount: 6,
+        smoothQuality: "ready",
         rawCountPolicyStatus: "usable",
         smoothCountPolicyStatus: "usable",
       },
@@ -247,7 +249,7 @@ test("buildCompactionAuditReport includes chunk-level detail for lower bands", a
       {
         chunkId: context.chunks.oldestClosed,
         bandType: "detailed",
-        smoothTokenCount: 8,
+        smoothTokenCount: 6,
         detailedTokenCount: 22,
         briefTokenCount: 18,
         detailedCountPolicyStatus: "usable",
@@ -256,7 +258,7 @@ test("buildCompactionAuditReport includes chunk-level detail for lower bands", a
       {
         chunkId: context.chunks.newerClosed,
         bandType: "brief",
-        smoothTokenCount: 8,
+        smoothTokenCount: 6,
         detailedTokenCount: 22,
         briefTokenCount: 17,
         detailedCountPolicyStatus: "usable",

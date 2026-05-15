@@ -295,11 +295,11 @@ test("closed turn receives smooth text", async () => {
       },
     );
 
-    assert.equal(result.smoothStatus, "ready");
+    assert.equal(result.smoothStatus, "degraded");
     assert.ok((result.smoothTokenCount ?? 0) > 0);
 
     const persisted = await readTurn(store, "thread-smooth-001", "turn-smooth-001");
-    assert.equal(persisted.smooth?.status, "ready");
+    assert.equal(persisted.smooth?.status, "degraded");
     assert.equal(persisted.smooth?.schemaVersion, "component_smooth_turn_v1");
     assert.equal(persisted.smooth?.strategy, "component_smooth_turn_v1");
     assert.equal(persisted.smooth?.generatedAt, DEFAULT_TEST_TIMESTAMP);
@@ -867,7 +867,7 @@ test("stale or invalid smooth output can be regenerated", async () => {
       },
     );
 
-    assert.equal(repaired.smoothStatus, "ready");
+    assert.equal(repaired.smoothStatus, "degraded");
     const persisted = await readTurn(store, "thread-smooth-repair", "turn-repair");
     assert.equal(persisted.smooth?.sourceRevision, response.sourceRevision);
     assert.equal(persisted.smooth?.strategy, "component_smooth_turn_v1");
@@ -1238,11 +1238,11 @@ test("component-first smooth state exposes readiness, provenance, and materializ
       { threadId: "thread-smooth-components", turnId: "turn-components" },
       { store, now: () => new Date(DEFAULT_TEST_TIMESTAMP) },
     );
-    assert.equal(ensured.smoothStatus, "ready");
+    assert.equal(ensured.smoothStatus, "degraded");
 
     const state = await readSmoothTurnState({ threadId: "thread-smooth-components", turnId: "turn-components" }, { store });
     assert.equal(state.schemaVersion, "component_smooth_turn_v1");
-    assert.equal(state.smoothStatus, "ready");
+    assert.equal(state.smoothStatus, "degraded");
     const persisted = await readTurn(store, "thread-smooth-components", "turn-components");
     assert.equal(persisted.smooth?.text, undefined);
     assert.deepEqual(state.components?.map((component) => component.kind), [
@@ -1261,7 +1261,7 @@ test("component-first smooth state exposes readiness, provenance, and materializ
       { threadId: "thread-smooth-components", turnId: "turn-components" },
       { store },
     );
-    assert.equal(materialized.status, "ready");
+    assert.equal(materialized.status, "degraded");
     assert.match(materialized.text ?? "", /\[user\][\s\S]*\[assistant\][\s\S]*\[tool\]/);
     assert.ok((materialized.tokenCount ?? 0) > 0);
     assert.match(materialized.sourceFingerprint ?? "", /^sha256:/);

@@ -14,7 +14,7 @@ function formatSelectedIds(selectedIds: readonly string[]): string {
 }
 
 function formatTurn(turn: CompactionAuditSelectedTurn): string {
-  return `- ${turn.turnId} [${turn.bandType}]: raw ${turn.rawTokenCount}, smooth ${formatOptionalNumber(turn.smoothTokenCount)}`;
+  return `- ${turn.turnId} [${turn.bandType}]: raw ${turn.rawTokenCount}, smooth ${formatOptionalNumber(turn.smoothTokenCount)}, quality ${turn.smoothQuality ?? "n/a"}`;
 }
 
 function formatChunk(chunk: CompactionAuditSelectedChunk): string {
@@ -33,6 +33,7 @@ export function formatCompactionAuditReport(report: CompactionAuditReport): stri
     `Generated session count source: ${report.generatedSessionCountSource ?? "n/a"}`,
     `Generated session count trust: ${report.generatedSessionCountTrustClass ?? "n/a"}`,
     `Generated session count policy: ${report.generatedSessionCountPolicyStatus ?? "n/a"}`,
+    `Degraded smoothing count: ${report.degradedSmoothingCount}`,
     `Generated file: ${report.generatedFilePath ?? "n/a"}`,
     `Archive: ${report.archivePath ?? "n/a"}`,
     "",

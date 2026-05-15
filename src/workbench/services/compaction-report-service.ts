@@ -17,6 +17,8 @@ import {
   resolveSmoothTurnTokenAccounting,
   type SelectedTokenAccounting,
 } from "../../thread-view/services/thread-view-builder.js";
+import { materializeChunkSmoothTextFromTurns } from "../../thread/async-thread/services/chunk-service.js";
+import { countChunkSmoothMaterialized } from "../../token-accounting/index.js";
 import { WorkbenchQueryService } from "./workbench-query-service.js";
 
 export interface CompactionAuditBandReport {
@@ -35,6 +37,7 @@ export interface CompactionAuditSelectedTurn {
   bandType: "full_fidelity" | "smooth";
   rawTokenCount: number;
   smoothTokenCount?: number;
+  smoothQuality?: "ready" | "degraded" | "missing";
   rawCountPolicyStatus?: SelectedTokenAccounting["decision"]["status"];
   smoothCountPolicyStatus?: SelectedTokenAccounting["decision"]["status"];
 }
@@ -64,6 +67,7 @@ export interface CompactionAuditReport {
   archivePath?: string;
   bands: Record<BandType, CompactionAuditBandReport>;
   selectedTurns: CompactionAuditSelectedTurn[];
+  degradedSmoothingCount: number;
   selectedChunks: CompactionAuditSelectedChunk[];
   blockers: StewardIssue[];
   reloadResult?: string;
@@ -134,6 +138,12 @@ export async function buildCompactionAuditReport(
     throw new StewardResultError(chunkState.issues);
   }
   const chunksById = new Map(chunkState.value.map((chunk) => [chunk.chunkId, chunk]));
+  const threadSnapshot = await dependencies.threadStore.openThread(input.threadId);
+  if (!threadSnapshot.ok) {
+    throw new StewardResultError(threadSnapshot.issues);
+  }
+  const turnsById = new Map(threadSnapshot.value.turns.map((turn) => [turn.turnId, turn]));
+  const messagesById = new Map(threadSnapshot.value.messages.map((message) => [message.messageId, message]));
   const accountingByBand = new Map<BandType, SelectedTokenAccounting[]>(
     BAND_ORDER.map((bandType) => [bandType, []]),
   );
@@ -166,6 +176,11 @@ export async function buildCompactionAuditReport(
         bandType,
         rawTokenCount: rawAccounting.count,
         smoothTokenCount: smoothAccounting?.count,
+        smoothQuality: turnResult.value.turn.smooth?.components?.some((component) => component.status === "degraded")
+          ? "degraded"
+          : smoothAccounting
+            ? "ready"
+            : "missing",
         rawCountPolicyStatus: rawAccounting.decision.status,
         smoothCountPolicyStatus: smoothAccounting?.decision.status,
       });
@@ -184,13 +199,35 @@ export async function buildCompactionAuditReport(
           threadId: input.threadId,
         });
       }
+      const currentSmoothSource = materializeChunkSmoothTextFromTurns({ chunk, turnsById, messagesById });
+      const currentSmoothTokenCount = currentSmoothSource
+        ? countChunkSmoothMaterialized({
+            ...chunk,
+            smoothText: currentSmoothSource.text,
+            sourceRevision: currentSmoothSource.sourceRevision,
+          }).count
+        : undefined;
       const detailedAccounting = resolveChunkPlaceholderTokenAccounting({
         chunk,
         bandType: "detailed",
+        currentSmoothSource: currentSmoothSource
+          ? {
+              text: currentSmoothSource.text,
+              sourceRevision: currentSmoothSource.sourceRevision,
+              tokenCount: currentSmoothTokenCount!,
+            }
+          : undefined,
       });
       const briefAccounting = resolveChunkPlaceholderTokenAccounting({
         chunk,
         bandType: "brief",
+        currentSmoothSource: currentSmoothSource
+          ? {
+              text: currentSmoothSource.text,
+              sourceRevision: currentSmoothSource.sourceRevision,
+              tokenCount: currentSmoothTokenCount!,
+            }
+          : undefined,
       });
       const selectedBandAccounting = bandType === "detailed" ? detailedAccounting : briefAccounting;
       if (selectedBandAccounting) {
@@ -253,6 +290,9 @@ export async function buildCompactionAuditReport(
     archivePath: scopedGeneratedOutput?.archivePath,
     bands,
     selectedTurns,
+    degradedSmoothingCount: selectedTurns.filter(
+      (turn) => turn.bandType === "smooth" && turn.smoothQuality === "degraded",
+    ).length,
     selectedChunks,
     blockers: scopedGeneratedOutput?.issues?.map((issue) => createStewardIssue(issue)) ?? [],
     reloadResult: scopedGeneratedOutput?.generatedFilePath ? scopedGeneratedOutput.status : undefined,

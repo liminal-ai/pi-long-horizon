@@ -59,6 +59,7 @@ function makeReport(): CompactionAuditReport {
         smoothTokenCount: 4,
       },
     ],
+    degradedSmoothingCount: 0,
     selectedChunks: [
       {
         chunkId: "chunk-001",
