@@ -33,6 +33,8 @@ export interface DeterministicSmoothFormatOptions {
   toolOutputCharLimit: number;
 }
 
+const DEFAULT_TOOL_EXCHANGE_STRING_CHAR_LIMIT = 500;
+
 export interface PersistSmoothTurnStateInput {
   threadId: string;
   turnId: string;
@@ -210,6 +212,103 @@ function normalizePartText(part: PartRecord): string {
   return normalizeDeterministicText(stableSerialize(part.content));
 }
 
+function capToolExchangeStrings(value: unknown, charLimit: number): unknown {
+  if (typeof value === "string") {
+    if (value.length <= charLimit) {
+      return value;
+    }
+
+    return `${value.slice(0, charLimit)}[omitted: ${value.length - charLimit} chars]`;
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((entry) => capToolExchangeStrings(entry, charLimit));
+  }
+
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, entry]) => [
+        key,
+        capToolExchangeStrings(entry, charLimit),
+      ]),
+    );
+  }
+
+  return value;
+}
+
+function contentObject(part: PartRecord): Record<string, unknown> {
+  return typeof part.content === "object" && part.content !== null ? part.content : {};
+}
+
+function extractToolCallId(part: PartRecord): string | undefined {
+  const content = contentObject(part);
+  const candidates = [
+    content.toolCallId,
+    content.id,
+    content.callId,
+    part.targetMetadata?.toolCallId,
+  ];
+  return candidates.find((candidate): candidate is string => typeof candidate === "string" && candidate.length > 0);
+}
+
+function extractToolName(part: PartRecord): string | undefined {
+  const content = contentObject(part);
+  const candidates = [
+    content.name,
+    content.toolName,
+    part.targetMetadata?.toolName,
+  ];
+  return candidates.find((candidate): candidate is string => typeof candidate === "string" && candidate.length > 0);
+}
+
+function extractToolArguments(part: PartRecord): unknown {
+  const content = contentObject(part);
+  if ("arguments" in content) {
+    return content.arguments;
+  }
+  if ("args" in content) {
+    return content.args;
+  }
+  if ("input" in content) {
+    return content.input;
+  }
+  return typeof part.content === "string" ? part.content : content;
+}
+
+function extractToolOutput(part: PartRecord): unknown {
+  const content = contentObject(part);
+  if ("output" in content) {
+    return content.output;
+  }
+  if ("text" in content) {
+    return content.text;
+  }
+  if ("content" in content) {
+    return content.content;
+  }
+  return part.content;
+}
+
+function isToolResultError(part: PartRecord): boolean {
+  const content = contentObject(part);
+  return content.isError === true || content.error === true || content.status === "error";
+}
+
+function extractPlaintextThinking(part: PartRecord): string {
+  if (typeof part.content === "string") {
+    return normalizeDeterministicText(part.content);
+  }
+
+  const content = contentObject(part);
+  const text = typeof content.text === "string"
+    ? content.text
+    : typeof content.thinking === "string"
+      ? content.thinking
+      : "";
+  return normalizeDeterministicText(text);
+}
+
 function classifyComponentKind(message: MessageRecord, part: PartRecord): SmoothTurnComponentState["kind"] {
   if (part.partType === "reasoning") {
     return "thinking";
@@ -261,16 +360,18 @@ function buildSmoothComponents(input: {
   generatedAt: string;
   formatOptions?: Partial<DeterministicSmoothFormatOptions>;
 }): SmoothTurnComponentState[] {
-  const options = { toolOutputCharLimit: 240, ...input.formatOptions };
+  const options = { toolOutputCharLimit: DEFAULT_TOOL_EXCHANGE_STRING_CHAR_LIMIT, ...input.formatOptions };
   const components: SmoothTurnComponentState[] = [];
+  const toolParts: Array<{ message: MessageRecord; part: PartRecord }> = [];
 
   for (const message of input.messages) {
     for (const part of [...message.parts].sort((left, right) => left.partOrder - right.partOrder)) {
       const kind = classifyComponentKind(message, part);
-      let text = normalizePartText(part);
-      if (kind === "tool_exchange" && text.length > options.toolOutputCharLimit) {
-        text = `${text.slice(0, options.toolOutputCharLimit)}...`;
+      if (kind === "tool_exchange") {
+        toolParts.push({ message, part });
+        continue;
       }
+      const text = kind === "thinking" ? extractPlaintextThinking(part) : normalizePartText(part);
       const omitted = kind === "thinking" && text.length === 0;
       if (text.length === 0 && !omitted) {
         continue;
@@ -291,7 +392,115 @@ function buildSmoothComponents(input: {
     }
   }
 
+  const toolExchangeText = renderToolExchangeComponentText(toolParts, options.toolOutputCharLimit);
+  if (toolExchangeText) {
+    components.push({
+      componentId: `${input.turn.turnId}:tool_exchange`,
+      kind: "tool_exchange",
+      status: "ready",
+      text: toolExchangeText,
+      quality: "deterministic_rendered",
+      sourceMessageIds: [...new Set(toolParts.map(({ message }) => message.messageId))],
+      sourcePartIds: toolParts.map(({ part }) => part.partId),
+      sourceRevision: Math.max(...toolParts.map(({ message }) => message.sourceRevision)),
+      generatedAt: input.generatedAt,
+      strategy: "deterministic_tool_exchange_v1",
+    });
+  }
+
   return components;
+}
+
+function renderToolExchangeComponentText(
+  entries: readonly { message: MessageRecord; part: PartRecord }[],
+  charLimit: number,
+): string {
+  if (entries.length === 0) {
+    return "";
+  }
+
+  const idCounts = new Map<string, { calls: number; results: number }>();
+  for (const { part } of entries) {
+    const id = extractToolCallId(part);
+    if (!id) {
+      continue;
+    }
+    const counts = idCounts.get(id) ?? { calls: 0, results: 0 };
+    if (part.partType === "tool_call") {
+      counts.calls += 1;
+    } else {
+      counts.results += 1;
+    }
+    idCounts.set(id, counts);
+  }
+
+  const ambiguousIds = new Set(
+    [...idCounts.entries()]
+      .filter(([, counts]) => counts.calls !== 1 || counts.results > 1)
+      .map(([id]) => id),
+  );
+  const pairedResultById = new Map<string, { message: MessageRecord; part: PartRecord }>();
+  for (const entry of entries) {
+    const id = extractToolCallId(entry.part);
+    if (entry.part.partType !== "tool_call" && id && !ambiguousIds.has(id) && idCounts.get(id)?.calls === 1) {
+      pairedResultById.set(id, entry);
+    }
+  }
+
+  const emittedResults = new Set<PartRecord>();
+  const records: unknown[] = [];
+  for (const entry of entries) {
+    const { part } = entry;
+    const id = extractToolCallId(part);
+    const ambiguous = !!id && ambiguousIds.has(id);
+
+    if (part.partType === "tool_call") {
+      const paired = id && !ambiguous ? pairedResultById.get(id) : undefined;
+      records.push(renderToolCallRecord(part, charLimit, !paired || ambiguous || !id));
+      if (paired) {
+        records.push(renderToolResultRecord(paired.part, charLimit, false));
+        emittedResults.add(paired.part);
+      }
+      continue;
+    }
+
+    if (emittedResults.has(part)) {
+      continue;
+    }
+    records.push(renderToolResultRecord(part, charLimit, true));
+  }
+
+  return records.map((record) => JSON.stringify(sortJsonValue(record))).join("\n");
+}
+
+function renderToolCallRecord(part: PartRecord, charLimit: number, includeId: boolean): Record<string, unknown> {
+  const id = extractToolCallId(part);
+  const record: Record<string, unknown> = {
+    type: includeId ? "unpaired_tool_call" : "tool_call",
+    name: extractToolName(part) ?? "unknown",
+    arguments: capToolExchangeStrings(extractToolArguments(part), charLimit),
+  };
+  if (includeId && id) {
+    record.toolCallId = id;
+  }
+  return record;
+}
+
+function renderToolResultRecord(part: PartRecord, charLimit: number, includeId: boolean): Record<string, unknown> {
+  const id = extractToolCallId(part);
+  const record: Record<string, unknown> = {
+    type: includeId ? "unpaired_tool_result" : "tool_result",
+    status: isToolResultError(part) ? "error" : "success",
+    output: capToolExchangeStrings(extractToolOutput(part), charLimit),
+  };
+  const name = extractToolName(part);
+  if (includeId && id) {
+    record.toolCallId = id;
+  }
+  if (includeId && name) {
+    record.name = name;
+  }
+  return record;
 }
 
 function assembleSmoothText(components: readonly SmoothTurnComponentState[]): string {
@@ -306,8 +515,8 @@ function requiredComponentKinds(
   for (const message of messages) {
     for (const part of message.parts) {
       const kind = classifyComponentKind(message, part);
-      const text = normalizePartText(part);
-      if (kind === "thinking" || text.length === 0) {
+      const text = kind === "thinking" ? extractPlaintextThinking(part) : normalizePartText(part);
+      if (text.length === 0) {
         continue;
       }
       kinds.add(kind);
@@ -453,7 +662,6 @@ function buildSmoothState(
   const existingUserComponents = (input.turn.smooth?.components ?? []).filter(
     (component) =>
       component.kind === "user_prompt" &&
-      (component.status === "ready" || component.status === "degraded") &&
       component.sourceMessageIds.some((messageId) => input.turn.messageIds.includes(messageId)),
   );
   const existingUserComponentIds = new Set(existingUserComponents.map((component) => component.componentId));
@@ -478,11 +686,12 @@ function buildSmoothState(
     return left.componentId.localeCompare(right.componentId);
   });
   const sourceRevision = input.turn.sourceRevision;
+  const componentEvaluation = evaluateComponentStatus(input.turn, messages, mergedComponents);
   const smooth: SmoothTurnState = {
     turnId: input.turn.turnId,
     threadId: input.threadId,
     schemaVersion: SMOOTH_TURN_SCHEMA_VERSION,
-    status: mergedComponents.some((component) => component.status === "degraded") ? "degraded" : "ready",
+    status: componentEvaluation.status,
     strategy: "component_smooth_turn_v1",
     generatedAt: input.generatedAt,
     sourceRevision,

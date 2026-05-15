@@ -44,6 +44,25 @@ test("incremental prompt projection truncates a tool result when newer ordinary 
   assert.equal((oldToolResult.content[0] as { text: string }).text, "A".repeat(200));
 });
 
+test("prompt projection default truncation cap is 500 characters", () => {
+  const projection = new PromptVisibleToolResultProjection({
+    rawZoneTokenThreshold: 100,
+  });
+  const oldToolResult = makePiToolResultMessage({
+    toolCallId: "call-default-cap",
+    content: [{ type: "text", text: "Z".repeat(700) }],
+  });
+  const newerAssistant = makePiAssistantMessage({
+    content: [{ type: "text", text: "newer ordinary response ".repeat(20) }],
+  });
+
+  projection.hydrateFromMessages([oldToolResult, newerAssistant]);
+  const applied = projection.applyToMessages([oldToolResult, newerAssistant]);
+  const appliedToolResult = applied[0] as typeof oldToolResult;
+
+  assert.equal((appliedToolResult.content[0] as { text: string }).text, `${"Z".repeat(500)}...`);
+});
+
 test("prompt projection hydrates from an existing message list and applies known truncations cheaply", () => {
   const projection = new PromptVisibleToolResultProjection({
     rawZoneTokenThreshold: 10,

@@ -59,3 +59,50 @@ test("prompt-visible PI Thread View truncation applies the live raw-zone policy 
   assert.equal(output, `${"A".repeat(12)}...`);
   assert.equal(originalOutput, "A".repeat(200));
 });
+
+test("prompt-visible PI Thread View truncation uses default 500-character cap", () => {
+  const file = makePiThreadViewFile({
+    threadId: "thread-prompt-truncation-default",
+    threadViewId: "thread-view-prompt-truncation-default",
+    entries: [
+      {
+        entryType: "message",
+        role: "toolResult",
+        generatedSource: "raw_turn_message",
+        content: {
+          parts: [
+            {
+              partType: "tool_result",
+              content: {
+                output: "Q".repeat(700),
+                toolCallId: "call-default",
+                toolName: "read",
+                isError: false,
+              },
+            },
+          ],
+        },
+        metadata: {
+          toolCallId: "call-default",
+          toolName: "read",
+        },
+      },
+      {
+        entryType: "message",
+        role: "assistant",
+        generatedSource: "raw_turn_message",
+        content: "newer ordinary context ".repeat(20),
+      },
+    ],
+    entryCount: 2,
+  });
+
+  const result = applyPromptVisibleToolResultTruncationToPiThreadViewFile(file, {
+    rawZoneTokenThreshold: 100,
+  });
+  const toolEntry = result.file.entries[0]!;
+  const output = (toolEntry.content as { parts: Array<{ content: { output: string } }> }).parts[0]!.content.output;
+
+  assert.deepEqual(result.truncatedToolCallIds, ["call-default"]);
+  assert.equal(output, `${"Q".repeat(500)}...`);
+});

@@ -429,7 +429,7 @@ test("smooth text preserves fixed actor section markers", async () => {
 
     assert.equal(
       materialized.text,
-      "[user]\nSummarize the flow.\n\n[assistant]\nI will inspect the thread.\n\n[thinking]\nChain of thought\n\n[tool]\ntool output",
+      "[user]\nSummarize the flow.\n\n[assistant]\nI will inspect the thread.\n\n[thinking]\nChain of thought\n\n[tool]\n{\"output\":\"tool output\",\"status\":\"success\",\"type\":\"unpaired_tool_result\"}",
     );
   });
 });
@@ -558,13 +558,125 @@ test("whitespace normalization is deterministic", async () => {
   });
 });
 
-test("tool-output handling follows fixed policy", async () => {
+test("thinking renders plaintext only and excludes signatures", async () => {
+  await withTempThreadStore(async ({ storeRootDir }) => {
+    const store = new FileThreadStore(storeRootDir);
+    await createThread(store, "thread-smooth-thinking");
+
+    const assistant = makeActorRecord({ actorId: "actor-assistant-thinking", actorType: "agent" });
+    const response = await appendCanonicalMessage(
+      store,
+      "thread-smooth-thinking",
+      assistant,
+      toPendingMessage({
+        messageId: "message-thinking-response",
+        actorId: assistant.actorId,
+        actorType: assistant.actorType,
+        messageKind: "response",
+        parts: [
+          makePartRecord({
+            partId: "part-thinking-plain",
+            partOrder: 1,
+            partType: "reasoning",
+            content: {
+              text: "Plain reasoning survives.",
+              thinkingSignature: "signature-must-not-render",
+              encryptedContent: "encrypted-must-not-render",
+            },
+          }),
+          makePartRecord({
+            partId: "part-thinking-encrypted-only",
+            partOrder: 2,
+            partType: "reasoning",
+            content: {
+              thinkingSignature: "signature-only-must-not-render",
+              encryptedContent: "encrypted-only-must-not-render",
+            },
+          }),
+        ],
+      }),
+    );
+
+    await writeTurns(store, "thread-smooth-thinking", [
+      makeClosedTurn({
+        threadId: "thread-smooth-thinking",
+        turnId: "turn-thinking",
+        messages: [response],
+      }),
+    ]);
+
+    await ensureSmoothTurn({ threadId: "thread-smooth-thinking", turnId: "turn-thinking" }, { store });
+    const materialized = await materializeSmoothTurn(
+      { threadId: "thread-smooth-thinking", turnId: "turn-thinking" },
+      { store },
+    );
+
+    assert.match(materialized.text ?? "", /\[thinking\]\nPlain reasoning survives\./);
+    assert.equal(materialized.text?.includes("signature-must-not-render"), false);
+    assert.equal(materialized.text?.includes("encrypted-must-not-render"), false);
+    assert.equal(materialized.text?.includes("signature-only-must-not-render"), false);
+  });
+});
+
+test("duplicate and missing tool ids render explicit unpaired records", async () => {
+  await withTempThreadStore(async ({ storeRootDir }) => {
+    const store = new FileThreadStore(storeRootDir);
+    await createThread(store, "thread-smooth-tool-unpaired");
+
+    const assistant = makeActorRecord({ actorId: "actor-assistant-tool-unpaired", actorType: "agent" });
+    const response = await appendCanonicalMessage(
+      store,
+      "thread-smooth-tool-unpaired",
+      assistant,
+      toPendingMessage({
+        messageId: "message-tool-unpaired-response",
+        actorId: assistant.actorId,
+        actorType: assistant.actorType,
+        messageKind: "response",
+        parts: [
+          makePartRecord({ partId: "part-missing-id", partOrder: 1, partType: "tool_call", content: { toolName: "bash", arguments: { cmd: "pwd" } } }),
+          makePartRecord({ partId: "part-dup-a", partOrder: 2, partType: "tool_call", content: { toolCallId: "dup", toolName: "read", arguments: { path: "a" } } }),
+          makePartRecord({ partId: "part-dup-b", partOrder: 3, partType: "tool_call", content: { toolCallId: "dup", toolName: "read", arguments: { path: "b" } } }),
+          makePartRecord({ partId: "part-unpaired-result", partOrder: 4, partType: "tool_result", content: { toolCallId: "orphan", output: "orphaned" } }),
+        ],
+      }),
+    );
+
+    await writeTurns(store, "thread-smooth-tool-unpaired", [
+      makeClosedTurn({
+        threadId: "thread-smooth-tool-unpaired",
+        turnId: "turn-tool-unpaired",
+        messages: [response],
+      }),
+    ]);
+
+    await ensureSmoothTurn({ threadId: "thread-smooth-tool-unpaired", turnId: "turn-tool-unpaired" }, { store });
+    const materialized = await materializeSmoothTurn(
+      { threadId: "thread-smooth-tool-unpaired", turnId: "turn-tool-unpaired" },
+      { store },
+    );
+    const records = (materialized.text?.split("[tool]\n")[1] ?? "").split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
+
+    assert.deepEqual(records.map((record) => record.type), [
+      "unpaired_tool_call",
+      "unpaired_tool_call",
+      "unpaired_tool_call",
+      "unpaired_tool_result",
+    ]);
+    assert.equal(records[1]?.toolCallId, "dup");
+    assert.equal(records[2]?.toolCallId, "dup");
+    assert.equal(records[3]?.toolCallId, "orphan");
+  });
+});
+
+test("tool exchanges use compact JSON with recursive string caps and retained failures", async () => {
   await withTempThreadStore(async ({ storeRootDir }) => {
     const store = new FileThreadStore(storeRootDir);
     await createThread(store, "thread-smooth-tool");
 
     const assistant = makeActorRecord({ actorId: "actor-assistant-tool", actorType: "agent" });
     const tool = makeActorRecord({ actorId: "actor-tool", actorType: "tool" });
+    const largeArgument = "x".repeat(620);
     const response = await appendCanonicalMessage(
       store,
       "thread-smooth-tool",
@@ -574,10 +686,22 @@ test("tool-output handling follows fixed policy", async () => {
         actorId: assistant.actorId,
         actorType: assistant.actorType,
         messageKind: "response",
-        parts: [makePartRecord({ content: "Running the command now." })],
+        parts: [
+          makePartRecord({ partId: "part-tool-prose", partOrder: 1, content: "Running the command now." }),
+          makePartRecord({
+            partId: "part-tool-call",
+            partOrder: 2,
+            partType: "tool_call",
+            content: {
+              toolCallId: "call-large",
+              toolName: "write",
+              arguments: { path: "/tmp/large.txt", body: largeArgument },
+            },
+          }),
+        ],
       }),
     );
-    const oversizedToolOutput = Array.from({ length: 100 }, (_, index) => `token${index + 1}`).join(" ");
+    const oversizedToolOutput = "y".repeat(701);
     const toolResult = await appendCanonicalMessage(
       store,
       "thread-smooth-tool",
@@ -587,7 +711,18 @@ test("tool-output handling follows fixed policy", async () => {
         actorId: tool.actorId,
         actorType: tool.actorType,
         messageKind: "tool_result",
-        parts: [makePartRecord({ partType: "tool_result", content: oversizedToolOutput })],
+        parts: [
+          makePartRecord({
+            partId: "part-tool-result",
+            partType: "tool_result",
+            content: {
+              toolCallId: "call-large",
+              toolName: "write",
+              output: oversizedToolOutput,
+              isError: true,
+            },
+          }),
+        ],
       }),
     );
 
@@ -605,15 +740,24 @@ test("tool-output handling follows fixed policy", async () => {
       { store },
     );
 
-    assert.equal(
-      materialized.text?.includes("[tool]\ntoken1 token2 token3"),
-      true,
-    );
-    assert.equal(
-      materialized.text?.includes("..."),
-      true,
-    );
-    assert.equal(materialized.text?.includes("token100"), false);
+    const toolText = materialized.text?.split("[tool]\n")[1] ?? "";
+    const records = toolText.split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
+    assert.equal(materialized.text?.includes("Running the command now."), true);
+    assert.equal(materialized.text?.includes("toolCallId"), false);
+    assert.equal(records.length, 2);
+    assert.deepEqual(records[0], {
+      arguments: {
+        body: `${"x".repeat(500)}[omitted: 120 chars]`,
+        path: "/tmp/large.txt",
+      },
+      name: "write",
+      type: "tool_call",
+    });
+    assert.deepEqual(records[1], {
+      output: `${"y".repeat(500)}[omitted: 201 chars]`,
+      status: "error",
+      type: "tool_result",
+    });
   });
 });
 
@@ -1022,7 +1166,7 @@ test("empty or noise-only sections are omitted without collapsing section order 
 
     assert.equal(
       materialized.text,
-      "[assistant]\nKeep this response.\n\n[tool]\ntool detail",
+      "[assistant]\nKeep this response.\n\n[tool]\n{\"output\":\"tool detail\",\"status\":\"success\",\"type\":\"unpaired_tool_result\"}",
     );
     assert.equal(materialized.text?.includes("[user]"), false);
     assert.equal(materialized.text?.includes("[thinking]"), false);
@@ -1105,7 +1249,6 @@ test("component-first smooth state exposes readiness, provenance, and materializ
       "user_prompt",
       "assistant_message",
       "thinking",
-      "tool_exchange",
       "tool_exchange",
     ]);
     assert.equal(state.components?.find((component) => component.kind === "thinking")?.status, "omitted");

@@ -217,7 +217,7 @@ test("raw Thread View materialization applies the live tool-result truncation po
   }
   assert.equal(
     ((toolContent.parts as Array<{ content: { output: string } }>)[0]?.content.output),
-    `${"T".repeat(240)}...`,
+    `${"T".repeat(500)}...`,
   );
   assert.equal(
     (((messages[0]?.content as Record<string, unknown>).parts as Array<{ content: { output: string } }>)[0]?.content.output),
