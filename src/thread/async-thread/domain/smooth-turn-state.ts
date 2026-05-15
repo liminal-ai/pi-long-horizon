@@ -86,6 +86,12 @@ export function cloneSmoothTurnState(record: SmoothTurnState): SmoothTurnState {
       ...component,
       sourceMessageIds: [...component.sourceMessageIds],
       sourcePartIds: component.sourcePartIds ? [...component.sourcePartIds] : undefined,
+      providerMetadata: component.providerMetadata
+        ? {
+            ...component.providerMetadata,
+            usage: component.providerMetadata.usage ? { ...component.providerMetadata.usage } : undefined,
+          }
+        : undefined,
     })),
     materialized: record.materialized
       ? {
@@ -111,6 +117,12 @@ export function toTurnSmoothRecord(record: SmoothTurnState): TurnSmoothRecord {
       ...component,
       sourceMessageIds: [...component.sourceMessageIds],
       sourcePartIds: component.sourcePartIds ? [...component.sourcePartIds] : undefined,
+      providerMetadata: component.providerMetadata
+        ? {
+            ...component.providerMetadata,
+            usage: component.providerMetadata.usage ? { ...component.providerMetadata.usage } : undefined,
+          }
+        : undefined,
     })),
     materialized: record.materialized
       ? {

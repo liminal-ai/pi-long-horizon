@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import test from "node:test";
 import { dirname } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 
 import type { StewardErrorCode, StewardResult } from "../../src/context-steward/domain/errors.js";
 import { fail } from "../../src/context-steward/domain/errors.js";
@@ -16,6 +17,7 @@ import { mapPiMessageEnd } from "../../src/context-steward/pi/pi-message-mapper.
 import { captureFinalizedActivity } from "../../src/context-steward/services/capture-service.js";
 import { checkTurnHealth } from "../../src/context-steward/services/turn-service.js";
 import {
+  DEFAULT_TEST_TIMESTAMP,
   DEFAULT_PI_USAGE,
   makePiAssistantMessage,
   makePiExtensionContext,
@@ -843,6 +845,70 @@ test("captures message_end events through the thin PI extension helper", async (
 
     assert.equal(captured?.message.messageKind, "response");
     assert.equal(captured?.message.targetMetadata?.responseId, "response-extension-001");
+  });
+});
+
+test("production PI handlers schedule user prompt smoothing on non-duplicate message_end without blocking capture", async () => {
+  await withTempThreadStore(async ({ storeRootDir, projectDir, resolveProjectPath }) => {
+    const target = makeThreadTarget({
+      sessionId: "session-production-user-smoothing",
+      sessionFilePath: resolveProjectPath("pi", "session-production-user-smoothing.jsonl"),
+      cwd: projectDir,
+    });
+    await ensureTargetSessionFile(target);
+    const store = new FileThreadStore(storeRootDir);
+    const pi = new FakeExtensionApi();
+    let providerCalls = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    registerContextStewardExtension(pi as unknown as ExtensionAPI, {
+      createStore: () => store,
+      userPromptSmoothing: {
+        enabled: true,
+        provider: {
+          async smoothUserPrompt(input) {
+            providerCalls += 1;
+            await gate;
+            return {
+              text: `${input.rawText}.`,
+              providerId: "openai-codex",
+              modelId: "gpt-5.4-mini",
+              reasoningEffort: "none",
+              promptVersion: input.promptVersion,
+              elapsedMs: 1,
+              generatedAt: DEFAULT_TEST_TIMESTAMP,
+            };
+          },
+        },
+      },
+    });
+
+    const event = {
+      type: "message_end",
+      message: makePiUserMessage({
+        content: "maybe smooth this",
+      }),
+    };
+    await pi.emit("message_end", event, makePiExtensionContext(target));
+    await pi.emit("message_end", event, makePiExtensionContext(target));
+
+    const thread = expectOk(await store.findManagedThread(target));
+    assert.ok(thread);
+    const messages = expectOk(await store.readMessages(thread.threadId));
+    assert.equal(messages.length, 1);
+    await sleep(20);
+    assert.equal(providerCalls, 1);
+    release();
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      const turns = expectOk(await store.readTurns(thread.threadId));
+      if (turns.some((turn) => turn.smooth?.components?.some((component) => component.kind === "user_prompt"))) {
+        break;
+      }
+      await sleep(10);
+    }
   });
 });
 

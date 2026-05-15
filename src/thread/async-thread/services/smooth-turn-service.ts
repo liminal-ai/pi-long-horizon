@@ -450,19 +450,46 @@ function buildSmoothState(
     generatedAt: input.generatedAt,
     formatOptions: input.formatOptions,
   });
+  const existingUserComponents = (input.turn.smooth?.components ?? []).filter(
+    (component) =>
+      component.kind === "user_prompt" &&
+      (component.status === "ready" || component.status === "degraded") &&
+      component.sourceMessageIds.some((messageId) => input.turn.messageIds.includes(messageId)),
+  );
+  const existingUserComponentIds = new Set(existingUserComponents.map((component) => component.componentId));
+  const mergedComponents = [
+    ...components.filter(
+      (component) =>
+        component.kind !== "user_prompt" ||
+        !existingUserComponents.some((existing) =>
+          existing.sourceMessageIds.some((messageId) => component.sourceMessageIds.includes(messageId)),
+        ),
+    ),
+    ...existingUserComponents,
+  ].sort((left, right) => {
+    const leftMessage = input.turn.messageIds.findIndex((messageId) => left.sourceMessageIds.includes(messageId));
+    const rightMessage = input.turn.messageIds.findIndex((messageId) => right.sourceMessageIds.includes(messageId));
+    if (leftMessage !== rightMessage) {
+      return leftMessage - rightMessage;
+    }
+    if (existingUserComponentIds.has(left.componentId) !== existingUserComponentIds.has(right.componentId)) {
+      return existingUserComponentIds.has(left.componentId) ? -1 : 1;
+    }
+    return left.componentId.localeCompare(right.componentId);
+  });
   const sourceRevision = input.turn.sourceRevision;
   const smooth: SmoothTurnState = {
     turnId: input.turn.turnId,
     threadId: input.threadId,
     schemaVersion: SMOOTH_TURN_SCHEMA_VERSION,
-    status: "ready",
+    status: mergedComponents.some((component) => component.status === "degraded") ? "degraded" : "ready",
     strategy: "component_smooth_turn_v1",
     generatedAt: input.generatedAt,
     sourceRevision,
-    components,
+    components: mergedComponents,
     materialized: {
-      sourceFingerprint: createSmoothComponentSourceFingerprint(components),
-      tokenCountMetadata: calculateSmoothComponentsTokenCountRecord(input.turn, components, sourceRevision, input.generatedAt),
+      sourceFingerprint: createSmoothComponentSourceFingerprint(mergedComponents),
+      tokenCountMetadata: calculateSmoothComponentsTokenCountRecord(input.turn, mergedComponents, sourceRevision, input.generatedAt),
     },
   };
 

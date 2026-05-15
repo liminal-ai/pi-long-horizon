@@ -177,6 +177,14 @@ export interface TurnSmoothComponentRecord {
     | "deterministic_tool_exchange_v1"
     | "thinking_plaintext_or_omitted_v1";
   actorLabel?: string;
+  providerMetadata?: {
+    providerId?: string;
+    modelId?: string;
+    reasoningEffort?: string;
+    promptVersion?: string;
+    usage?: Record<string, unknown>;
+    elapsedMs?: number;
+  };
 }
 
 export interface TurnSmoothMaterializedRecord {

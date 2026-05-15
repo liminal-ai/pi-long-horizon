@@ -31,6 +31,12 @@ import { repairTurnState } from "../services/repair-service.js";
 import { openOrCreateManagedThread } from "../services/thread-service.js";
 import { checkTurnHealth, writeCapturedMessageTurns } from "../services/turn-service.js";
 import { maintainAsyncThread } from "../../thread/async-thread/services/async-thread-run-service.js";
+import { PiCodexUserPromptSmoothingProvider } from "../../thread/async-thread/services/pi-codex-user-prompt-smoothing-provider.js";
+import {
+  UserPromptSmoothingService,
+  type UserPromptSmoothingLogger,
+  type UserPromptSmoothingProvider,
+} from "../../thread/async-thread/services/user-prompt-smoothing-service.js";
 import { FileThreadStore } from "../store/file-thread-store.js";
 import type { ThreadSnapshot, ThreadStore } from "../store/thread-store.js";
 import type { SmartCompactCommandInput, SmartCompactCommandResult } from "../../thread-view/domain/pi-thread-view-file.js";
@@ -81,6 +87,11 @@ export interface ContextStewardExtensionOptions {
   createThreadViewStore?: (ctx: PiExtensionCaptureContext, threadStore: ThreadStore) => ThreadViewStore;
   openAIInputTokenCounter?: SmartCompactCommandDependencies["openAIInputTokenCounter"];
   liveToolResultTruncation?: LiveToolResultTruncationOptions & { enabled?: boolean };
+  userPromptSmoothing?: {
+    enabled?: boolean;
+    provider?: UserPromptSmoothingProvider;
+    logger?: UserPromptSmoothingLogger;
+  };
 }
 
 export interface MapPiCaptureEventInput {
@@ -1375,6 +1386,10 @@ export function registerContextStewardExtension(
 ): void {
   const createStore = options.createStore ?? defaultCreateStore;
   const createThreadViewStore = options.createThreadViewStore ?? defaultCreateThreadViewStore;
+  const userPromptSmoothingEnabled =
+    options.userPromptSmoothing?.enabled ?? process.env.NODE_TEST_CONTEXT === undefined;
+  const userPromptSmoothingProvider =
+    options.userPromptSmoothing?.provider ?? new PiCodexUserPromptSmoothingProvider();
   const liveTruncationOptions = options.liveToolResultTruncation ?? {};
   const liveTruncationEnabled = liveTruncationOptions.enabled !== false;
   const promptProjection = new PromptVisibleToolResultProjection(liveTruncationOptions);
@@ -1714,6 +1729,25 @@ export function registerContextStewardExtension(
     });
   }
 
+  function scheduleUserPromptSmoothing(input: {
+    ctx: PiExtensionCaptureContext;
+    threadId: string;
+    messageId: string;
+  }): boolean {
+    if (!userPromptSmoothingEnabled) {
+      return false;
+    }
+    const service = new UserPromptSmoothingService({
+      store: createStore(input.ctx),
+      provider: userPromptSmoothingProvider,
+      logger: options.userPromptSmoothing?.logger,
+    });
+    return service.schedule({
+      threadId: input.threadId,
+      messageId: input.messageId,
+    });
+  }
+
   const reconcileCurrentSession = async (ctx: ExtensionContext) => {
     try {
       if (typeof (ctx as Partial<ExtensionCommandContext>).switchSession !== "function") {
@@ -1881,6 +1915,7 @@ export function registerContextStewardExtension(
     let observeMs = 0;
     let fallback = false;
     let duplicate = "n/a";
+    let smoothingScheduled = false;
     try {
       let stepStartedAt = Date.now();
       const captureResult = await captureEvent(
@@ -1896,6 +1931,13 @@ export function registerContextStewardExtension(
       );
       captureMs = Date.now() - stepStartedAt;
       duplicate = String(captureResult?.duplicate);
+      if (captureResult && !captureResult.duplicate && event.message.role === "user") {
+        smoothingScheduled = scheduleUserPromptSmoothing({
+          ctx: snapshotCaptureContext(ctx) ?? ctx,
+          threadId: captureResult.message.threadId,
+          messageId: captureResult.message.messageId,
+        });
+      }
       if (captureResult && !captureResult.duplicate && liveTruncationEnabled) {
         stepStartedAt = Date.now();
         syncPromptProjectionScope(ctx);
@@ -1922,6 +1964,13 @@ export function registerContextStewardExtension(
       );
       captureMs += Date.now() - stepStartedAt;
       duplicate = String(captureResult?.duplicate);
+      if (captureResult && !captureResult.duplicate && event.message.role === "user") {
+        smoothingScheduled = scheduleUserPromptSmoothing({
+          ctx: snapshotCaptureContext(activeSessionContext) ?? activeSessionContext,
+          threadId: captureResult.message.threadId,
+          messageId: captureResult.message.messageId,
+        });
+      }
       if (captureResult && !captureResult.duplicate && liveTruncationEnabled) {
         const observeStartedAt = Date.now();
         syncPromptProjectionScope(activeSessionContext);
@@ -1935,6 +1984,7 @@ export function registerContextStewardExtension(
         fallback,
         duplicate,
         role: event.message.role,
+        smoothingScheduled,
       });
     }
   });
