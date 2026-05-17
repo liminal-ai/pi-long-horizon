@@ -25,14 +25,14 @@ integration seams.
 
 The primary confidence layers are:
 
-- service-mock tests over public service or command entry points
-- real-temp-store tests for persistence/reopen behavior where filesystem is part
-  of the product contract
-- full integration tests over the real GPT OAuth lower-band path
+- the default non-E2E suite run by `npm run verify`, which should cover public
+  service/command entry points, real-temp-store persistence behavior, and the
+  real GPT OAuth lower-band path where the story requires it
+- the deeper `npm run verify-all` gate, which adds E2E/lifecycle coverage
 
 Epic 5 does not require a formal eval harness in this phase. It does require
-that the real provider path be exercised in curated integration tests and that
-placeholder fallback be impossible in the runtime path.
+that the real provider path be exercised in curated provider-backed tests and
+that placeholder fallback be impossible in the runtime path.
 
 ## Test Architecture
 
@@ -58,27 +58,43 @@ output files are part of the feature contract.
 
 ```text
 tests/thread/
-  foundation.test.ts
-  lower-band-turn-projection-service.test.ts
-  chunk-service.test.ts
-  lower-band-compression-service.test.ts
-  lower-band-compression.integration.test.ts
-  async-thread-run-service.test.ts
+  foundation.test.ts                              # expand for fixture/lifecycle validity
+  lower-band-turn-projection-service.test.ts      # NEW
+  chunk-service.test.ts                           # expand existing
+  lower-band-compression-service.test.ts          # NEW
+  async-thread-run-service.test.ts                # expand existing
 
 tests/thread-view/
-  thread-view-builder.test.ts
+  thread-view-builder.test.ts                     # expand existing
+  thread-view-materializer.test.ts                # expand existing
+
+tests/context-workbench/
+  workbench-query-service.test.ts                 # expand existing readiness inspection surface
+  workbench-search-service.test.ts                # expand existing projection/search summaries
 
 tests/workbench/
-  lower-band-inspection-service.test.ts
-  compaction-report-service.test.ts
-  active-rollout-inspection-service.test.ts
-
-tests/context-steward/
-  pi-extension-commands.test.ts
+  compaction-report-service.test.ts               # expand existing
+  active-rollout-inspection-service.test.ts       # expand existing
+  workbench-lower-band-service.test.ts            # rename/expand legacy workbench-lower-band.integration.test.ts
 
 tests/commands/
-  smart-compact.test.ts
+  smart-compact.test.ts                           # expand existing
+  smart-compact-lifecycle.test.ts                 # rename/expand legacy smart-compact-lifecycle.integration.test.ts
+
+tests/context-steward/
+  pi-extension-commands.test.ts                   # expand existing
+  long-thread-real-pi-execution.e2e.test.ts       # expand existing Story 5/6 runtime proof
+  e2e-cli.e2e.test.ts                             # expand only for Story 7 operator command surface if needed
+
+tests/token-accounting/
+  materialized-representation-counter.test.ts     # expand existing for projection + semantic lower-band scopes
+  openai-input-token-counter.test.ts              # expand existing for exact lower-band counts
 ```
+
+Epic 4 already introduced neighboring broad service-tier suites under
+`tests/commands`, `tests/context-steward`, `tests/context-workbench`, and
+`tests/workbench`. Epic 5 should reuse those test neighborhoods rather than
+invent a separate harness in a disconnected part of the tree.
 
 Per-file exact test counts are intentionally not final in this first-pass plan.
 The current artifact proves full TC coverage and chunk-level test budgeting. A
@@ -89,14 +105,48 @@ stabilizes the final test names and any split/merge of closely related cases.
 
 | Layer | Command | Meaning For Epic 5 |
 |---|---|---|
-| Fast/default | `npm run verify` | Typecheck plus service-mock suite over public entry points |
-| Real integration | `npm run test:integration` | Real GPT OAuth detailed/brief path with local auth/network/model expectations |
-| Full gate | `npm run verify-all` | `verify` + integration + optional E2E suite; for Epic 5, lower-band confidence comes primarily from `verify` + `test:integration` |
+| Default non-E2E gate | `npm run verify` | Typecheck plus all non-E2E tests, including real GPT OAuth lower-band tests where required |
+| Full gate | `npm run verify-all` | `verify` plus E2E/lifecycle coverage required by Stories 5-7 |
 
 `test:e2e` may remain empty early in the epic because the repo’s runner exits
 successfully for empty E2E suites. That must not be mistaken for lower-band E2E
-coverage. The test plan therefore treats `test:integration` as the real story
-acceptance integration gate.
+coverage. The test plan therefore treats `verify` as the lower-band story gate
+and `verify-all` as the deeper E2E/lifecycle gate.
+
+The current repo runner intentionally supports only `service` and `e2e` modes.
+Epic 5 should not reintroduce a separate integration runner layer. Existing
+files named `.integration.test.ts` are legacy non-E2E service-tier tests because
+the runner treats them like any other `*.test.ts` file. Epic 5 should avoid
+adding new `.integration.test.ts` files and should rename touched legacy files
+to service-tier or provider-backed names when practical.
+
+### Quarantined Heavyweight Prep Proof
+
+The repo currently contains a skipped, quarantined pseudo-test at:
+
+- `tests/thread-view/real-long-thread-fixture-prep.NEEDS-REFACTOR.ts`
+
+That file is not a legitimate service-tier test and not a real E2E. It should
+not be restored as a standalone proof. The clean decomposition is:
+
+- `tests/thread-view/real-long-thread-fixture-prep.ts` remains reusable test
+  infrastructure for cloning and preparing the real long-thread fixture
+- any unique prep invariants that are still unproven move into focused
+  file-backed service-tier tests
+- real runtime proof remains in
+  `tests/context-steward/long-thread-real-pi-execution.e2e.test.ts`
+- once unique assertions are redistributed, the skipped
+  `NEEDS-REFACTOR` pseudo-test should be removed instead of remaining a
+  permanent can-kick
+
+The prep-specific assertions worth preserving, if not already covered
+elsewhere, are:
+
+- generated/archived path metadata rewrite for cloned stores
+- source target session-path rewrite behavior
+- active generated Thread View reconciliation
+- selected-chunk smooth-freshness normalization when it remains a unique
+  invariant
 
 ## Mock And Fixture Strategy
 
@@ -125,7 +175,7 @@ Mock boundaries:
 
 | Boundary | Treatment |
 |---|---|
-| GPT OAuth compression provider | Mock in service-mock tests; real in `.integration.test.ts` |
+| GPT OAuth compression provider | Mock in most service-mock tests; use real provider-backed tests inside the default non-E2E suite where the story requires it |
 | Auth storage / credential lookup | Mock only when auth failure behavior is under test |
 | Canonical Thread store | Real temp directories for stateful tests; fakes only where persistence behavior is irrelevant |
 | Thread View store | Real temp directories where build/report paths depend on persisted state |
@@ -201,14 +251,14 @@ Mock boundaries:
 | TC-3.8a | provider failure leaves output not ready during retry | Provider/network/auth/model error with retries remaining | Output remains pending/not ready and retry logged |
 | TC-3.8b | exhausted provider failure stores failed state | Repeated provider/network/auth/model error | Artifact stores failed status and last error |
 
-### `tests/thread/lower-band-compression.integration.test.ts`
+### `tests/thread/lower-band-compression-provider-backed.test.ts`
 
 | TC | Test Name | Setup | Assert |
 |---|---|---|---|
 | TC-6.2a | detailed integration path runs | Real GPT OAuth config plus ready transcript fixture | Detailed generation succeeds end to end |
 | TC-6.2b | brief integration path runs | Real GPT OAuth config plus ready transcript fixture | Brief generation succeeds end to end |
-| TC-6.3a | missing OAuth setup fails integration gate | No credential configured | Integration test fails with actionable auth/config error |
-| TC-6.3b | broken model wiring fails integration gate | Credential exists but provider wiring invalid | Integration test fails explicitly |
+| TC-6.3a | missing OAuth setup fails default verification | No credential configured | Real provider-backed lower-band test fails with actionable auth/config error |
+| TC-6.3b | broken model wiring fails default verification | Credential exists but provider wiring invalid | Real provider-backed lower-band test fails explicitly |
 
 ### `tests/thread/async-thread-run-service.test.ts`
 
@@ -232,7 +282,7 @@ Mock boundaries:
 | TC-4.5a | placeholder runtime consumers unreachable | Normal runtime compact path | Placeholder generation and selection paths are not invoked by compact, builder, or materializer |
 | TC-4.5b | placeholder runtime assumptions removed from tests | Runtime test suite and command path smoke | No runtime-facing test depends on placeholder success behavior |
 
-### `tests/workbench/lower-band-inspection-service.test.ts`
+### `tests/context-workbench/workbench-query-service.test.ts`
 
 | TC | Test Name | Setup | Assert |
 |---|---|---|---|
@@ -270,8 +320,8 @@ behavior. They still need named evidence in the design.
 | TC-6.1a | Service-mock suite listed in this test plan | Primary tests enter through public services/commands rather than internal helpers | Verified by test file selection and mocking strategy |
 | TC-6.1b | `tests/thread/lower-band-compression-service.test.ts` and other service-mock files | GPT OAuth and other external boundaries are mocked while internal modules remain real | Verified by suite architecture and file-level mock boundaries |
 | TC-6.4a | `npm run verify` acceptance evidence | Fast/default verification gate required for each story | Story acceptance gate |
-| TC-6.4b | `npm run test:integration` acceptance evidence | Real integration gate required for Story 3 and every later story | Story acceptance gate |
-| TC-6.4c | Story 3+ acceptance evidence | Compression stories cannot be accepted until the real GPT OAuth integration gate exists and passes | Story sequencing/gate rule |
+| TC-6.4b | `npm run verify-all` acceptance evidence | Deeper gate used when a story or epic checkpoint expects E2E/lifecycle confirmation | Story acceptance / epic gate |
+| TC-6.4c | Story 3+ acceptance evidence | Compression stories cannot be accepted unless the real GPT OAuth lower-band tests inside `verify` exist and pass | Story sequencing/gate rule |
 
 ## Non-TC Architecture-Risk Tests
 
@@ -282,14 +332,21 @@ hazards that AC/TC coverage alone will miss.
 |---|---|---|---|
 | Lost update on Turn projection writes | `tests/thread/lower-band-turn-projection-service.test.ts` | Two stale writers cannot clobber each other’s projection state | Epic requires projection correctness, not the file-backed lost-update hazard itself |
 | Lost update on lower-band artifact writes | `tests/thread/lower-band-compression-service.test.ts` | Concurrent or repeated writes cannot erase fresher detailed/brief state | Epic requires final readiness/failure, not stale writer behavior |
-| Reopen/restart survival | `tests/thread/lower-band-compression.integration.test.ts` | Fresh store instance can read persisted projection/transcript/lower-band output state | Epic describes readiness, not restart survival mechanics |
+| Reopen/restart survival | `tests/thread/lower-band-compression-provider-backed.test.ts` | Fresh store instance can read persisted projection/transcript/lower-band output state | Epic describes readiness, not restart survival mechanics |
 | Partial smart compact failure leaves no active bad output | `tests/commands/smart-compact.test.ts` | Failure after catch-up or before final write does not leave a partially active generated output | Epic requires specific failure, but not partial-write safety details |
 | Fixture lifecycle validity | `tests/thread/foundation.test.ts` | Default Chunk fixtures are valid; invalid fixtures explicit | Epic does not describe fixture contracts |
 | Legacy placeholder state blocked | `tests/thread/chunk-service.test.ts` | Placeholder-era Chunk fixture is blocked and distinguishable | Epic says old state is not ready, but not how to prove fixture/state separation |
 | No placeholder runtime deepening | `tests/commands/smart-compact.test.ts` | Runtime path cannot invoke placeholder generator after cutover | Epic forbids it, but a design-specific anti-regression test is still needed |
 | Real prior-story artifact use | `tests/thread/chunk-service.test.ts`, `tests/thread/async-thread-run-service.test.ts` | Later tests consume actual projection/transcript state, not fake eligibility flags | AC coverage can still accidentally use shims unless the plan forbids it |
+| PI runtime compact consumes real lower-band output | `tests/context-steward/long-thread-real-pi-execution.e2e.test.ts` | Prepared long-thread PI session runs, smart compact consumes ready semantic lower-band output, generated rollout reloads, and PI continues | Service-tier tests can prove readiness locally but cannot prove the full PI/runtime continuation path |
+| Placeholder-free generated rollout | `tests/context-steward/long-thread-real-pi-execution.e2e.test.ts` | Same Story 5 runtime E2E asserts generated output contains semantic lower-band text and no deterministic placeholder fallback | Placeholder cutover needs one full-runtime proof that the final generated artifact is clean |
+| Operator command surface inspection | `tests/context-steward/e2e-cli.e2e.test.ts` | Real outer command surface can report lower-band readiness/failure without reading placeholder-era summaries | Service-tier workbench tests prove formatting; one E2E proves the operator can reach it through the real surface |
 | Exact threshold golden cases | `tests/thread/chunk-service.test.ts` | Boundary cases for min/soft max/hard max use fixed expected decisions | Mirrored helper logic could pass while both implementation and test misunderstand the rule |
-| Meaningful integration gate | `tests/thread/lower-band-compression.integration.test.ts` | Integration suite fails when config missing and runs real provider path when present | `verify-all` could otherwise sound stronger than it is |
+| Heavyweight long-thread prep proof decomposition | `tests/thread-view/real-long-thread-fixture-prep.NEEDS-REFACTOR.ts`, `tests/thread-view/real-long-thread-fixture-prep.ts`, `tests/context-steward/long-thread-real-pi-execution.e2e.test.ts` | Quarantined pseudo-test is split into helper infrastructure, focused service-tier assertions, and real E2E runtime proof | Prevents an ambiguous middle-tier proof from lingering as a skipped can-kick |
+| Semantic counter rewiring | `tests/token-accounting/materialized-representation-counter.test.ts`, `tests/token-accounting/openai-input-token-counter.test.ts` | Detailed/brief counts read semantic lower-band artifact text, not placeholder text, and the new projection scope is validated | ACs describe persisted counts and semantic artifacts, but not the counter-source implementation hazard |
+| External integration error redaction | `tests/thread/lower-band-compression-service.test.ts`, `tests/token-accounting/openai-input-token-counter.test.ts` | Provider/auth/model failures surface actionable context without leaking bearer tokens or raw credentials | Epic requires visible failures, but not the redaction hazard introduced by real provider logs |
+| Workbench query/search cutover | `tests/context-workbench/workbench-query-service.test.ts`, `tests/context-workbench/workbench-search-service.test.ts` | Workbench summaries and readiness queries stop blessing placeholder output as valid semantic lower-band state | Epic covers runtime correctness, but workbench drift can leave the operator seeing the wrong truth |
+| Real-provider gate in default suite | `tests/thread/lower-band-compression-provider-backed.test.ts` | Default non-E2E verification fails when config missing and runs the real provider path when present | A separate integration layer no longer exists |
 
 ## Chunk Test Counts
 
@@ -313,42 +370,55 @@ TCs will map to more than one concrete assertion or test case in practice. The
 reconciliation pass after implementation must make the final per-file and
 per-chunk totals explicit.
 
-## Integration Tests
+## Real-Provider Tests
 
-Epic 5’s integration suite should stay curated and real.
+Epic 5 still needs curated real-provider coverage. It just lives inside the
+default non-E2E suite instead of behind a separate runner layer.
 
 | File | Purpose | Uses Real GPT OAuth? |
 |---|---|---|
-| `tests/thread/lower-band-compression.integration.test.ts` | Detailed/brief generation against the real provider path, auth/config failure behavior, reopen survival | Yes |
-| `tests/workbench/workbench-lower-band.integration.test.ts` | Lower-band-ready state reflected through persisted thread/chunk/workbench path | No, unless useful for one representative path |
+| `tests/thread/lower-band-compression-provider-backed.test.ts` | Dedicated lower-band provider-backed suite: detailed/brief generation, auth/config failure behavior, reopen survival | Yes |
+| `tests/workbench/workbench-lower-band-service.test.ts` | Existing persisted thread/chunk/workbench path expanded for semantic lower-band readiness; rename from legacy `.integration.test.ts` file if touched | No, unless one representative real-provider path is valuable |
+| `tests/commands/smart-compact-lifecycle.test.ts` | Existing lifecycle-grade compact path expanded once real lower-band outputs are selectable; rename from legacy `.integration.test.ts` file if touched | Usually no; can keep mocked provider unless a representative real path is especially useful |
 
-Integration expectations:
+Expectations:
 
-- run through `npm run test:integration`
-- fail when no integration tests exist
-- fail when GPT OAuth config/wiring is missing for the real lower-band provider test
-- do not silently downgrade to mocked provider behavior
+- these tests run under `npm run verify` because they are non-E2E `*.test.ts`
+- the real lower-band provider-backed test must fail when GPT OAuth config or
+  wiring is missing
+- the suite must not silently downgrade to mocked provider behavior
 
 ## E2E Tests
 
-Epic 5 does not require a new E2E suite in the first pass. The repo’s `test:e2e`
-script may therefore remain empty early in the epic. That is acceptable only if
-we do not over-read `verify-all` as lower-band E2E confidence.
+Epic 5 needs a small number of E2E assertions, not a separate integration test
+layer. These assertions belong under `npm run verify-all` because they prove the
+real PI/runtime continuation path rather than isolated lower-band services.
 
-If a later pass adds an E2E test, the most valuable candidate is:
+Required E2E coverage:
 
-- operator-triggered smart compact through the PI extension command surface with
-  lower-band-ready semantic outputs and generated-session rewrite proof
+| Story | File | Required Proof |
+|---|---|---|
+| Story 5 | `tests/context-steward/long-thread-real-pi-execution.e2e.test.ts` | A prepared long-thread PI session runs, semantic lower-band output is ready, smart compact consumes that output through `buildThreadViewProjection`, generated rollout reloads, and PI continues after compact |
+| Story 6 | `tests/context-steward/long-thread-real-pi-execution.e2e.test.ts` | The same runtime path emits no deterministic placeholder detailed/brief fallback and does not treat placeholder-era Chunk state as ready output |
+| Story 7 | `tests/context-steward/e2e-cli.e2e.test.ts` | A narrow operator command-surface check can reach lower-band readiness/failure inspection through the real outer surface without a duplicate inspection pathway |
+
+E2E boundaries:
+
+- do not create a new `test:integration` command or resurrect a middle runner
+  tier
+- do not duplicate every service-tier edge case in E2E
+- do not make Story 7’s E2E a quality-eval or model-comparison scenario
+- keep the Story 5/6 E2E focused on runtime continuation and final generated
+  output cleanliness
 
 ## Verification Commands
 
 | Command | Purpose | Epic 5 Meaning |
 |---|---|---|
 | `npm run red-verify` | Red exit gate | Type-only / scaffold sanity before Green |
-| `npm run verify` | Fast/default story gate | Required for every story |
+| `npm run verify` | Default story gate | Required for every story; includes real provider-backed lower-band tests where required |
 | `npm run green-verify` | Green exit gate | Recommended during implementation |
-| `npm run test:integration` | Real lower-band integration gate | Required for Story 3 and every later story |
-| `npm run verify-all` | Full gate | Used for later epic-level or pre-release confidence; do not treat empty E2E as lower-band coverage |
+| `npm run verify-all` | Full gate | `verify` plus E2E/lifecycle coverage; do not mistake an empty E2E lane for lower-band provider confidence |
 
 ## Related Documentation
 

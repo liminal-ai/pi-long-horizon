@@ -2,9 +2,9 @@
 
 ## Architecture Thesis
 
-PI Long Horizon is a local, file-backed context substrate layered around PI through extensions. The Context Steward owns a target-neutral canonical Thread, derived smooth turns and chunks, async maintenance jobs, and generated session files. PI remains the first runtime target: it emits events into the steward and loads a generated PI session file when smart compact runs.
+PI Long Horizon is a local, file-backed context substrate layered around PI through extensions. The Context Steward owns a target-neutral canonical Thread, derived smooth turns and chunks, async maintenance state, and generated session files plus projection revisions. PI remains the first runtime target: it emits events into the steward and loads a generated PI session file when smart compact runs.
 
-PI calls its native session JSONL files rollouts. This architecture uses generated PI session file for the PI-compatible file produced by smart compact, and projection revision for the recorded output metadata.
+PI calls its native session JSONL files rollouts. This architecture uses generated PI session file for the PI-compatible file produced by smart compact, and projection revision for the recorded output metadata and compact snapshot that accompany that runtime output.
 
 ---
 
@@ -55,7 +55,7 @@ flowchart TD
         Messages["Messages JSONL"]
         Turns["Turns JSONL"]
         Chunks["Chunks JSONL"]
-        JobLog["Jobs JSONL"]
+        DerivedState["Derived State / Future Job Records"]
         Projections["Projection Revisions"]
     end
 
@@ -65,7 +65,7 @@ flowchart TD
     Core --> Messages
     Core --> Turns
     Core --> Chunks
-    Core --> JobLog
+    Core --> DerivedState
     Workbench --> Core
     Jobs --> Core
     Compiler --> Workbench
@@ -82,7 +82,7 @@ Downstream work should preserve this ownership split. PI integration is an adapt
 |--------|-----------------|------|------------|---------------------|
 | Context Steward Core | Local TypeScript library + PI extension | Threads, actors, messages, turns, chunks, jobs, projections | Filesystem store, PI events | All epics treat canonical Thread as source of truth. |
 | Context Workbench | Local TypeScript library + CLI/extension commands | Readable views and editing support over messages, turns, parts, chunks, jobs, and projection state | Context Steward Core | Deterministic code, future agents, and UI use the same navigation concepts. |
-| Background Maintenance | Local worker/job runner | Smooth turn jobs, boundary adjudication jobs, chunk summary jobs | Context Steward Core, model providers | Expensive model work does not run in the PI event capture critical path. |
+| Background Maintenance | Local worker/maintenance runner | Smooth turn maintenance, boundary adjudication, chunk summary maintenance, and future first-class job records | Context Steward Core, model providers | Expensive model work does not run in the PI event capture critical path. |
 | Projection Compiler | Local TypeScript library + smart compact command | Generated PI session file compilation, projection revision records, archives | Workbench, chunks, band policy | PI is a target format; other targets can be added later. |
 | PI Runtime Integration | PI extension + PI session reload | Event capture, command entrypoints, generated PI session file path, `switchSession` handoff | PI coding-agent APIs, Projection Compiler | PI remains extended, not forked. PI-native sessions are target/runtime files. |
 
@@ -117,10 +117,10 @@ erDiagram
 | Smooth | Current smoothed text representation on a Turn. | Generated asynchronously; missing smooth output is repairable from canonical messages. |
 | Chunk | Stable aggregate of closed turns' smooth text. | One open chunk per thread. Closed chunks are immutable by default and remain active unless explicitly replaced. |
 | Summary | Current detailed/brief representation on a Chunk. | Detailed and brief are named summary slots, not band names. |
-| Job | Durable async work item. | Expensive model work is visible and resumable. |
-| ProjectionRevision | Generated target context output. | Records source state, band policy, output path, stats, and reload result. |
+| Job | Optional future durable async work item. | The architecture expects expensive model work to remain visible and resumable; the current repo may still express resumable work through derived state plus logs until a first-class Job family lands. |
+| ProjectionRevision | Generated target context output. | Records source state, band policy, compact snapshot, output path, stats, and reload result. Active runtime rollout truth hangs from ProjectionRevision plus `threadViewOutputSummary`, not active `ThreadViewStore` state. |
 
-**Downstream inherits:** Every epic and tech design uses these concept names for the context domain. New derived state composes against Thread, Message, Turn, Chunk, Job, and ProjectionRevision rather than introducing parallel domain types.
+**Downstream inherits:** Every epic and tech design uses these concept names for the context domain. New derived state composes against Thread, Message, Turn, Chunk, and ProjectionRevision, with future Job records added when the repo grows a first-class durable job family rather than through parallel ad hoc types.
 
 ### Store Interface
 
@@ -132,7 +132,7 @@ The thread store should be treated as an interface, not as a file layout. The v1
 | Read message range | Returns messages in canonical order for turn repair, smoothing, and projection. |
 | Write turn state | Creates and updates prompt-bounded turn records without mutating messages. |
 | Read active chunks | Returns active chunks in source order. |
-| Write job state | Records async job status, attempts, errors, timing, model, and size/cost metadata when available. |
+| Write job state (future / optional) | Records async job status, attempts, errors, timing, model, and size/cost metadata when a first-class job family exists. |
 | Write projection revision | Records the generated target path, source state, policy, size estimates, archive path, and reload result. |
 
 File-backed storage can use JSON/JSONL files and atomic rewrites where needed. Future database storage should preserve the same ordering and active-record semantics rather than exposing file-specific assumptions to consumers.
@@ -198,7 +198,7 @@ Examples:
 
 **Rationale:** A generated PI session file should be disposable, inspectable, archivable, and reproducible from canonical state. PI-native compaction entries do not define the multi-band substrate.
 
-**Consequence:** The PI projection compiler is the first target adapter. Other target compilers can later emit different CLI/session formats from the same Thread.
+**Consequence:** The PI projection compiler is the first target adapter. Other target compilers can later emit different CLI/session formats from the same Thread. Runtime generated output truth is recorded on `ProjectionRevision` plus `threadViewOutputSummary`; `ThreadViewStore` remains a draft/workbench surface rather than the owner of active rollout state.
 
 ### Chunk Stability
 
@@ -238,7 +238,7 @@ Examples:
 
 **Rationale:** PI extension event handling, background model jobs, and smart compact can overlap if the store does not define serialization expectations.
 
-**Consequence:** PI event capture writes source messages and turn state in the sync event path. Background jobs operate on closed turns, open chunks, or closed chunks through durable job state. Smart compact reads the current store state, verifies prerequisites using the Smart Compact Prerequisite Policy below, writes a generated PI session file atomically, records a projection revision, then reloads PI through the command path. Tech design should choose locking or optimistic revision checks so smart compact never compiles from partially updated derived state.
+**Consequence:** PI event capture writes source messages and turn state in the sync event path. Background maintenance operates on closed turns, open chunks, or closed chunks through persisted derived state today and future durable job state later. Smart compact reads the current store state, verifies prerequisites using the Smart Compact Prerequisite Policy below, writes a generated PI session file atomically, records a projection revision, then reloads PI through the command path. Tech design should choose locking or optimistic revision checks so smart compact never compiles from partially updated derived state.
 
 ### Schema Versioning
 

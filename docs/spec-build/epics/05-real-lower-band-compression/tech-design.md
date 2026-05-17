@@ -53,7 +53,8 @@ source preparation and real integration verification.
 | Current lower-band runtime path is still named and structured around placeholder artifacts. | `src/thread/async-thread/domain/placeholder-artifact-state.ts`, `src/thread/async-thread/services/placeholder-artifact-service.ts`, `src/thread-view/services/thread-view-builder.ts` | Epic 5 introduces real lower-band artifact ownership and removes placeholder runtime selection. Placeholder-era code remains only until cutover and is then removed. | Resolved - deviated |
 | Current exact token-count persistence covers raw Turns, smooth Turns, smooth Chunks, placeholder detailed output, placeholder brief output, and generated sessions. It does not cover a conversation-only Turn projection because that surface does not exist yet. | `src/token-accounting/token-count-metadata.ts`, current async-thread services | Epic 5 adds a proper persisted token count for the conversation-only Turn projection because it drives Chunk boundaries. Detailed/brief runtime routing estimates remain transient and unpersisted. | Resolved - clarified |
 | Technical architecture describes durable background-maintenance jobs, but the current repo does not yet expose a real Job record family in `ThreadStore`. | technical architecture “Background Maintenance”, current `ThreadStore` and async-thread services | Epic 5 does not add a new durable job store. Instead it persists lower-band artifact `pending` / `failed` status on Turn and Chunk derived state and relies on idempotent maintenance / prepare-mode catch-up to resume work. This is a deliberate temporary deviation until a first-class job record family exists. | Resolved - deviated |
-| Current verification scripts exist and already match the stable `ls-tech-design` tier names, but `verify-all` can be over-read if no integration/E2E suites are meaningful yet. | `package.json`, `scripts/run-node-tests.mjs` | Epic 5 uses the existing scripts as the project truth. Story acceptance requires `verify` and `test:integration`. `verify-all` remains the deeper gate; its meaning is documented explicitly in this design and test plan. | Resolved - clarified |
+| The repo no longer has a separate integration runner layer. `npm run test` executes all non-E2E `*.test.ts` files, including legacy files named `.integration.test.ts`, and `verify-all` only adds `test:e2e`. | `package.json`, `scripts/run-node-tests.mjs` | Epic 5 must not reintroduce `test:integration` or a separate integration lane. Real GPT OAuth lower-band tests belong in the default `verify` suite using provider-backed/service naming, and `verify-all` remains the deeper E2E/lifecycle gate. Touched legacy `.integration.test.ts` files should be renamed when practical. | Resolved - clarified |
+| Current runtime generated output is tracked on `thread.threadViewOutputSummary` plus `ProjectionRevisionRecord`; active runtime truth is no longer owned by `ThreadViewStore`. | `src/thread/domain/records.ts`, `src/thread-view/services/thread-view-builder.ts`, `src/workbench/services/workbench-query-service.ts` | Epic 5 keeps draft/workbench Thread Views as a separate surface, but runtime lower-band cutover work must target projection revisions and generated output metadata as the authoritative rollout path. | Resolved - clarified |
 | Current smoothing provider and non-blocking scheduling pattern exist for user prompts only. | `src/thread/async-thread/services/user-prompt-smoothing-service.ts`, `src/thread/async-thread/services/pi-codex-user-prompt-smoothing-provider.ts` | Epic 5 reuses the provider/auth/transport pattern but introduces a dedicated lower-band compression service and provider. Lower-band generation is not folded into user-prompt smoothing. | Resolved - clarified |
 
 No blocking epic defect remains that requires returning to epic drafting before
@@ -119,8 +120,8 @@ implementation forces a documented deviation.
 | 3 | Add a new token-count scope named `turn_lower_band_projection_materialized` for the persisted conversation-only Turn projection count. This is the authority for Chunk boundary decisions and should use the existing exact/provider-input counting path rather than a heuristic estimate. Semantic lower-band output accounting should reuse `detailed_chunk_materialized` and `brief_chunk_materialized`, but those scopes now count semantic artifact text under `chunk.lowerBand` rather than placeholder text under `chunk.placeholders`. |
 | 4 | When a Chunk closes, persist/refresh its conversation-only Chunk transcript and schedule asynchronous detailed/brief generation through a chunk-scoped lower-band compression service. Retry counters and model/routing details stay in logs, not source-truth artifacts. |
 | 5 | Write lower-band generation logs under `.context-steward/debug/`, following the existing timing and smoothing log pattern. Catch-up events also write visible standard-error warnings because the operator explicitly wants to notice them during compact preparation. |
-| 6 | Reuse the existing GPT OAuth auth and `@earendil-works/pi-ai` completion pattern from user-prompt smoothing, but use a dedicated lower-band compression provider and prompt surface. Lower-band generation should not be coupled to the user-prompt smoothing provider beyond shared auth/transport patterns. |
-| 7 | Use the repo’s existing scripts as the project truth: `red-verify`, `verify`, `green-verify`, `verify-all`, `test:integration`, and `test:e2e`. Story acceptance requires `verify` for every story, and `test:integration` for Story 3 and every later story. `verify-all` remains the full gate; it is meaningful for Epic 5 only after real integration coverage is added. |
+| 6 | Reuse the existing GPT OAuth auth and `@earendil-works/pi-ai` completion pattern from user-prompt smoothing, but use a dedicated lower-band compression provider and prompt surface. Lower-band generation should not be coupled to the user-prompt smoothing provider beyond shared auth/transport patterns, and provider failures should reuse `src/integration-error.ts` for redacted logging/details. |
+| 7 | Use the repo’s existing scripts as the project truth: `red-verify`, `verify`, `green-verify`, `verify-all`, and `test:e2e`. Do not add `test:integration` or a separate runner mode. Real GPT OAuth lower-band tests live in the default `verify` suite as non-E2E `*.test.ts` files, and `verify-all` remains the deeper E2E/lifecycle gate. |
 | 8 | Replace placeholder generation code and tests in phases: introduce the new lower-band modules first, switch runtime selection to them, then remove placeholder-domain services, builder accounting, inspection/reporting assumptions, and tests that bless placeholder behavior. No runtime compatibility shim remains after cutover. |
 | 9 | Keep detailed/brief prompt templates and model-routing defaults in the lower-band provider/service layer. Keep calibration notes, prompt variants, and comparison artifacts under docs and logs, not in source-truth Thread or Chunk state. |
 | 10 | Extend smart compact blocker reporting and workbench inspection so they can identify: missing Turn projections, invalid/stale legacy Chunk state, missing Chunk transcript, failed detailed generation, failed brief generation, and whether smart compact had to perform synchronous catch-up. The canonical operator entry is the PI extension command surface; the local script remains a developer convenience that delegates to the same workbench service. |
@@ -145,7 +146,8 @@ and provider-facing:
 | Boundary | Direction | Contract | Epic 5 Handling |
 |---|---|---|---|
 | Canonical Thread store | `thread` to disk | Turns, Chunks, and derived lower-band state persist across reopen/restart | Real file-backed reads and writes through `ThreadStore` |
-| Thread View store | `thread-view` to disk | Draft/active Thread Views and emitted messages | Real file-backed reads and writes through `ThreadViewStore` |
+| Draft / workbench Thread View store | `thread-view` to disk | Draft and archived workbench Thread Views plus emitted messages for inspection/edit flows | Real file-backed reads and writes through `ThreadViewStore` where draft/workbench state is actually under test |
+| Projection revision output | `thread` to disk | Runtime generated rollout metadata, compact snapshot, generated file path, and reload outcome | Real file-backed reads and writes through `ThreadStore` projection revision and `threadViewOutputSummary` state |
 | GPT OAuth inference | `thread/async-thread` to provider | Detailed/brief semantic compression over supplied transcript text | Dedicated provider with retry/escalation and auth failure reporting |
 | Generated PI session output | `thread-view` to disk | Final generated PI session file plus archive | Existing PI writer remains the projection output boundary |
 | PI extension/commands | local command surface to operator/runtime | Smart compact execution, lower-band inspection commands, stderr/log visibility | Existing command/extension shape expanded, not replaced |
@@ -168,6 +170,7 @@ Epic 5 introduces two linked but distinct maintenance paths.
 - when a Chunk closes, the system schedules asynchronous detailed/brief generation
 - the lower-band compression service chooses a lane from runtime estimates
 - detailed/brief outputs are written as lean semantic artifact state
+- smart compact’s runtime projection builder consumes that artifact state and records a `ProjectionRevisionRecord`
 - smart compact later selects those outputs for detailed and brief bands
 - if selected output is missing, smart compact performs visible synchronous catch-up or fails specifically
 
@@ -226,10 +229,12 @@ The key rules remain:
 | Closed Chunk mutation | Normal maintenance never silently rewrites closed Chunk membership | Current code refreshes closed Chunk smooth text in place. Epic 5 needs explicit blocking or explicit rebuild/supersession instead. | AC-2.6 |
 | Legacy placeholder-era Chunk handling | Treat legacy/placeholder-era Chunk state as blocked for real lower-band selection | No polished migration is required for this phase, and the user is willing to clear PI sessions. Blocking is safer than fake compatibility. | AC-2.6, AC-4.4, AC-4.5 |
 | Async generation pattern | Mirror the current user-prompt smoothing scheduling pattern at chunk scope, but with a dedicated lower-band compression service | This reuses known auth/logging patterns while keeping lower-band retry and artifact semantics separate. | AC-3 |
+| External integration failure formatting | Reuse `integration-error.ts` for lower-band provider and token-counter failure logging | Epic 4 already established redacted, structured external-failure logging. Epic 5 should extend that pattern instead of inventing one-off provider error strings. | AC-3, AC-5, AC-6 |
 | Async work durability | Persist `pending` / `failed` artifact state and resume work through repeated maintenance and prepare-mode catch-up instead of introducing a new durable Job record family in this phase | This aligns with the current repo reality while preserving visible, resumable work state. | AC-3, AC-4, AC-5 |
 | Compression retry policy | Attempts 1 and 2 use routed lane; attempt 3 escalates to GPT-5.5 medium and accepts first output | This comes directly from the epic and should be encoded as deterministic retry behavior. | AC-3.4, AC-3.5, AC-3.6 |
 | Smart compact catch-up | Catch-up is allowed only for selected lower-band outputs and is loud | Catch-up is an abnormal repair path, not the normal steady state. The operator wants visible warnings and specific failure when catch-up fails. | AC-4 |
-| Verification gates | Use repo scripts as truth, but make `test:integration` the story-level real integration gate for Story 3 and every later story | The script names already exist; the design should make their meaning explicit rather than inventing new names. | AC-6 |
+| Runtime projection identity | Active generated rollout truth lives on `Thread.threadViewOutputSummary` and `ProjectionRevisionRecord`; `ThreadViewStore` remains a draft/workbench surface | Epic 4 wrap-up separated runtime generated output from active ThreadViewStore ownership, and Epic 5 should build on that rather than drifting backward. | AC-4, AC-5 |
+| Verification gates | Use repo scripts as truth without reintroducing a separate integration lane | The current runner intentionally keeps all non-E2E tests in the default suite. Real provider-backed lower-band tests should gate `verify`; `verify-all` remains the deeper E2E/lifecycle gate. | AC-6 |
 
 ## Module Boundaries
 
@@ -260,11 +265,13 @@ src/thread-view/domain/
   thread-view-records.ts                          # MODIFIED: workbench chunk reads and lower-band readiness semantics
 
 src/thread-view/services/
-  thread-view-builder.ts                          # MODIFIED: select/count semantic lower-band output instead of placeholders
-  thread-view-materializer.ts                     # MODIFIED: materialize semantic lower-band messages and remove placeholder assumptions
+  thread-view-builder.ts                          # MODIFIED: runtime projection build and draft Thread View build consume semantic lower-band output instead of placeholders
+  thread-view-materializer.ts                     # MODIFIED: projection/draft materialization removes placeholder assumptions
 
 src/workbench/services/
-  lower-band-inspection-service.ts                # NEW: operator-facing lower-band readiness and failure inspection
+  workbench-query-service.ts                      # MODIFIED: lower-band readiness inspection and projection-snapshot-aware query flow
+  workbench-search-service.ts                     # MODIFIED: search/index summaries stop blessing placeholder lower-band output
+
   active-rollout-inspection-service.ts            # MODIFIED: semantic lower-band rollout awareness
   compaction-report-service.ts                    # MODIFIED: semantic lower-band freshness/blocker reporting
   compaction-report-formatter.ts                  # MODIFIED: lower-band semantic readiness formatting
@@ -295,9 +302,10 @@ src/token-accounting/
 | `src/thread/async-thread/services/lower-band-compression-service.ts` | NEW | Generate detailed/brief semantic outputs, retry, escalate, log, and provide sync catch-up | provider, `ThreadStore`, chunk service | AC-3, AC-4 |
 | `src/thread/async-thread/services/pi-codex-lower-band-compression-provider.ts` | NEW | GPT OAuth-backed completion for detailed/brief prompts | `@earendil-works/pi-ai`, `AuthStorage` | AC-3, AC-6 |
 | `src/thread/async-thread/services/async-thread-run-service.ts` | MODIFIED | Maintain artifact readiness and prepare-mode catch-up using projection/compression services | chunk service, projection service, compression service, token-count policy | AC-1.6, AC-3, AC-4 |
-| `src/thread-view/services/thread-view-builder.ts` | MODIFIED | Select lower-band semantic outputs, compute per-run lower-band counts, and build draft Thread Views | thread store, async-thread services, token accounting | AC-2.4, AC-4 |
-| `src/thread-view/services/thread-view-materializer.ts` | MODIFIED | Emit semantic lower-band messages and remove placeholder-explicit assumptions from normal runtime materialization | builder outputs, thread-view records | AC-4, AC-5 |
-| `src/workbench/services/lower-band-inspection-service.ts` | NEW | Report transcript readiness, detailed/brief status, and error summaries | `ThreadStore` | AC-5 |
+| `src/thread-view/services/thread-view-builder.ts` | MODIFIED | Select lower-band semantic outputs, compute per-run lower-band counts, build runtime `ProjectionRevisionRecord` snapshots, and keep draft Thread View build behavior aligned | thread store, async-thread services, token accounting | AC-2.4, AC-4, AC-5 |
+| `src/thread-view/services/thread-view-materializer.ts` | MODIFIED | Emit semantic lower-band messages for runtime projections and draft Thread Views, removing placeholder-explicit assumptions from both paths | builder outputs, thread-view records | AC-4, AC-5 |
+| `src/workbench/services/workbench-query-service.ts` | MODIFIED | Report transcript readiness, detailed/brief status, projection compact snapshot state, and error summaries through the existing workbench inspection surface | `ThreadStore`, prepare-mode readiness helpers | AC-5 |
+| `src/workbench/services/workbench-search-service.ts` | MODIFIED | Search and summarize projection compact snapshots and lower-band state without treating placeholders as valid semantic output | thread store, projection snapshots | AC-5 |
 | `src/workbench/services/compaction-report-service.ts` | MODIFIED | Include semantic lower-band readiness/catch-up/blocker reporting in compact audit | thread store, builder accounting | AC-5 |
 | `src/context-steward/pi/pi-extension.ts` + `scripts/inspect-lower-band-status.ts` | MODIFIED / NEW | Operator-facing command surfaces for lower-band status | workbench services | AC-5, AC-6 |
 | `src/token-accounting/token-count-metadata.ts` + counters | MODIFIED | Add projection token-count scope, policy handling, and semantic lower-band artifact counting over new artifact text | existing counter source policy and provider-input counting | AC-2.2, AC-3 |
@@ -311,6 +319,8 @@ lower-band behavior:
 - `src/thread-view/services/thread-view-builder.ts`
 - `src/thread-view/services/thread-view-materializer.ts`
 - `src/thread-view/targets/pi/pi-thread-view-builder.ts`
+- `src/workbench/services/workbench-query-service.ts`
+- `src/workbench/services/workbench-search-service.ts`
 - `src/workbench/services/compaction-report-service.ts`
 - `src/workbench/services/active-rollout-inspection-service.ts`
 - `src/context-steward/pi/pi-extension.ts`
@@ -327,7 +337,8 @@ cutover.
 |---|---|---|---|
 | Turn conversation-only projection | `thread` / `thread/async-thread` | none | New code reads/writes the nested Turn projection state from the canonical Thread records only. |
 | Chunk semantic lower-band artifacts | `thread` / `thread/async-thread` | placeholder-era state only for rollout blocking | New runtime code does not treat `placeholders` as valid lower-band outputs. |
-| Lower-band selection | `thread-view` builder | none | Builder consumes semantic lower-band artifact state only. |
+| Lower-band selection | `thread-view` builder runtime projection path | none | Runtime builder consumes semantic lower-band artifact state only when producing generated rollout output and compact snapshots. |
+| Runtime generated projection output | `thread` / Projection Compiler | draft/workbench `ThreadViewStore` only for inspection/edit flows | Active generated output truth is `ProjectionRevisionRecord` plus `thread.threadViewOutputSummary`, not `ThreadViewStore`. |
 | Operator inspection | `workbench` | PI extension/scripts only as edge surfaces | PI command/script surfaces delegate to workbench services. |
 | Legacy placeholder services | none after cutover | temporary only until replacement stories land | New code must not deepen imports into placeholder services. |
 
@@ -466,6 +477,8 @@ sequenceDiagram
 - Artifact state stays lean: status, text, error, updatedAt.
 - Detailed/brief token counts for selection are recomputed on demand later from
   the stored text.
+- Provider/network/auth/model failures should log through the shared redaction
+  and formatting helpers in `src/integration-error.ts`.
 
 ### Flow 4: Smart Compact Lower-Band Readiness And Catch-Up
 
@@ -518,7 +531,7 @@ what failed, and whether compact had to catch up.
 sequenceDiagram
     participant Operator
     participant PI as pi-extension / script
-    participant WB as lower-band-inspection-service
+    participant WB as workbench-query-service
     participant Store as ThreadStore
 
     Note over Operator,Store: AC-5.1 through AC-5.4
@@ -540,20 +553,22 @@ therefore part of the design, not a later convenience.
 ```mermaid
 flowchart LR
     Fast["npm run verify"] --> Impl["story implementation confidence"]
-    Int["npm run test:integration"] --> Wiring["real GPT OAuth wiring confidence"]
     All["npm run verify-all"] --> Release["deep gate / pre-release confidence"]
 ```
 
 **Design Notes**
 
-- `verify` is the fast/default story gate: `typecheck` plus service-mock tests.
-- `test:integration` is the story-level real GPT OAuth gate, and Story 3 or any
-  later compression story cannot be accepted without it existing and passing.
+- `verify` is the default story gate: `typecheck` plus the full non-E2E test
+  suite, including real GPT OAuth lower-band tests where configured.
+- Real provider-backed lower-band tests should stay in the default service
+  suite. Existing `.integration.test.ts` files are legacy non-E2E names, not a
+  separate runner layer; Epic 5 should avoid adding new files with that suffix
+  and should rename touched legacy files when practical.
 - `verify-all` remains the full gate and includes `test:e2e`; for Epic 5, E2E
   may remain empty initially, so its lack of coverage must not be mistaken for
   deep lower-band confidence.
-- Compression stories cannot be accepted before the real integration gate exists
-  and passes.
+- Compression stories cannot be accepted unless the real provider-backed
+  lower-band tests inside `verify` are present and passing.
 
 ## Interface Definitions
 
@@ -777,8 +792,9 @@ scopes over `chunk.lowerBand.detailed.text` and `chunk.lowerBand.brief.text`.
 
 Epic 5 follows the repo’s current two practical confidence layers:
 
-- service-mock tests entering through public service/command boundaries
-- full integration tests using real GPT OAuth generation
+- default non-E2E tests entering through public service/command boundaries,
+  including real GPT OAuth lower-band tests where the story requires them
+- deeper E2E/lifecycle tests through `verify-all`
 
 Filesystem behavior is part of the product contract here, so stateful service
 tests should favor real temp stores for thread/chunk/view state. The dominant
@@ -788,8 +804,9 @@ mock boundary is GPT OAuth inference in service-mock tests.
 
 | Boundary | Treatment |
 |---|---|
-| `ThreadStore` / `ThreadViewStore` for stateful behavior | Real temp filesystem in service-mock and integration tests where persistence/reopen behavior matters |
-| GPT OAuth compression provider | Mock in service-mock tests, real in integration tests |
+| `ThreadStore` for runtime/projection behavior | Real temp filesystem in service-mock and integration tests where persistence/reopen behavior matters |
+| `ThreadViewStore` for draft/workbench behavior | Real temp filesystem in tests that explicitly cover draft/edit/archive Thread View flows |
+| GPT OAuth compression provider | Mock in most service tests; use real provider-backed tests for the lower-band path inside the default non-E2E suite |
 | `AuthStorage` / missing credential checks | Mock in service tests where auth failure path is the focus |
 | PI extension command context | Test through adapter doubles / command context doubles |
 | Internal projection/chunk/compression services | Do not mock across internal boundaries in service-mock tests |
@@ -806,6 +823,7 @@ The full matrix lives in `test-plan.md`, but the design requires tests for:
 - smart compact catch-up failure does not write active generated output
 - placeholder generator is unreachable in runtime lower-band selection
 - integration gate fails when GPT OAuth configuration or wiring is missing
+- workbench query/search surfaces stop presenting placeholder summaries as valid semantic lower-band state
 
 ## Verification Scripts
 
@@ -817,16 +835,15 @@ Epic 5 should use them rather than invent new names.
 | `red-verify` | `npm run typecheck` | Skeleton/Red exit gate |
 | `verify` | `npm run typecheck && npm run test` | Fast/default story gate |
 | `green-verify` | `npm run verify && npm run guard:no-test-changes` | Green exit gate |
-| `verify-all` | `npm run verify && npm run test:integration && npm run test:e2e` | Full gate |
-| `test:integration` | `node scripts/run-node-tests.mjs integration` | Real GPT OAuth lower-band integration gate |
+| `verify-all` | `npm run verify && npm run test:e2e` | Full gate |
 | `test:e2e` | `node scripts/run-node-tests.mjs e2e` | Optional deep gate; may remain empty initially |
 
 **Epic 5 gate semantics**
 
-- Story acceptance requires `npm run verify` and `npm run test:integration`
-  once the integration suite is introduced.
-- `test:integration` already fails if no integration tests are found, which is
-  correct for Epic 5 once Story 3 lands.
+- Story acceptance requires `npm run verify`.
+- Stories that introduce real GPT OAuth lower-band behavior must place the
+  provider-backed tests in the default non-E2E suite so `verify` fails when the
+  required inference path is broken or unavailable.
 - `test:e2e` currently succeeds when no E2E tests exist, so it should not be
   over-read as lower-band coverage during early Epic 5 implementation.
 
@@ -873,7 +890,7 @@ and verification semantics
 - confirm new lower-band record shapes do not preserve placeholder runtime
   assumptions
 - confirm fixture defaults represent valid Turn and Chunk lifecycle states
-- confirm story gates use actual repo scripts, not invented aliases
+- confirm Story 0 does not reintroduce a separate integration runner layer
 
 ### Chunk 1: Conversation-Only Turn Projection
 
@@ -925,7 +942,7 @@ detailed/brief semantic output
 **Acceptance risk reminders**
 
 - confirm async chunk-close path does not block deterministic close
-- confirm real GPT OAuth integration gate exists and fails when misconfigured
+- confirm real GPT OAuth lower-band tests in `verify` fail when misconfigured
 - confirm logs record retries/escalations/provider failures without bloating
   source-truth artifact state
 
