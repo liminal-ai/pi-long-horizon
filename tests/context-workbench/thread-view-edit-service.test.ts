@@ -286,11 +286,13 @@ async function seedThreadWithTurns(storeRootDir: string, sessionId: string) {
 }
 
 function assertSourceSnapshotUnchanged(before: ThreadSnapshot, after: ThreadSnapshot) {
-  assert.deepEqual(after.thread, before.thread);
+  assert.equal(after.thread.sourceRevision, before.thread.sourceRevision);
+  assert.equal(after.thread.messageHighWatermark, before.thread.messageHighWatermark);
+  assert.equal(after.thread.turnsRevision, before.thread.turnsRevision);
+  assert.equal(after.thread.activeThreadViewId, undefined);
   assert.deepEqual(after.messages, before.messages);
   assert.deepEqual(after.turns, before.turns);
   assert.deepEqual(after.imports, before.imports);
-  assert.deepEqual(after.projections, before.projections);
 }
 
 test("creates empty draft with empty bands", async () => {
@@ -327,14 +329,11 @@ test("creates empty draft with empty bands", async () => {
 test("empty draft is explicit in readback", async () => {
   await withTempWorkbenchStore(async ({ storeRootDir }) => {
     const { thread } = await createManagedThread(storeRootDir, "session-draft-readback");
-    const { editService, queryService } = await createLifecycleHarness(storeRootDir);
+    const { editService, threadViewStore } = await createLifecycleHarness(storeRootDir);
     const draft = expectOk(await editService.createDraftThreadView({ threadId: thread.threadId }));
 
     const detail = expectOk(
-      await queryService.openThreadViewDetail({
-        threadId: thread.threadId,
-        threadViewId: draft.threadViewId,
-      }),
+      await threadViewStore.openThreadView(thread.threadId, draft.threadViewId),
     );
 
     assert.equal(detail.view.threadViewId, draft.threadViewId);
@@ -343,7 +342,6 @@ test("empty draft is explicit in readback", async () => {
     assert.deepEqual(detail.view.detailedBand.selectedIds, []);
     assert.deepEqual(detail.view.briefBand.selectedIds, []);
     assert.deepEqual(detail.view.emittedMessages, []);
-    assert.deepEqual(detail.sourcePivots, []);
   });
 });
 
@@ -361,7 +359,7 @@ test("empty source Thread still permits draft creation", async () => {
   });
 });
 
-test("draft creation does not change source Thread", async () => {
+test("draft creation does not change canonical source truth", async () => {
   await withTempWorkbenchStore(async ({ storeRootDir }) => {
     const { editService, threadStore, thread } = await seedThreadWithTurns(
       storeRootDir,
@@ -420,14 +418,11 @@ test("draft creation does not copy active view", async () => {
 test("draft state is explicit", async () => {
   await withTempWorkbenchStore(async ({ storeRootDir }) => {
     const { thread } = await createManagedThread(storeRootDir, "session-draft-state");
-    const { editService, queryService } = await createLifecycleHarness(storeRootDir);
+    const { editService, threadViewStore } = await createLifecycleHarness(storeRootDir);
     const draft = expectOk(await editService.createDraftThreadView({ threadId: thread.threadId }));
 
     const detail = expectOk(
-      await queryService.openThreadViewDetail({
-        threadId: thread.threadId,
-        threadViewId: draft.threadViewId,
-      }),
+      await threadViewStore.openThreadView(thread.threadId, draft.threadViewId),
     );
 
     assert.equal(detail.view.state, "draft");
@@ -437,7 +432,7 @@ test("draft state is explicit", async () => {
 test("archived state is explicit", async () => {
   await withTempWorkbenchStore(async ({ storeRootDir }) => {
     const { thread } = await createManagedThread(storeRootDir, "session-archived-state");
-    const { editService, queryService } = await createLifecycleHarness(storeRootDir);
+    const { editService, threadViewStore } = await createLifecycleHarness(storeRootDir);
     const draft = expectOk(await editService.createDraftThreadView({ threadId: thread.threadId }));
 
     expectOk(
@@ -449,10 +444,7 @@ test("archived state is explicit", async () => {
     );
 
     const detail = expectOk(
-      await queryService.openThreadViewDetail({
-        threadId: thread.threadId,
-        threadViewId: draft.threadViewId,
-      }),
+      await threadViewStore.openThreadView(thread.threadId, draft.threadViewId),
     );
 
     assert.equal(detail.view.state, "archived");
@@ -490,7 +482,7 @@ test("one active view invariant preserved in store reads", async () => {
   });
 });
 
-test("creating draft does not create second active view", async () => {
+test("creating draft does not restore activeThreadViewId runtime state", async () => {
   await withTempWorkbenchStore(async ({ storeRootDir }) => {
     const { editService, queryService, threadViewStore, thread } = await seedThreadWithTurns(
       storeRootDir,
@@ -507,15 +499,15 @@ test("creating draft does not create second active view", async () => {
     expectOk(await editService.createDraftThreadView({ threadId: thread.threadId }));
     const openedThread = expectOk(await queryService.openThread({ threadId: thread.threadId }));
 
-    assert.equal(openedThread.activeThreadView?.threadViewId, activeView.threadViewId);
-    assert.equal(openedThread.thread.activeThreadViewId, activeView.threadViewId);
-    assert.equal(openedThread.threadViews.filter((view) => view.state === "active").length, 1);
+    assert.equal(openedThread.activeThreadView, undefined);
+    assert.equal(openedThread.thread.activeThreadViewId, undefined);
+    assert.equal(openedThread.threadViews.filter((view) => view.state === "active").length, 0);
   });
 });
 
 test("archives draft without activation", async () => {
   await withTempWorkbenchStore(async ({ storeRootDir }) => {
-    const { editService, queryService, thread } = await seedThreadWithTurns(
+    const { editService, threadViewStore, thread } = await seedThreadWithTurns(
       storeRootDir,
       "session-archive-draft",
     );
@@ -534,10 +526,7 @@ test("archives draft without activation", async () => {
       }),
     );
     const detail = expectOk(
-      await queryService.openThreadViewDetail({
-        threadId: thread.threadId,
-        threadViewId: draft.threadViewId,
-      }),
+      await threadViewStore.openThreadView(thread.threadId, draft.threadViewId),
     );
 
     assert.equal(archived.state, "archived");
@@ -549,7 +538,7 @@ test("archives draft without activation", async () => {
 
 test("excludes turn from draft view composition", async () => {
   await withTempWorkbenchStore(async ({ storeRootDir }) => {
-    const { editService, queryService, threadViewStore, thread, turns } = await seedThreadWithTurns(
+    const { editService, threadViewStore, thread, turns } = await seedThreadWithTurns(
       storeRootDir,
       "session-exclude-turn",
     );
@@ -586,12 +575,7 @@ test("excludes turn from draft view composition", async () => {
         now: () => new Date("2026-05-10T12:10:00.000Z"),
       }),
     );
-    const detail = expectOk(
-      await queryService.openThreadViewDetail({
-        threadId: thread.threadId,
-        threadViewId: draftView.threadViewId,
-      }),
-    );
+    const detail = expectOk(await threadViewStore.openThreadView(thread.threadId, draftView.threadViewId));
 
     assert.deepEqual(updated.fullFidelityBand.selectedIds, [turns.first.turnId]);
     assert.deepEqual(updated.smoothBand.selectedIds, []);
@@ -599,14 +583,11 @@ test("excludes turn from draft view composition", async () => {
     assert.deepEqual(updated.smoothBand.exclusions, [turns.second.turnId]);
     assert.deepEqual(updated.emittedMessages, []);
     assert.equal(updated.status, "incomplete");
-    assert.equal(
-      detail.sourcePivots.some((pivot) => pivot.sourceUnitId === turns.second.turnId),
-      false,
-    );
+    assert.equal(detail.view.fullFidelityBand.selectedIds.includes(turns.second.turnId), false);
   });
 });
 
-test("exclusion does not mutate source Thread", async () => {
+test("exclusion does not mutate canonical source truth", async () => {
   await withTempWorkbenchStore(async ({ storeRootDir }) => {
     const { editService, threadStore, threadViewStore, thread, turns } = await seedThreadWithTurns(
       storeRootDir,
@@ -656,7 +637,7 @@ test("draft creation is idempotently rejected when a duplicate threadViewId is i
 
 test("archival preserves emitted messages for later readback", async () => {
   await withTempWorkbenchStore(async ({ storeRootDir }) => {
-    const { editService, queryService, threadViewStore, thread } = await seedThreadWithTurns(
+    const { editService, threadViewStore, thread } = await seedThreadWithTurns(
       storeRootDir,
       "session-archive-preserves-emitted",
     );
@@ -681,12 +662,7 @@ test("archival preserves emitted messages for later readback", async () => {
         threadViewId: draftView.threadViewId,
       }),
     );
-    const detail = expectOk(
-      await queryService.openThreadViewDetail({
-        threadId: thread.threadId,
-        threadViewId: draftView.threadViewId,
-      }),
-    );
+    const detail = expectOk(await threadViewStore.openThreadView(thread.threadId, draftView.threadViewId));
 
     assert.equal(detail.view.state, "archived");
     assert.deepEqual(
@@ -698,7 +674,7 @@ test("archival preserves emitted messages for later readback", async () => {
 
 test("band updates persist upper-band selections and materialized emitted output", async () => {
   await withTempWorkbenchStore(async ({ storeRootDir }) => {
-    const { editService, queryService, threadStore, thread, turns } = await seedThreadWithTurns(
+    const { editService, threadViewStore, threadStore, thread, turns } = await seedThreadWithTurns(
       storeRootDir,
       "session-update-upper-bands",
     );
@@ -731,12 +707,7 @@ test("band updates persist upper-band selections and materialized emitted output
         now: () => new Date("2026-05-10T12:15:00.000Z"),
       }),
     );
-    const detail = expectOk(
-      await queryService.openThreadViewDetail({
-        threadId: thread.threadId,
-        threadViewId: draft.threadViewId,
-      }),
-    );
+    const detail = expectOk(await threadViewStore.openThreadView(thread.threadId, draft.threadViewId));
 
     assert.deepEqual(updated.fullFidelityBand.selectedIds, [turns.first.turnId]);
     assert.deepEqual(updated.smoothBand.selectedIds, [turns.second.turnId]);

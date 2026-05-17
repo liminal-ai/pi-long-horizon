@@ -1,5 +1,6 @@
 import { AuthStorage } from "@earendil-works/pi-coding-agent";
 
+import { formatExternalIntegrationFailure } from "../integration-error.js";
 import type { WritePiThreadViewFileInput } from "../thread-view/domain/pi-thread-view-file.js";
 import type { ChunkState } from "../thread/async-thread/domain/chunk-state.js";
 import type { MessageRecord, TurnRecord } from "../thread/domain/records.js";
@@ -37,6 +38,7 @@ export type OpenAITokenCounterErrorCode =
   | "OPENAI_API_KEY_UNSUPPORTED"
   | "OPENAI_TOKEN_COUNT_AUTH_FAILED"
   | "OPENAI_TOKEN_COUNT_REQUEST_FAILED"
+  | "OPENAI_TOKEN_COUNT_FETCH_FAILED"
   | "OPENAI_TOKEN_COUNT_INVALID_RESPONSE";
 
 export class OpenAITokenCounterError extends Error {
@@ -230,14 +232,32 @@ export class FetchOpenAIInputTokenCountClient implements OpenAIInputTokenCountCl
 
   async countInputTokens(request: OpenAIResponsesInputTokenCountRequest): Promise<number> {
     const apiKey = await this.apiKeyResolver.resolveApiKey();
-    const response = await this.fetchImpl(this.endpoint, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify(request),
-    });
+    let response: Response;
+    try {
+      response = await this.fetchImpl(this.endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify(request),
+      });
+    } catch (error) {
+      throw new OpenAITokenCounterError(
+        "OPENAI_TOKEN_COUNT_FETCH_FAILED",
+        `OpenAI input token count fetch failed. ${formatExternalIntegrationFailure(
+          {
+            integration: "openai_token_counting",
+            operation: "count_input_tokens",
+            provider: "openai",
+            model: request.model,
+            endpoint: this.endpoint,
+          },
+          error,
+        )}`,
+        { cause: error },
+      );
+    }
     const body = await parseJsonResponse(response);
 
     if (!response.ok) {

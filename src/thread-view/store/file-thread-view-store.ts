@@ -123,19 +123,6 @@ export class FileThreadViewStore implements ThreadViewStore {
       await mkdir(dirname(filePath), { recursive: false });
       await this.writeJsonAtomic(filePath, cloneThreadViewRecord(input.view));
 
-      if (input.view.state === "active") {
-        const updatedThread = await this.threadStore.updateThreadMetadata({
-          threadId: input.view.threadId,
-          patch: {
-            activeThreadViewId: input.view.threadViewId,
-            updatedAt: input.view.updatedAt,
-          },
-        });
-        if (!updatedThread.ok) {
-          return failWorkbenchResult(...updatedThread.issues);
-        }
-      }
-
       return okWorkbenchResult(cloneThreadViewRecord(input.view), existingViews.issues);
     } catch (error) {
       const cause = error instanceof Error ? error.message : String(error);
@@ -195,40 +182,7 @@ export class FileThreadViewStore implements ThreadViewStore {
         );
       }
 
-      const pointer = threadSnapshot.value.thread.activeThreadViewId;
-      const actualActiveId = activeViews[0]?.threadViewId;
-
-      if (pointer === actualActiveId) {
-        return okWorkbenchResult(views);
-      }
-
-      const reconcile = await this.threadStore.updateThreadMetadata({
-        threadId,
-        patch: {
-          activeThreadViewId: actualActiveId ?? null,
-        },
-      });
-      if (!reconcile.ok) {
-        return failWorkbenchResult(...reconcile.issues);
-      }
-
-      const mismatchMessage =
-        pointer && actualActiveId
-          ? `Thread ${threadId} activeThreadViewId pointed to ${pointer}, but ${actualActiveId} is the only active Thread View.`
-          : pointer
-            ? `Thread ${threadId} activeThreadViewId pointed to ${pointer}, but no Thread View is currently active.`
-            : `Thread ${threadId} was missing activeThreadViewId even though ${actualActiveId} is active.`;
-
-      return okWorkbenchResult(
-        views,
-        [
-          createWorkbenchIssue({
-            code: "THREAD_VIEW_STATE_CONFLICT",
-            message: `${mismatchMessage} The source pointer was reconciled to match per-view state.`,
-            threadId,
-          }),
-        ],
-      );
+      return okWorkbenchResult(views);
     } catch (error) {
       const cause = error instanceof Error ? error.message : String(error);
       return failWorkbenchResult(
@@ -324,22 +278,6 @@ export class FileThreadViewStore implements ThreadViewStore {
         this.resolveThreadViewPath(input.threadId, input.threadViewId),
         nextView,
       );
-
-      const currentActiveId = listedViews.value.find((view) => view.state === "active")?.threadViewId;
-      const nextActiveId = nextView.state === "active" ? nextView.threadViewId : currentActiveId === nextView.threadViewId ? undefined : currentActiveId;
-
-      if (currentActiveId !== nextActiveId) {
-        const updatedThread = await this.threadStore.updateThreadMetadata({
-          threadId: input.threadId,
-          patch: {
-            activeThreadViewId: nextActiveId ?? null,
-            updatedAt: nextUpdatedAt,
-          },
-        });
-        if (!updatedThread.ok) {
-          return failWorkbenchResult(...updatedThread.issues);
-        }
-      }
 
       return okWorkbenchResult(nextView, listedViews.issues);
     } catch (error) {
@@ -458,16 +396,6 @@ export class FileThreadViewStore implements ThreadViewStore {
           this.resolveThreadViewPath(input.threadId, nextArchivedView.threadViewId),
           nextArchivedView,
         );
-        const updatedThread = await this.threadStore.updateThreadMetadata({
-          threadId: input.threadId,
-          patch: {
-            activeThreadViewId: nextActiveView.threadViewId,
-            updatedAt: activatedAt,
-          },
-        });
-        if (!updatedThread.ok) {
-          return failWorkbenchResult(...updatedThread.issues);
-        }
       } catch (error) {
         const cause = error instanceof Error ? error.message : String(error);
         return failWorkbenchResult(

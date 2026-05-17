@@ -1,4 +1,4 @@
-import type { MessageRecord, TurnRecord } from "../../thread/domain/records.js";
+import type { MessageRecord, ProjectionRevisionRecord, TurnRecord } from "../../thread/domain/records.js";
 import type { ThreadStore } from "../../thread/store/thread-store.js";
 import {
   cloneSearchResultSummary,
@@ -12,7 +12,6 @@ import {
   okWorkbenchResult,
   type WorkbenchResult,
 } from "../domain/workbench-errors.js";
-import type { ThreadViewStore } from "../../thread-view/store/thread-view-store.js";
 
 const MESSAGE_FILTER_KEYS = new Set([
   "messageKind",
@@ -342,11 +341,59 @@ function buildTurnPlacementHints(turnId: string, threadViews: readonly ThreadVie
   });
 }
 
+function projectionToThreadViewRecord(
+  projection: ProjectionRevisionRecord,
+  currentThreadViewId: string | undefined,
+): ThreadViewRecord | undefined {
+  const snapshot = projection.compactSnapshot;
+  const threadViewId = projection.threadViewId ?? projection.revisionId;
+  if (!snapshot) {
+    return undefined;
+  }
+
+  return {
+    threadViewId,
+    threadId: projection.threadId,
+    state: threadViewId === currentThreadViewId ? "active" : "archived",
+    name: `Projection ${projection.revisionId}`,
+    purpose: snapshot.requestedLowerBound
+      ? `requestedLowerBound=${snapshot.requestedLowerBound}`
+      : "Projection compact snapshot",
+    createdAt: projection.createdAt,
+    updatedAt: projection.createdAt,
+    sourceStateReference: snapshot.sourceStateReference ?? projection.sourceStateReference,
+    fullFidelityBand: snapshot.bands.full_fidelity,
+    smoothBand: snapshot.bands.smooth,
+    detailedBand: snapshot.bands.detailed,
+    briefBand: snapshot.bands.brief,
+    emittedMessages: [],
+    status: projection.status === "available" ? "ready" : projection.status === "failed" ? "blocked" : "unknown",
+  };
+}
+
 export class WorkbenchSearchService {
   constructor(
     private readonly threadStore: ThreadStore,
-    private readonly threadViewStore: ThreadViewStore,
+    _legacyThreadViewStore?: unknown,
   ) {}
+
+  private async listSearchableThreadViews(threadId: string): Promise<WorkbenchResult<ThreadViewRecord[]>> {
+    const snapshot = await this.threadStore.openThread(threadId);
+    if (!snapshot.ok) {
+      return failWorkbenchResult(...snapshot.issues);
+    }
+
+    return okWorkbenchResult(
+      snapshot.value.projections
+        .map((projection) =>
+          projectionToThreadViewRecord(
+            projection,
+            snapshot.value.thread.threadViewOutputSummary.currentThreadViewId,
+          ),
+        )
+        .filter((view): view is ThreadViewRecord => view !== undefined),
+    );
+  }
 
   async search(input: WorkbenchSearchInput): Promise<WorkbenchResult<SearchResultSummary[]>> {
     if (input.scope === "message") {
@@ -445,7 +492,7 @@ export class WorkbenchSearchService {
     const [turnsResult, messagesResult, threadViewsResult] = await Promise.all([
       this.threadStore.readTurns(input.threadId),
       this.threadStore.readMessages(input.threadId),
-      this.threadViewStore.listThreadViews(input.threadId),
+      this.listSearchableThreadViews(input.threadId),
     ]);
     if (!turnsResult.ok) {
       return failWorkbenchResult(...turnsResult.issues);
@@ -508,7 +555,7 @@ export class WorkbenchSearchService {
       return parsedFilters;
     }
 
-    const threadViewsResult = await this.threadViewStore.listThreadViews(input.threadId);
+    const threadViewsResult = await this.listSearchableThreadViews(input.threadId);
     if (!threadViewsResult.ok) {
       return failWorkbenchResult(...threadViewsResult.issues);
     }

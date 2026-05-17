@@ -222,7 +222,6 @@ test("command accepts explicit per-run inputs, writes a generated PI file, and r
       },
       {
         threadStore: seeded.threadStore,
-        threadViewStore: seeded.threadViewStore,
         openAIInputTokenCounter: fakeOpenAICounter,
         piThreadViewWriterOptions: {
           pathResolver: createPathResolver(context),
@@ -271,7 +270,6 @@ test("successful smart compact persists generated rollout session and model meta
       },
       {
         threadStore: seeded.threadStore,
-        threadViewStore: seeded.threadViewStore,
         openAIInputTokenCounter: fakeOpenAICounter,
         piThreadViewWriterOptions: {
           pathResolver: createPathResolver(context),
@@ -320,7 +318,6 @@ test("generated session over requested lower bound stops before write or reload"
       },
       {
         threadStore: seeded.threadStore,
-        threadViewStore: seeded.threadViewStore,
         openAIInputTokenCounter: fakeOverTargetOpenAICounter,
         piThreadViewWriterOptions: {
           pathResolver: createPathResolver(context),
@@ -377,7 +374,6 @@ test("generated session over target retries by reducing lower-fidelity content a
       },
       {
         threadStore: seeded.threadStore,
-        threadViewStore: seeded.threadViewStore,
         openAIInputTokenCounter: retryingCounter,
         piThreadViewWriterOptions: {
           pathResolver: createPathResolver(context),
@@ -417,7 +413,6 @@ test("command default reload path uses the configured PI session switch dependen
       },
       {
         threadStore: seeded.threadStore,
-        threadViewStore: seeded.threadViewStore,
         openAIInputTokenCounter: fakeOpenAICounter,
         piThreadViewWriterOptions: {
           pathResolver: createPathResolver(context),
@@ -451,7 +446,6 @@ test("zero-percent smooth allocation materializes no smooth_turn entries", async
       },
       {
         threadStore: seeded.threadStore,
-        threadViewStore: seeded.threadViewStore,
         openAIInputTokenCounter: fakeOpenAICounter,
         piThreadViewWriterOptions: {
           pathResolver: createPathResolver(context),
@@ -468,12 +462,9 @@ test("zero-percent smooth allocation materializes no smooth_turn entries", async
     assert.ok(result.threadViewId);
     assert.equal(result.blockers.some((issue) => issue.code === "LOWER_THRESHOLD_UNREACHED"), true);
 
-    const opened = await seeded.threadViewStore.openThreadView(seeded.threadId, result.threadViewId);
-    assert.equal(opened.ok, true);
-    assert.equal(
-      opened.value.view.emittedMessages.some((message) => message.sourceKind === "smooth_turn"),
-      false,
-    );
+    const views = await seeded.threadViewStore.listThreadViews(seeded.threadId);
+    assert.equal(views.ok, true);
+    assert.equal(views.value.length, 0);
   });
 });
 
@@ -506,7 +497,6 @@ test("default command path roots generated and archived output under the active 
 
     const firstResult = await runSmartCompact(commandInput, {
       threadStore: seeded.threadStore,
-      threadViewStore: seeded.threadViewStore,
       openAIInputTokenCounter: fakeOpenAICounter,
       piThreadViewWriterOptions: {
         now: firstNow,
@@ -532,7 +522,6 @@ test("default command path roots generated and archived output under the active 
 
     const secondResult = await runSmartCompact(commandInput, {
       threadStore: seeded.threadStore,
-      threadViewStore: seeded.threadViewStore,
       openAIInputTokenCounter: fakeOpenAICounter,
       piThreadViewWriterOptions: {
         now: secondNow,
@@ -583,7 +572,6 @@ test("command rejects invalid per-run inputs", async () => {
     },
     {
       threadStore: {} as never,
-      threadViewStore: {} as never,
     },
   );
 
@@ -622,7 +610,6 @@ test("strict mode skips missing smooth output when allocation selects an alterna
       },
       {
         threadStore: seeded.threadStore,
-        threadViewStore: seeded.threadViewStore,
         openAIInputTokenCounter: fakeOpenAICounter,
         asyncThreadDependencies: {
           tokenCountModel: "gpt-test",
@@ -675,7 +662,6 @@ test("strict mode ignores missing smooth output on older turns the selected proj
       },
       {
         threadStore: seeded.threadStore,
-        threadViewStore: seeded.threadViewStore,
         openAIInputTokenCounter: fakeOpenAICounter,
         asyncThreadDependencies: {
           tokenCountModel: "gpt-test",
@@ -715,7 +701,6 @@ test("strict mode skips unselected missing placeholders without writing placehol
       },
       {
         threadStore: seeded.threadStore,
-        threadViewStore: seeded.threadViewStore,
         openAIInputTokenCounter: fakeOpenAICounter,
         asyncThreadDependencies: {
           tokenCountModel: "gpt-test",
@@ -736,10 +721,10 @@ test("strict mode skips unselected missing placeholders without writing placehol
     assert.equal(result.blockers.some((issue) => issue.code === "CHUNK_PLACEHOLDER_MISSING"), false);
     assert.equal(switchedTo.length, 1);
 
-    const views = await seeded.threadViewStore.listThreadViews(seeded.threadId);
-    assert.equal(views.ok, true);
-    assert.equal(views.value.length, 1);
-    assert.equal(views.value[0]?.status, "ready");
+    const projections = await seeded.threadStore.readProjectionRevisions(seeded.threadId);
+    assert.equal(projections.ok, true);
+    assert.equal(projections.value.length, 1);
+    assert.equal(projections.value[0]?.compactSnapshot !== undefined, true);
 
     const thread = await seeded.threadStore.openThread(seeded.threadId);
     assert.equal(thread.ok, true);
@@ -788,7 +773,6 @@ test("strict mode ignores missing detailed placeholders on chunks only selected 
       },
       {
         threadStore: seeded.threadStore,
-        threadViewStore: seeded.threadViewStore,
         openAIInputTokenCounter: fakeOpenAICounter,
         asyncThreadDependencies: {
           tokenCountModel: "gpt-test",
@@ -828,7 +812,6 @@ test("strict mode ignores missing placeholders when lower bands are not requeste
       },
       {
         threadStore: seeded.threadStore,
-        threadViewStore: seeded.threadViewStore,
         openAIInputTokenCounter: fakeOpenAICounter,
         asyncThreadDependencies: {
           tokenCountModel: "gpt-test",
@@ -869,7 +852,6 @@ test("prepare mode repairs missing deterministic artifacts then continues", asyn
       },
       {
         threadStore: seeded.threadStore,
-        threadViewStore: seeded.threadViewStore,
         openAIInputTokenCounter: fakeOpenAICounter,
         asyncThreadDependencies: {
           tokenCountModel: "gpt-test",
@@ -911,7 +893,6 @@ test("first smart compact can bootstrap deterministic artifacts", async () => {
       },
       {
         threadStore: seeded.threadStore,
-        threadViewStore: seeded.threadViewStore,
         openAIInputTokenCounter: fakeOpenAICounter,
         asyncThreadDependencies: {
           tokenCountModel: "gpt-test",
@@ -951,7 +932,6 @@ test("strict smart compact blocks heuristic-only materialized counts before writ
       },
       {
         threadStore: seeded.threadStore,
-        threadViewStore: seeded.threadViewStore,
         piThreadViewWriterOptions: {
           pathResolver: createPathResolver(context),
         },
@@ -986,7 +966,6 @@ test("prepare smart compact blocks missing OpenAI counter without writing or rel
       },
       {
         threadStore: seeded.threadStore,
-        threadViewStore: seeded.threadViewStore,
         piThreadViewWriterOptions: {
           pathResolver: createPathResolver(context),
         },
@@ -1020,7 +999,6 @@ test("smart compact blocks failed final OpenAI generated-session count without w
       },
       {
         threadStore: seeded.threadStore,
-        threadViewStore: seeded.threadViewStore,
         openAIInputTokenCounter: failingFinalOpenAICounter,
         piThreadViewWriterOptions: {
           pathResolver: createPathResolver(context),
@@ -1056,7 +1034,6 @@ test("above-target draft reports degraded threshold result explicitly", async ()
       },
       {
         threadStore: seeded.threadStore,
-        threadViewStore: seeded.threadViewStore,
         openAIInputTokenCounter: fakeOpenAICounter,
         piThreadViewWriterOptions: {
           pathResolver: createPathResolver(context),
@@ -1095,7 +1072,6 @@ test("compaction stops explicitly on threshold failure without writing or reload
       },
       {
         threadStore: seeded.threadStore,
-        threadViewStore: seeded.threadViewStore,
         openAIInputTokenCounter: fakeOpenAICounter,
         piThreadViewWriterOptions: {
           pathResolver: createPathResolver(context),
@@ -1132,7 +1108,6 @@ test("reload failure is explicit while preserving the generated output", async (
       },
       {
         threadStore: seeded.threadStore,
-        threadViewStore: seeded.threadViewStore,
         openAIInputTokenCounter: fakeOpenAICounter,
         piThreadViewWriterOptions: {
           pathResolver: createPathResolver(context),

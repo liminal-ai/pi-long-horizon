@@ -168,10 +168,6 @@ function evaluateSmoothTurn(
       },
     } satisfies ReadSmoothTurnStateResult;
 
-    if (sourceRevision !== turn.sourceRevision && (materialized.status === "ready" || materialized.status === "degraded")) {
-      return { ...base, smoothStatus: "stale" };
-    }
-
     return base;
   }
 
@@ -507,10 +503,7 @@ function assembleSmoothText(components: readonly SmoothTurnComponentState[]): st
   return assembleSmoothTurnTextFromComponents(components) ?? "";
 }
 
-function requiredComponentKinds(
-  turn: TurnRecord,
-  messages: readonly MessageRecord[],
-): Set<SmoothTurnComponentState["kind"]> {
+function requiredComponentKinds(messages: readonly MessageRecord[]): Set<SmoothTurnComponentState["kind"]> {
   const kinds = new Set<SmoothTurnComponentState["kind"]>();
   for (const message of messages) {
     for (const part of message.parts) {
@@ -522,14 +515,10 @@ function requiredComponentKinds(
       kinds.add(kind);
     }
   }
-  if (turn.messageIds.length > 0 && kinds.size === 0) {
-    kinds.add("user_prompt");
-  }
   return kinds;
 }
 
-function evaluateComponentStatus(
-  turn: TurnRecord,
+function materializedComponentStatus(
   messages: readonly MessageRecord[],
   components: readonly SmoothTurnComponentState[] | undefined,
 ): { status: SmoothTurnState["status"]; missingComponentIds: string[] } {
@@ -538,17 +527,23 @@ function evaluateComponentStatus(
   }
 
   const missingComponentIds: string[] = [];
-  const requiredKinds = requiredComponentKinds(turn, messages);
-  for (const kind of requiredKinds) {
-    if (!components.some((component) => component.kind === kind && (component.status === "ready" || component.status === "degraded"))) {
+  for (const kind of requiredComponentKinds(messages)) {
+    if (
+      !components.some(
+        (component) =>
+          component.kind === kind &&
+          (component.status === "ready" || component.status === "degraded") &&
+          Boolean(component.text),
+      )
+    ) {
       missingComponentIds.push(kind);
     }
   }
-
-  const blocking = components.filter((component) => component.kind !== "thinking" && (component.status === "pending" || component.status === "stale" || component.status === "invalid"));
-  missingComponentIds.push(...blocking.map((component) => component.componentId));
+  if (!assembleSmoothText(components)) {
+    missingComponentIds.push("materialized_text");
+  }
   if (missingComponentIds.length > 0) {
-    return { status: blocking.some((component) => component.status === "invalid") ? "invalid" : "pending", missingComponentIds };
+    return { status: "pending", missingComponentIds };
   }
   if (components.some((component) => component.status === "degraded")) {
     return { status: "degraded", missingComponentIds };
@@ -575,7 +570,7 @@ export function materializeSmoothTurnFromState(input: {
     };
   }
 
-  const componentEvaluation = evaluateComponentStatus(turn, messages, state.components);
+  const componentEvaluation = materializedComponentStatus(messages, state.components);
   if (componentEvaluation.status !== "ready" && componentEvaluation.status !== "degraded") {
     return {
       turnId: turn.turnId,
@@ -586,11 +581,8 @@ export function materializeSmoothTurnFromState(input: {
 
   const components = state.components ?? [];
   const text = assembleSmoothText(components);
-  if (!text) {
-    return { turnId: turn.turnId, status: "pending", missingComponentIds: ["materialized_text"] };
-  }
 
-  const sourceRevision = Math.max(...components.map((component) => component.sourceRevision), turn.sourceRevision);
+  const sourceRevision = state.sourceRevision ?? Math.max(...components.map((component) => component.sourceRevision), 0);
   const tokenCountMetadata = calculateSmoothComponentsTokenCountRecord(turn, components, sourceRevision, state.generatedAt);
   const sourceFingerprint = createSmoothComponentSourceFingerprint(components);
 
@@ -686,7 +678,7 @@ function buildSmoothState(
     return left.componentId.localeCompare(right.componentId);
   });
   const sourceRevision = input.turn.sourceRevision;
-  const componentEvaluation = evaluateComponentStatus(input.turn, messages, mergedComponents);
+  const componentEvaluation = materializedComponentStatus(messages, mergedComponents);
   const smooth: SmoothTurnState = {
     turnId: input.turn.turnId,
     threadId: input.threadId,
@@ -782,14 +774,6 @@ async function persistSmoothTurnStateWithinSerializedThreadOperation(
   }
 
   const smooth = withSmoothTokenCountMetadata(input.smooth, turn, sortTurnMessages(snapshotResult.value, turn));
-
-  if (turn.sourceRevision !== smooth.sourceRevision) {
-    return fail({
-      code: "STALE_SOURCE_REVISION",
-      message: `Turn ${input.turnId} source revision ${turn.sourceRevision} does not match smooth source revision ${smooth.sourceRevision}.`,
-      threadId: input.threadId,
-    });
-  }
 
   return writeSmoothTurn(
     {

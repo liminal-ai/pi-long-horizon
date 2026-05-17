@@ -295,8 +295,48 @@ async function seedCompactReportThread(storeRootDir: string) {
     }),
   });
 
-  assert.equal((await context.threadViewStore.createThreadView({ view: olderView })).ok, true);
-  assert.equal((await context.threadViewStore.createThreadView({ view: newerView })).ok, true);
+  expectOk(await context.threadStore.writeProjectionRevision({
+    revisionId: "projection-older",
+    threadId: context.threadId,
+    threadViewId: olderThreadViewId,
+    targetRuntime: "pi",
+    generatedFilePath: "/tmp/older-generated.jsonl",
+    createdAt: "2026-05-10T00:00:00.000Z",
+    sourceStateReference: olderView.sourceStateReference,
+    status: "available",
+    compactSnapshot: {
+      schemaVersion: "projection.compact-snapshot.v1",
+      sourceStateReference: olderView.sourceStateReference,
+      bands: {
+        full_fidelity: olderView.fullFidelityBand,
+        smooth: olderView.smoothBand,
+        detailed: olderView.detailedBand,
+        brief: olderView.briefBand,
+      },
+      generatedEntries: [],
+    },
+  }));
+  expectOk(await context.threadStore.writeProjectionRevision({
+    revisionId: "projection-newer",
+    threadId: context.threadId,
+    threadViewId: newerThreadViewId,
+    targetRuntime: "pi",
+    generatedFilePath: "/tmp/newer-generated.jsonl",
+    createdAt: "2026-05-11T00:00:00.000Z",
+    sourceStateReference: newerView.sourceStateReference,
+    status: "available",
+    compactSnapshot: {
+      schemaVersion: "projection.compact-snapshot.v1",
+      sourceStateReference: newerView.sourceStateReference,
+      bands: {
+        full_fidelity: newerView.fullFidelityBand,
+        smooth: newerView.smoothBand,
+        detailed: newerView.detailedBand,
+        brief: newerView.briefBand,
+      },
+      generatedEntries: [],
+    },
+  }));
 
   const snapshot = expectOk(await context.threadStore.openThread(context.threadId));
   expectOk(
@@ -1236,7 +1276,7 @@ test("/lh-compact-report validates --thread-view arguments and missing views", a
     assert.equal(missingViewContext.notifications[0]!.level, "error");
     assert.equal(
       missingViewContext.notifications[0]!.message,
-      `Compact report failed: Thread View missing-view was not found for thread ${seeded.threadId}. [THREAD_VIEW_NOT_FOUND]`,
+      `Compact report failed: Projection compact snapshot missing-view was not found for thread ${seeded.threadId}. [THREAD_VIEW_NOT_FOUND]`,
     );
   });
 });

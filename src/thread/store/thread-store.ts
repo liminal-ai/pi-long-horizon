@@ -52,9 +52,7 @@ export interface AppendMessageInput {
 export interface UpdateThreadMetadataInput {
   threadId: string;
   expectedSourceRevision?: number;
-  patch: Partial<Pick<ThreadRecord, "target" | "status" | "importSummary" | "threadViewOutputSummary" | "updatedAt">> & {
-    activeThreadViewId?: string | null;
-  };
+  patch: Partial<Pick<ThreadRecord, "target" | "status" | "importSummary" | "threadViewOutputSummary" | "updatedAt">>;
 }
 
 export interface WriteTurnsInput {

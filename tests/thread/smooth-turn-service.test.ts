@@ -1277,7 +1277,7 @@ test("component-first smooth state exposes readiness, provenance, and materializ
   });
 });
 
-test("component-first readiness requires canonical assistant and tool source records", async () => {
+test("component-first materialization requires derived content for canonical assistant and tool source records", async () => {
   await withTempThreadStore(async ({ storeRootDir }) => {
     const store = new FileThreadStore(storeRootDir);
     await createThread(store, "thread-smooth-missing-required-source");
@@ -1365,7 +1365,73 @@ test("component-first readiness requires canonical assistant and tool source rec
   });
 });
 
-test("incomplete component-first smooth state does not materialize partial text", async () => {
+test("component-first materialization does not mark complete derived content stale by source revision", async () => {
+  await withTempThreadStore(async ({ storeRootDir }) => {
+    const store = new FileThreadStore(storeRootDir);
+    await createThread(store, "thread-smooth-complete-old-revision");
+
+    const user = makeActorRecord({ actorId: "actor-user-complete-old-revision", actorType: "human" });
+    const assistant = makeActorRecord({ actorId: "actor-assistant-complete-old-revision", actorType: "agent" });
+    const prompt = await appendCanonicalMessage(
+      store,
+      "thread-smooth-complete-old-revision",
+      user,
+      toPendingMessage({
+        messageId: "message-complete-old-revision-prompt",
+        actorId: user.actorId,
+        actorType: user.actorType,
+        messageKind: "prompt",
+        parts: [makePartRecord({ partId: "part-complete-old-revision-user", content: "Use the complete derived artifact." })],
+      }),
+    );
+    const response = await appendCanonicalMessage(
+      store,
+      "thread-smooth-complete-old-revision",
+      assistant,
+      toPendingMessage({
+        messageId: "message-complete-old-revision-response",
+        actorId: assistant.actorId,
+        actorType: assistant.actorType,
+        messageKind: "response",
+        parts: [makePartRecord({ partId: "part-complete-old-revision-assistant", content: "The artifact is complete." })],
+      }),
+    );
+
+    await writeTurns(store, "thread-smooth-complete-old-revision", [
+      makeClosedTurn({
+        threadId: "thread-smooth-complete-old-revision",
+        turnId: "turn-complete-old-revision",
+        messages: [prompt, response],
+      }),
+    ]);
+    const snapshot = expectOk(await store.openThread("thread-smooth-complete-old-revision"));
+    const smooth = buildGeneratedSmoothState(snapshot, "turn-complete-old-revision", DEFAULT_TEST_TIMESTAMP);
+    await persistSmoothTurnState(
+      {
+        threadId: "thread-smooth-complete-old-revision",
+        turnId: "turn-complete-old-revision",
+        expectedSourceRevision: snapshot.thread.sourceRevision,
+        expectedMessageHighWatermark: snapshot.thread.messageHighWatermark,
+        expectedTurnsRevision: snapshot.thread.turnsRevision,
+        smooth: {
+          ...smooth,
+          sourceRevision: response.sourceRevision - 1,
+        },
+      },
+      { store },
+    );
+
+    const state = await readSmoothTurnState(
+      { threadId: "thread-smooth-complete-old-revision", turnId: "turn-complete-old-revision" },
+      { store },
+    );
+    assert.equal(state.smoothStatus, "ready");
+    assert.match(state.smoothText ?? "", /Use the complete derived artifact/);
+    assert.match(state.smoothText ?? "", /The artifact is complete/);
+  });
+});
+
+test("component-first materialization reports missing text when no usable component text exists", async () => {
   await withTempThreadStore(async ({ storeRootDir }) => {
     const store = new FileThreadStore(storeRootDir);
     await createThread(store, "thread-smooth-incomplete-components");
@@ -1414,10 +1480,7 @@ test("incomplete component-first smooth state does not materialize partial text"
     );
     assert.equal(materialized.status, "pending");
     assert.equal(materialized.text, undefined);
-    assert.deepEqual(materialized.missingComponentIds, [
-      "user_prompt",
-      "turn-incomplete-components:user_prompt:message-incomplete-prompt:part-incomplete-user",
-    ]);
+    assert.deepEqual(materialized.missingComponentIds?.sort(), ["materialized_text", "user_prompt"]);
   });
 });
 

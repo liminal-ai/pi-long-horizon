@@ -67,7 +67,7 @@ class FakeExtensionApi {
 }
 
 type SeededSmartCompactContext = Awaited<ReturnType<typeof seedDeterministicRebuildThread>>;
-type SmartCompactTestContext = Pick<SeededSmartCompactContext, "threadId" | "threadStore" | "threadViewStore">;
+type SmartCompactTestContext = Pick<SeededSmartCompactContext, "threadId" | "threadStore">;
 
 function asProviderInputCount<TRecord extends TokenCountRecord>(record: TRecord): TRecord {
   return assertTokenCountRecord({
@@ -226,7 +226,6 @@ async function runCompact(
     },
     {
       threadStore: context.threadStore,
-      threadViewStore: context.threadViewStore,
       openAIInputTokenCounter: exactMaterializedCounter,
       asyncThreadDependencies: {
         tokenCountModel: "gpt-test",
@@ -286,7 +285,6 @@ async function createLifecycleCaptureContext(input: {
     pi,
     threadId: "",
     threadStore,
-    threadViewStore,
   };
 }
 
@@ -339,7 +337,7 @@ async function emitStopClosedTurnScenario(
   }, "stop-closed lifecycle capture should persist mocked user prompt smoothing");
   const snapshot = expectOk(await context.threadStore.openThread(thread.threadId));
   assert.equal(snapshot.turns[0]?.lifecycleStatus, "closed");
-  return { threadId: thread.threadId, threadStore: context.threadStore, threadViewStore: context.threadViewStore, closedTurnId: snapshot.turns[0]!.turnId };
+  return { threadId: thread.threadId, threadStore: context.threadStore, closedTurnId: snapshot.turns[0]!.turnId };
 }
 
 async function emitFallbackClosedTurnScenario(
@@ -366,7 +364,6 @@ async function emitFallbackClosedTurnScenario(
   return {
     threadId: thread.threadId,
     threadStore: context.threadStore,
-    threadViewStore: context.threadViewStore,
     closedTurnId: snapshot.turns[0]!.turnId,
     laterTurnId: snapshot.turns[1]!.turnId,
   };

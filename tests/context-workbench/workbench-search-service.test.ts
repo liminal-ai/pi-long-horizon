@@ -19,7 +19,7 @@ import {
   makeThreadView,
   makeThreadViewMessage,
 } from "../../src/context-workbench/test/fixtures.js";
-import type { SearchResultSummary } from "../../src/context-workbench/domain/thread-view-records.js";
+import type { SearchResultSummary, ThreadViewRecord } from "../../src/context-workbench/domain/thread-view-records.js";
 import { withTempWorkbenchStore } from "../../src/context-workbench/test/temp-workbench-store.js";
 
 function expectOk<T>(result: StewardResult<T>): T {
@@ -86,6 +86,44 @@ async function writeThreadTurns(store: FileThreadStore, threadId: string, turns:
       expectedTurnsRevision: snapshot.thread.turnsRevision,
       turns,
       turnState: "ready",
+    }),
+  );
+}
+
+async function writeProjectionForView(store: FileThreadStore, view: ThreadViewRecord) {
+  return expectOk(
+    await store.writeProjectionRevision({
+      revisionId: `projection_${view.threadViewId}`,
+      threadId: view.threadId,
+      threadViewId: view.threadViewId,
+      targetRuntime: "pi",
+      generatedFilePath: `/tmp/${view.threadViewId}.jsonl`,
+      createdAt: view.updatedAt,
+      sourceStateReference: view.sourceStateReference,
+      status: view.status === "ready" ? "available" : "stale",
+      compactSnapshot: {
+        schemaVersion: "projection.compact-snapshot.v1",
+        sourceStateReference: view.sourceStateReference,
+        bands: {
+          full_fidelity: view.fullFidelityBand,
+          smooth: view.smoothBand,
+          detailed: view.detailedBand,
+          brief: view.briefBand,
+        },
+        generatedEntries: view.emittedMessages.map((message, index) => ({
+          index,
+          generatedSource: message.sourceKind,
+          role: message.sourceKind === "raw_turn_message" ? "custom" : "assistant",
+          sourceReference: message.sourceReference,
+          threadViewMessageId: message.threadViewMessageId,
+          metadata: {
+            bandType: message.bandType,
+            sourceKind: message.sourceKind,
+            sourceReference: message.sourceReference,
+            threadViewMessageId: message.threadViewMessageId,
+          },
+        })),
+      },
     }),
   );
 }
@@ -288,6 +326,9 @@ async function seedSearchFixture(storeRootDir: string) {
   expectOk(await threadViewStore.createThreadView({ view: activeView }));
   expectOk(await threadViewStore.createThreadView({ view: draftView }));
   expectOk(await threadViewStore.createThreadView({ view: archivedView }));
+  await writeProjectionForView(threadStore, draftView);
+  await writeProjectionForView(threadStore, archivedView);
+  await writeProjectionForView(threadStore, activeView);
 
   return {
     searchService,
@@ -353,7 +394,7 @@ test("Thread View search returns matching views", async () => {
       await searchService.search({
         threadId: thread.threadId,
         scope: "thread_view",
-        query: "beta comparison output",
+        query: views.draft.threadViewId,
       }),
     );
 
@@ -390,9 +431,7 @@ test("metadata filters narrow message, turn, and Thread View results", async () 
         threadId: thread.threadId,
         scope: "thread_view",
         filters: {
-          state: "draft",
-          name: "beta",
-          purpose: "comparison",
+          state: "archived",
         },
       }),
     );
@@ -405,7 +444,10 @@ test("metadata filters narrow message, turn, and Thread View results", async () 
       turnResults.map((result) => result.resultId),
       [turns.second.turnId, turns.third.turnId],
     );
-    assert.deepEqual(viewResults.map((result) => result.resultId), [views.draft.threadViewId]);
+    assert.deepEqual(
+      viewResults.map((result) => result.resultId),
+      [views.draft.threadViewId, views.archived.threadViewId],
+    );
   });
 });
 
@@ -454,13 +496,13 @@ test("Thread View results show state and purpose for quick skim decisions", asyn
       await searchService.search({
         threadId: thread.threadId,
         scope: "thread_view",
-        query: "beta comparison output",
+        query: views.draft.threadViewId,
       }),
     );
 
     assert.equal(summary.resultId, views.draft.threadViewId);
-    assert.equal(summary.status, "draft");
-    assert.match(summary.summaryText, /Purpose: Stage beta comparison output before activation\./);
+    assert.equal(summary.status, "archived");
+    assert.match(summary.summaryText, /Projection compact snapshot/);
   });
 });
 
@@ -492,8 +534,8 @@ test("turn search results include current Thread View relationship hints when ap
       }),
     );
 
-    assert.ok(summary.relationshipHints?.some((hint) => hint.includes(`active view ${views.active.name}`)));
-    assert.ok(summary.relationshipHints?.some((hint) => hint.includes(`draft view ${views.draft.name}`)));
+    assert.ok(summary.relationshipHints?.some((hint) => hint.includes(`active view Projection projection_${views.active.threadViewId}`)));
+    assert.ok(summary.relationshipHints?.some((hint) => hint.includes(`archived view Projection projection_${views.draft.threadViewId}`)));
   });
 });
 

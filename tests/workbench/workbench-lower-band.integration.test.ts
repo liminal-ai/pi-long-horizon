@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { WorkbenchQueryService } from "../../src/workbench/services/workbench-query-service.js";
 import { withTempFeature3Store } from "../../src/thread-view/test/fixtures.js";
-import { buildDraftThreadView } from "../../src/thread-view/services/thread-view-builder.js";
+import { buildThreadViewProjection } from "../../src/thread-view/services/thread-view-builder.js";
 import { seedDeterministicRebuildThread } from "../thread-view/helpers.js";
 
 const STAGE7_READY_LOWER_BOUND = 180;
@@ -18,7 +18,7 @@ test("workbench lower-band inspection reads real persisted chunk-backed readines
   await withTempFeature3Store(async ({ storeRootDir }) => {
     const context = await seedDeterministicRebuildThread(storeRootDir);
 
-    const buildResult = await buildDraftThreadView(
+    const buildResult = await buildThreadViewProjection(
       {
         threadId: context.threadId,
         requestedLowerBound: STAGE7_READY_LOWER_BOUND,
@@ -27,16 +27,29 @@ test("workbench lower-band inspection reads real persisted chunk-backed readines
       },
       {
         threadStore: context.threadStore,
-        threadViewStore: context.threadViewStore,
       },
     );
     assert.equal(buildResult.status, "ready");
+    const projectionRevisionId = `projection_${buildResult.threadViewId}`;
+    expectOk(
+      await context.threadStore.writeProjectionRevision({
+        revisionId: projectionRevisionId,
+        threadId: context.threadId,
+        threadViewId: buildResult.threadViewId,
+        targetRuntime: "pi",
+        generatedFilePath: `/tmp/${buildResult.threadViewId}.jsonl`,
+        createdAt: "2026-05-17T00:00:00.000Z",
+        sourceStateReference: buildResult.sourceStateReference,
+        status: "available",
+        compactSnapshot: buildResult.compactSnapshot,
+      }),
+    );
 
     const queryService = new WorkbenchQueryService(context.threadStore, context.threadViewStore);
     const readiness = expectOk(
       await queryService.inspectLowerBandReadiness({
         threadId: context.threadId,
-        threadViewId: buildResult.draftThreadViewId,
+        threadViewId: buildResult.threadViewId,
       }),
     );
     const openChunk = expectOk(

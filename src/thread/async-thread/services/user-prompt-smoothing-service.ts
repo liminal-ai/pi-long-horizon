@@ -1,6 +1,7 @@
 import { appendFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 
+import { externalIntegrationDetails, formatExternalIntegrationFailure } from "../../../integration-error.js";
 import type { MessageRecord, TurnRecord, TurnSmoothComponentRecord } from "../../domain/records.js";
 import type { ThreadSnapshot, ThreadStore } from "../../store/thread-store.js";
 import { fail, ok, StewardResultError, type StewardResult } from "../../domain/errors.js";
@@ -19,6 +20,7 @@ export interface UserPromptSmoothingProviderInput {
   turnId: string;
   messageId: string;
   rawText: string;
+  protectedLiterals: readonly string[];
   sourceRevision: number;
   promptVersion: typeof USER_PROMPT_SMOOTHING_PROMPT_VERSION;
 }
@@ -49,7 +51,6 @@ export interface UserPromptSmoothingServiceOptions {
   now?: () => Date;
   logger?: UserPromptSmoothingLogger;
   maxAttempts?: number;
-  shouldSkip?: (input: UserPromptSmoothingProviderInput) => boolean;
 }
 
 export interface ScheduleUserPromptSmoothingInput {
@@ -100,6 +101,54 @@ function readRawPromptText(message: MessageRecord): string {
     .join("\n");
 }
 
+function stripTrailingSentencePunctuation(value: string): string {
+  return value.replace(/[.,;:!?]+$/u, "");
+}
+
+function uniqueNonEmpty(values: Iterable<string>): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    const trimmed = stripTrailingSentencePunctuation(value.trim());
+    if (trimmed && !seen.has(trimmed)) {
+      seen.add(trimmed);
+      result.push(trimmed);
+    }
+  }
+  return result;
+}
+
+export function extractProtectedUserPromptLiterals(rawText: string): string[] {
+  const literals: string[] = [];
+  literals.push(...rawText.match(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/giu) ?? []);
+  literals.push(...rawText.match(/\b[A-Za-z][A-Za-z0-9_-]*-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/giu) ?? []);
+  literals.push(...rawText.match(/(?:^|[\s("'`])((?:\/[^\s"'`<>|]+)+)/gu)?.map((match) => match.trimStart().replace(/^[("'`]+/u, "")) ?? []);
+  literals.push(...rawText.match(/`([^`]+)`/gu)?.map((match) => match.slice(1, -1)) ?? []);
+  literals.push(...rawText.match(/\b\d+(?:\.\d+)?%?\b/gu) ?? []);
+  return uniqueNonEmpty(literals).filter((literal) => literal.length >= 2);
+}
+
+function validateProtectedLiterals(input: {
+  text: string;
+  protectedLiterals: readonly string[];
+  threadId: string;
+  messageId: string;
+}): void {
+  const missing = input.protectedLiterals.filter((literal) => !input.text.includes(literal));
+  if (missing.length === 0) {
+    return;
+  }
+
+  throw new Error(
+    [
+      "User prompt smoothing output omitted or changed protected literal(s).",
+      `threadId=${input.threadId}`,
+      `messageId=${input.messageId}`,
+      `missing=${JSON.stringify(missing)}`,
+    ].join(" "),
+  );
+}
+
 function componentId(turnId: string, message: MessageRecord): string {
   const partIds = message.parts
     .filter((part) => part.partType === "text")
@@ -113,10 +162,10 @@ function buildComponent(input: {
   turn: TurnRecord;
   message: MessageRecord;
   text: string;
-  status: "ready" | "degraded";
-  quality: "model_smoothed" | "deterministic_preserved";
+  status: "ready";
+  quality: "model_smoothed";
   generatedAt: string;
-  provider?: UserPromptSmoothingProviderOutput;
+  provider: UserPromptSmoothingProviderOutput;
 }): TurnSmoothComponentRecord {
   const sourcePartIds = input.message.parts
     .filter((part) => part.partType === "text")
@@ -132,17 +181,15 @@ function buildComponent(input: {
     sourcePartIds,
     sourceRevision: input.message.sourceRevision,
     generatedAt: input.generatedAt,
-    strategy: input.quality === "model_smoothed" ? "gpt_5_4_mini_user_prompt_v1" : "deterministic_user_prompt_preserved_v1",
-    providerMetadata: input.provider
-      ? {
-          providerId: input.provider.providerId,
-          modelId: input.provider.modelId,
-          reasoningEffort: input.provider.reasoningEffort,
-          promptVersion: input.provider.promptVersion,
-          usage: input.provider.usage,
-          elapsedMs: input.provider.elapsedMs,
-        }
-      : undefined,
+    strategy: "gpt_5_4_mini_user_prompt_v1",
+    providerMetadata: {
+      providerId: input.provider.providerId,
+      modelId: input.provider.modelId,
+      reasoningEffort: input.provider.reasoningEffort,
+      promptVersion: input.provider.promptVersion,
+      usage: input.provider.usage,
+      elapsedMs: input.provider.elapsedMs,
+    },
   };
 }
 
@@ -262,7 +309,15 @@ export class UserPromptSmoothingService {
         this.logger.error("User prompt smoothing job failed.", {
           threadId: input.threadId,
           messageId: input.messageId,
-          cause: error instanceof Error ? error.message : String(error),
+          ...externalIntegrationDetails(
+            {
+              integration: "openai_codex_smoothing",
+              operation: "smooth_user_prompt",
+              provider: "openai-codex",
+              model: "gpt-5.4-mini",
+            },
+            error,
+          ),
         });
       })
       .finally(() => inFlight.delete(key));
@@ -291,20 +346,22 @@ export class UserPromptSmoothingService {
       turnId: turn.turnId,
       messageId: message.messageId,
       rawText,
+      protectedLiterals: extractProtectedUserPromptLiterals(rawText),
       sourceRevision: message.sourceRevision,
       promptVersion: USER_PROMPT_SMOOTHING_PROMPT_VERSION,
     };
-
-    if (this.options.shouldSkip?.(providerInput)) {
-      await this.writeDeterministicFallback(snapshot, turn, message, rawText, "skip");
-      return;
-    }
 
     let lastError: unknown;
     for (let attempt = 1; attempt <= this.maxAttempts; attempt += 1) {
       try {
         const output = await this.options.provider.smoothUserPrompt(providerInput);
         const text = normalizeDeterministicText(output.text);
+        validateProtectedLiterals({
+          text,
+          protectedLiterals: providerInput.protectedLiterals,
+          threadId: input.threadId,
+          messageId: message.messageId,
+        });
         await persistComponent({
           store: this.options.store,
           threadId: input.threadId,
@@ -325,48 +382,35 @@ export class UserPromptSmoothingService {
         return;
       } catch (error) {
         lastError = error;
+        const context = {
+          integration: "openai_codex_smoothing",
+          operation: "smooth_user_prompt",
+          provider: "openai-codex",
+          model: "gpt-5.4-mini",
+          attempt,
+          maxAttempts: this.maxAttempts,
+        };
         this.logger.error("User prompt smoothing attempt failed.", {
           threadId: input.threadId,
           messageId: input.messageId,
-          attempt,
-          cause: error instanceof Error ? error.message : String(error),
+          ...externalIntegrationDetails(context, error),
         });
       }
     }
 
-    await this.writeDeterministicFallback(snapshot, turn, message, rawText, "failure", lastError);
-  }
-
-  private async writeDeterministicFallback(
-    snapshot: ThreadSnapshot,
-    turn: TurnRecord,
-    message: MessageRecord,
-    rawText: string,
-    reason: "failure" | "skip",
-    error?: unknown,
-  ): Promise<void> {
-    const generatedAt = (this.options.now ?? (() => new Date()))().toISOString();
-    await persistComponent({
-      store: this.options.store,
-      threadId: snapshot.thread.threadId,
-      turnId: turn.turnId,
-      messageId: message.messageId,
-      generatedAt,
-      component: buildComponent({
-        turn,
-        message,
-        text: normalizeDeterministicText(rawText),
-        status: reason === "failure" ? "degraded" : "ready",
-        quality: "deterministic_preserved",
-        generatedAt,
-      }),
-    });
-    this.logger.debug?.("User prompt smoothing deterministic fallback written.", {
-      threadId: snapshot.thread.threadId,
-      messageId: message.messageId,
-      reason,
-      cause: error instanceof Error ? error.message : error ? String(error) : undefined,
-    });
+    throw new Error(
+      `User prompt smoothing failed after ${this.maxAttempts} attempt${this.maxAttempts === 1 ? "" : "s"}. ` +
+        formatExternalIntegrationFailure(
+          {
+            integration: "openai_codex_smoothing",
+            operation: "smooth_user_prompt",
+            provider: "openai-codex",
+            model: "gpt-5.4-mini",
+            maxAttempts: this.maxAttempts,
+          },
+          lastError,
+        ),
+    );
   }
 }
 

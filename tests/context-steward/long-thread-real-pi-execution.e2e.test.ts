@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { access, mkdir, readdir, readFile } from "node:fs/promises";
+import { access, mkdir, readdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
+import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import test from "node:test";
@@ -28,6 +29,7 @@ const PI_BIN = join(PROJECT_ROOT, "node_modules/.bin/pi");
 const EXTENSION_PATH = join(PROJECT_ROOT, ".pi/extensions/context-steward.ts");
 const PI_AGENT_DIR = join(PROJECT_ROOT, ".pi/agent");
 const SMART_COMPACT_LOWER_BOUND = 220_000;
+const FETCH_OBSERVER_PATH = join(PROJECT_ROOT, "tests/context-steward/pi-fetch-observer.mjs");
 
 const fakeOpenAICounter = new OpenAIInputTokenCounter({
   async countInputTokens(request) {
@@ -39,7 +41,10 @@ interface PiRunResult {
   stdout: string;
   stderr: string;
   exitCode: number;
+  logPath: string;
 }
+
+let piRunCounter = 0;
 
 function createGeneratedPathResolver(context: {
   resolveGeneratedPath(threadId: string, ...segments: string[]): string;
@@ -68,10 +73,14 @@ function expectOk<T>(result: StewardResult<T>): T {
   return result.value;
 }
 
-function piEnv(): NodeJS.ProcessEnv {
+function piEnv(fetchLogPath?: string): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env, PI_CODING_AGENT_DIR: PI_AGENT_DIR };
   delete env["CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST"];
   delete env["NODE_TEST_CONTEXT"];
+  if (fetchLogPath) {
+    env["PI_LONG_HORIZON_FETCH_LOG"] = fetchLogPath;
+    env["NODE_OPTIONS"] = [env["NODE_OPTIONS"], "--import", FETCH_OBSERVER_PATH].filter(Boolean).join(" ");
+  }
   return env;
 }
 
@@ -82,8 +91,13 @@ async function runPiWithTools(options: {
   prompt: string;
   timeout?: number;
 }): Promise<PiRunResult> {
+  const runId = `${Date.now()}-${++piRunCounter}`;
+  const logDir = join(tmpdir(), "pi-long-horizon-e2e-pi-runs");
+  const logPath = join(logDir, `${runId}.log`);
+  const fetchLogPath = join(logDir, `${runId}.fetch.jsonl`);
   const args = [
     "-p",
+    "--verbose",
     "--provider", "openai-codex",
     "--model", "gpt-5.4-mini",
     "--thinking", "low",
@@ -95,10 +109,32 @@ async function runPiWithTools(options: {
 
   const timeout = options.timeout ?? 180_000;
 
+  async function persistRunLog(result: Omit<PiRunResult, "logPath">): Promise<PiRunResult> {
+    await mkdir(logDir, { recursive: true });
+    const payload = [
+      `cwd=${options.cwd}`,
+      `sessionDir=${options.sessionDir}`,
+      `sessionFile=${options.sessionFile}`,
+      `exitCode=${result.exitCode}`,
+      `args=${JSON.stringify(args)}`,
+      `fetchLog=${fetchLogPath}`,
+      "----- stdout -----",
+      result.stdout,
+      "----- stderr -----",
+      result.stderr,
+      "",
+    ].join("\n");
+    await writeFile(logPath, payload, "utf8");
+    if (result.exitCode !== 0) {
+      console.error(`PI e2e run failed; log preserved at ${logPath}`);
+    }
+    return { ...result, logPath };
+  }
+
   return new Promise<PiRunResult>((resolveRun) => {
     const child = spawn(PI_BIN, args, {
       cwd: options.cwd,
-      env: piEnv(),
+      env: piEnv(fetchLogPath),
       stdio: ["ignore", "pipe", "pipe"],
     });
 
@@ -113,18 +149,22 @@ async function runPiWithTools(options: {
 
     const timer = setTimeout(() => {
       child.kill();
-      resolveRun({ stdout, stderr, exitCode: 124 });
+      void persistRunLog({ stdout, stderr, exitCode: 124 }).then(resolveRun);
     }, timeout);
 
     child.on("close", (code) => {
       clearTimeout(timer);
-      resolveRun({ stdout, stderr, exitCode: code ?? 1 });
+      void persistRunLog({ stdout, stderr, exitCode: code ?? 1 }).then(resolveRun);
     });
   });
 }
 
 function assertPiCleanExit(result: PiRunResult, label: string): void {
-  assert.equal(result.exitCode, 0, `${label}: PI exited with code ${result.exitCode}\nstderr: ${result.stderr}`);
+  assert.equal(
+    result.exitCode,
+    0,
+    `${label}: PI exited with code ${result.exitCode}; PI run log: ${result.logPath}\nstderr: ${result.stderr}`,
+  );
   assert.doesNotMatch(
     result.stderr,
     /Extension error|TARGET_ASSOCIATION_CONFLICT|CAPTURE_APPEND_FAILED|STORE_UNAVAILABLE/,
@@ -355,9 +395,10 @@ test(
       const beforeSnapshot = expectOk(await store.openThread(prepared.threadId));
       const beforeSessionRows = await readJsonl(prepared.activeGeneratedFilePath);
       const sessionDir = context.resolveProjectPath("sessions");
-      const targetDir = context.resolveProjectPath("scratch");
+      const targetDirPath = context.resolveProjectPath("scratch");
       await mkdir(sessionDir, { recursive: true });
-      await mkdir(targetDir, { recursive: true });
+      await mkdir(targetDirPath, { recursive: true });
+      const targetDir = await realpath(targetDirPath);
 
       const uniqueToken = `long-thread-real-pi-${randomUUID()}`;
       const fileName = `long-thread-real-pi-${randomUUID()}.md`;
@@ -442,9 +483,11 @@ test(
       const store = new FileThreadStore(context.storeRootDir);
       const baselineSnapshot = expectOk(await store.openThread(prepared.threadId));
       const sessionDir = context.resolveProjectPath("sessions");
-      const targetDir = context.resolveProjectPath("scratch");
-      const continuationDir = join(targetDir, "continuation");
+      const targetDirPath = context.resolveProjectPath("scratch");
       await mkdir(sessionDir, { recursive: true });
+      await mkdir(targetDirPath, { recursive: true });
+      const targetDir = await realpath(targetDirPath);
+      const continuationDir = join(targetDir, "continuation");
       await mkdir(continuationDir, { recursive: true });
 
       const firstToken = `long-thread-first-continuation-${randomUUID()}`;
@@ -605,9 +648,11 @@ test(
       const threadViewStore = new FileThreadViewStore(context.storeRootDir, store);
       const baselineSnapshot = expectOk(await store.openThread(prepared.threadId));
       const sessionDir = context.resolveProjectPath("sessions");
-      const targetDir = context.resolveProjectPath("scratch");
-      const continuationDir = join(targetDir, "smart-compact-continuation");
+      const targetDirPath = context.resolveProjectPath("scratch");
       await mkdir(sessionDir, { recursive: true });
+      await mkdir(targetDirPath, { recursive: true });
+      const targetDir = await realpath(targetDirPath);
+      const continuationDir = join(targetDir, "smart-compact-continuation");
       await mkdir(continuationDir, { recursive: true });
 
       const firstToken = `smart-compact-live-first-${randomUUID()}`;
@@ -616,8 +661,9 @@ test(
       const firstPrompt = [
         "Please do one live filesystem turn before compaction; this is intentionally verbose enough for smoothing.",
         `Use file ${firstFileName} in target directory ${targetDir}, and write unique token ${firstToken}.`,
+        "Use shell commands for every filesystem operation in this turn; do not use the read or write tool for create, delete, or verification.",
         "Run `ls` in the current directory first.",
-        `Create ${firstTargetFile}, verify it exists, delete it, and verify deletion.`,
+        `Create ${firstTargetFile} with a shell command, verify it exists with a shell command, delete it with rm, and verify deletion with a shell command like test ! -e.`,
         "End with a short final answer.",
       ].join("\n");
 
@@ -681,7 +727,6 @@ test(
         },
         {
           threadStore: store,
-          threadViewStore,
           openAIInputTokenCounter: fakeOpenAICounter,
           asyncThreadDependencies: {
             tokenCountModel: "gpt-5.4-mini",

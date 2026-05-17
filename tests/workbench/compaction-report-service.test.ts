@@ -95,8 +95,30 @@ async function seedReportView(storeRootDir: string) {
     ],
   });
 
-  const created = await context.threadViewStore.createThreadView({ view });
-  assert.equal(created.ok, true);
+  const projection = await context.threadStore.writeProjectionRevision({
+    revisionId: "projection-report",
+    threadId: context.threadId,
+    threadViewId,
+    targetRuntime: "pi",
+    generatedFilePath: "/tmp/generated.jsonl",
+    archivePath: "/tmp/archive.jsonl",
+    createdAt: "2026-05-11T00:00:00.000Z",
+    sourceStateReference: view.sourceStateReference,
+    status: "available",
+    compactSnapshot: {
+      schemaVersion: "projection.compact-snapshot.v1",
+      sourceStateReference: view.sourceStateReference,
+      resultingTokenCount: 0,
+      bands: {
+        full_fidelity: view.fullFidelityBand,
+        smooth: view.smoothBand,
+        detailed: view.detailedBand,
+        brief: view.briefBand,
+      },
+      generatedEntries: [],
+    },
+  });
+  assert.equal(projection.ok, true);
 
   const snapshot = await context.threadStore.openThread(context.threadId);
   assert.equal(snapshot.ok, true);
@@ -104,7 +126,6 @@ async function seedReportView(storeRootDir: string) {
     threadId: context.threadId,
     expectedSourceRevision: snapshot.value.thread.sourceRevision,
     patch: {
-      activeThreadViewId: threadViewId,
       threadViewOutputSummary: {
         count: 1,
         currentGeneratedFilePath: "/tmp/generated.jsonl",
@@ -169,7 +190,6 @@ test("buildCompactionAuditReport returns broad happy-path metadata, accounting, 
       },
       {
         threadStore: context.threadStore,
-        threadViewStore: context.threadViewStore,
       },
     );
 
@@ -296,7 +316,7 @@ test("buildCompactionAuditReport marks mismatched lower-band provenance blocked_
 
     const report = await buildCompactionAuditReport(
       { threadId: context.threadId, threadViewId: context.threadViewId },
-      { threadStore: context.threadStore, threadViewStore: context.threadViewStore },
+      { threadStore: context.threadStore },
     );
 
     const freshness = report.smoothingQuality.lowerBandFreshness.find(
@@ -312,7 +332,7 @@ test("buildCompactionAuditReport handles missing and empty thread views", async 
     await assert.rejects(
       buildCompactionAuditReport(
         { threadId: context.threadId, threadViewId: "missing-view" },
-        { threadStore: context.threadStore, threadViewStore: context.threadViewStore },
+        { threadStore: context.threadStore },
       ),
       /THREAD_VIEW_NOT_FOUND/,
     );
@@ -321,11 +341,32 @@ test("buildCompactionAuditReport handles missing and empty thread views", async 
       threadId: context.threadId,
       threadViewId: "empty-view",
     });
-    const created = await context.threadViewStore.createThreadView({ view: emptyView });
+    const created = await context.threadStore.writeProjectionRevision({
+      revisionId: "projection-empty",
+      threadId: context.threadId,
+      threadViewId: "empty-view",
+      targetRuntime: "pi",
+      generatedFilePath: "/tmp/empty-generated.jsonl",
+      createdAt: "2026-05-11T00:00:00.000Z",
+      sourceStateReference: emptyView.sourceStateReference,
+      status: "available",
+      compactSnapshot: {
+        schemaVersion: "projection.compact-snapshot.v1",
+        sourceStateReference: emptyView.sourceStateReference,
+        resultingTokenCount: 0,
+        bands: {
+          full_fidelity: emptyView.fullFidelityBand,
+          smooth: emptyView.smoothBand,
+          detailed: emptyView.detailedBand,
+          brief: emptyView.briefBand,
+        },
+        generatedEntries: [],
+      },
+    });
     assert.equal(created.ok, true);
     const report = await buildCompactionAuditReport(
       { threadId: context.threadId, threadViewId: "empty-view" },
-      { threadStore: context.threadStore, threadViewStore: context.threadViewStore },
+      { threadStore: context.threadStore },
     );
 
     assert.equal(report.resultingTokenCount, 0);

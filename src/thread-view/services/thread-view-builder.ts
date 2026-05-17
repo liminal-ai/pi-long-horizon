@@ -13,12 +13,18 @@ import {
 } from "../../token-accounting/index.js";
 import type { ChunkState } from "../../thread/async-thread/domain/chunk-state.js";
 import { materializeSmoothTurnFromState } from "../../thread/async-thread/services/smooth-turn-service.js";
-import type { MessageRecord, ThreadRecord, TurnRecord } from "../../thread/domain/records.js";
+import type {
+  MessageRecord,
+  ProjectionCompactSnapshot,
+  ThreadRecord,
+  TurnRecord,
+} from "../../thread/domain/records.js";
 import type { ThreadStore } from "../../thread/store/thread-store.js";
 import {
   createSourceStateReference,
   createThreadViewId,
   type BandRecord,
+  type ThreadViewMessageRecord,
   type ThreadViewRecord,
 } from "../domain/thread-view-records.js";
 import {
@@ -91,6 +97,27 @@ export interface ThreadViewBuilderDependencies {
   now?: () => Date;
   createDraftThreadViewId?: () => string;
   reuseExistingDraft?: boolean;
+}
+
+export interface ThreadViewProjectionBuildDependencies {
+  threadStore: ThreadStore;
+  materializer?: ThreadViewMaterializer;
+  now?: () => Date;
+  createThreadViewId?: () => string;
+}
+
+export interface ThreadViewProjectionBuildResult {
+  threadViewId: string;
+  status: "ready" | "blocked" | "degraded";
+  resultingTokenCount?: number;
+  blockers: StewardIssue[];
+  sourceStateReference?: string;
+  fullFidelityBand: BandRecord;
+  smoothBand: BandRecord;
+  detailedBand: BandRecord;
+  briefBand: BandRecord;
+  emittedMessages: ThreadViewMessageRecord[];
+  compactSnapshot: ProjectionCompactSnapshot;
 }
 
 export function estimateMaterializedMessageTokenCount(content: string | Record<string, unknown>): number {
@@ -670,6 +697,316 @@ function unwrapOrThrow<T>(result: StewardResult<T>, context: string): T {
 
   const summary = result.issues.map((issue) => `${issue.code}: ${issue.message}`).join(" | ");
   throw new Error(`${context}: ${summary}`);
+}
+
+function buildCompactSnapshot(input: {
+  sourceStateReference?: string;
+  requestedLowerBound: number;
+  requestedBandPercentages: ThreadViewBandPercentages;
+  resultingTokenCount?: number;
+  fullFidelityBand: BandRecord;
+  smoothBand: BandRecord;
+  detailedBand: BandRecord;
+  briefBand: BandRecord;
+  emittedMessages: readonly ThreadViewMessageRecord[];
+}): ProjectionCompactSnapshot {
+  return {
+    schemaVersion: "projection.compact-snapshot.v1",
+    sourceStateReference: input.sourceStateReference,
+    requestedLowerBound: input.requestedLowerBound,
+    requestedBandPercentages: { ...input.requestedBandPercentages },
+    resultingTokenCount: input.resultingTokenCount,
+    bands: {
+      full_fidelity: {
+        ...input.fullFidelityBand,
+        selectedIds: [...input.fullFidelityBand.selectedIds],
+        exclusions: input.fullFidelityBand.exclusions ? [...input.fullFidelityBand.exclusions] : undefined,
+      },
+      smooth: {
+        ...input.smoothBand,
+        selectedIds: [...input.smoothBand.selectedIds],
+        exclusions: input.smoothBand.exclusions ? [...input.smoothBand.exclusions] : undefined,
+      },
+      detailed: {
+        ...input.detailedBand,
+        selectedIds: [...input.detailedBand.selectedIds],
+        exclusions: input.detailedBand.exclusions ? [...input.detailedBand.exclusions] : undefined,
+      },
+      brief: {
+        ...input.briefBand,
+        selectedIds: [...input.briefBand.selectedIds],
+        exclusions: input.briefBand.exclusions ? [...input.briefBand.exclusions] : undefined,
+      },
+    },
+    generatedEntries: input.emittedMessages.map((message, index) => ({
+      index,
+      generatedSource: message.sourceKind,
+      role: message.sourceKind === "raw_turn_message" ? "custom" : "assistant",
+      sourceReference: message.sourceReference,
+      threadViewMessageId: message.threadViewMessageId,
+      metadata: {
+        bandType: message.bandType,
+        sourceKind: message.sourceKind,
+        sourceReference: message.sourceReference,
+        threadViewMessageId: message.threadViewMessageId,
+      },
+    })),
+  };
+}
+
+export async function buildThreadViewProjection(
+  input: ThreadViewBuildInputs,
+  dependencies?: ThreadViewProjectionBuildDependencies,
+): Promise<ThreadViewProjectionBuildResult> {
+  const inputErrors = validateThreadViewBuildInputs(input);
+  if (inputErrors.length > 0) {
+    throw new Error(`Invalid Thread View build inputs: ${inputErrors.join(" ")}`);
+  }
+
+  if (!dependencies?.threadStore) {
+    throw new Error("ThreadViewProjectionBuilder requires threadStore dependency.");
+  }
+
+  const materializer = dependencies.materializer ?? new ThreadViewMaterializer(dependencies.threadStore);
+  const threadSnapshot = unwrapOrThrow(
+    await dependencies.threadStore.openThread(input.threadId),
+    `Failed to open thread ${input.threadId}`,
+  );
+  const chunkState = unwrapOrThrow(
+    await dependencies.threadStore.readChunks(input.threadId),
+    `Failed to read chunk state for ${input.threadId}`,
+  );
+  const orderedTurns = sortTurnsInSourceOrder(threadSnapshot.turns);
+  const turnsById = new Map(orderedTurns.map((turn) => [turn.turnId, turn]));
+  const messagesById = new Map(threadSnapshot.messages.map((message) => [message.messageId, message]));
+  const accountingPolicyMode = accountingPolicyModeForAllocation(input.mode);
+  const tokenizedTurns = [...orderedTurns]
+    .map((turn) => {
+      const messages = sortMessagesInSourceOrder(
+        turn.messageIds
+          .map((messageId) => messagesById.get(messageId))
+          .filter((message): message is MessageRecord => message !== undefined),
+      );
+
+      return {
+        turn,
+        rawAccounting: resolveRawTurnTokenAccounting({
+          turn,
+          messages,
+          policyMode: accountingPolicyMode,
+          now: dependencies.now,
+        }),
+        smoothAccounting: resolveSmoothTurnTokenAccounting({
+          turn,
+          messages,
+          policyMode: accountingPolicyMode,
+          now: dependencies.now,
+        }),
+      } satisfies TokenizedTurn;
+    })
+    .sort((left, right) => right.turn.turnOrder - left.turn.turnOrder);
+  const budgets = allocateBandBudgets(input.requestedLowerBound, input.requestedBandPercentages);
+  const fullFidelitySelection = selectTurnIds(
+    tokenizedTurns,
+    budgets.fullFidelity,
+    (candidate) => candidate.rawAccounting,
+  );
+  const oldestFullFidelityTurnOrder = fullFidelitySelection.selectedTurnIds.length > 0
+    ? Math.min(
+        ...fullFidelitySelection.selectedTurnIds.map((turnId) => turnsById.get(turnId)?.turnOrder ?? Number.MAX_SAFE_INTEGER),
+      )
+    : Number.MAX_SAFE_INTEGER;
+  const smoothCandidates = tokenizedTurns.filter(
+    (candidate) =>
+      !fullFidelitySelection.selectedTurnIds.includes(candidate.turn.turnId) &&
+      candidate.turn.turnOrder < oldestFullFidelityTurnOrder &&
+      candidate.smoothAccounting !== undefined &&
+      candidate.smoothAccounting.count > 0,
+  );
+  const smoothSelection = selectTurnIds(
+    smoothCandidates,
+    budgets.smooth,
+    (candidate) => candidate.smoothAccounting,
+  );
+  const selectedUpperTurnOrders = [...fullFidelitySelection.selectedTurnIds, ...smoothSelection.selectedTurnIds]
+    .map((turnId) => turnsById.get(turnId)?.turnOrder)
+    .filter((turnOrder): turnOrder is number => turnOrder !== undefined);
+  const lowerBandBoundaryTurnOrder = selectedUpperTurnOrders.length > 0
+    ? Math.min(...selectedUpperTurnOrders)
+    : Number.MAX_SAFE_INTEGER;
+  const orderedChunkCandidates = buildOrderedChunkCandidates(
+    chunkState,
+    turnsById,
+    lowerBandBoundaryTurnOrder,
+  );
+  const detailedSelection = selectLowerBandChunkIds(
+    orderedChunkCandidates.candidates,
+    budgets.detailed,
+    "detailed",
+    accountingPolicyMode,
+    turnsById,
+    messagesById,
+    dependencies.now,
+  );
+  const briefSelection = detailedSelection.blockers.length > 0
+    ? {
+        selectedChunkIds: [],
+        consumedTokenCount: 0,
+        blockers: [] as StewardIssue[],
+        remainingCandidates: detailedSelection.remainingCandidates,
+        selectedAccounting: new Map<string, SelectedTokenAccounting>(),
+      }
+    : selectLowerBandChunkIds(
+        detailedSelection.remainingCandidates,
+        budgets.brief,
+        "brief",
+        accountingPolicyMode,
+        turnsById,
+        messagesById,
+        dependencies.now,
+      );
+  const selectedDetailedChunkIds = orderSelectedChunks(
+    detailedSelection.selectedChunkIds,
+    orderedChunkCandidates.candidates,
+  );
+  const selectedBriefChunkIds = orderSelectedChunks(
+    briefSelection.selectedChunkIds,
+    orderedChunkCandidates.candidates,
+  );
+  const selectionBlockers = [
+    ...orderedChunkCandidates.blockers,
+    ...detailedSelection.blockers,
+    ...briefSelection.blockers,
+  ];
+  const degradedAccountingIssues = buildDegradedAccountingIssues({
+    threadId: input.threadId,
+    selections: [
+      { bandLabel: "Full-fidelity", selectedAccounting: fullFidelitySelection.selectedAccounting },
+      { bandLabel: "Smooth", selectedAccounting: smoothSelection.selectedAccounting },
+      { bandLabel: "Detailed", selectedAccounting: detailedSelection.selectedAccounting },
+      { bandLabel: "Brief", selectedAccounting: briefSelection.selectedAccounting },
+    ],
+  });
+  const degradedSmoothingIssues = buildDegradedSmoothingIssues({
+    threadId: input.threadId,
+    selectedTurnIds: smoothSelection.selectedTurnIds,
+    turnsById,
+    messagesById,
+  });
+
+  const createdAt = (dependencies.now ?? (() => new Date()))().toISOString();
+  const threadViewId = (dependencies.createThreadViewId ?? (() => createThreadViewId()))();
+  const sourceStateReference = createSourceStateReference({
+    sourceRevision: threadSnapshot.thread.sourceRevision,
+    messageHighWatermark: threadSnapshot.thread.messageHighWatermark,
+  });
+  const projectionView = createDraftViewRecord(
+    threadSnapshot.thread,
+    input,
+    threadViewId,
+    createdAt,
+    budgets,
+  );
+  const nextProjectionView: ThreadViewRecord = {
+    ...projectionView,
+    sourceStateReference,
+    fullFidelityBand: buildBandRecord(
+      "full_fidelity",
+      orderSelectedTurns(fullFidelitySelection.selectedTurnIds, orderedTurns),
+      budgets.fullFidelity,
+    ),
+    smoothBand: buildBandRecord(
+      "smooth",
+      orderSelectedTurns(smoothSelection.selectedTurnIds, orderedTurns),
+      budgets.smooth,
+    ),
+    detailedBand: buildBandRecord("detailed", selectedDetailedChunkIds, budgets.detailed),
+    briefBand: buildBandRecord("brief", selectedBriefChunkIds, budgets.brief),
+    emittedMessages: [],
+    status: "incomplete",
+  };
+  const materialized = unwrapOrThrow(
+    await materializer.materializeThreadView({
+      threadId: input.threadId,
+      draftView: nextProjectionView,
+    }),
+    `Failed to materialize projection for ${input.threadId}`,
+  );
+  const resultingTokenCount =
+    fullFidelitySelection.consumedTokenCount +
+    smoothSelection.consumedTokenCount +
+    detailedSelection.consumedTokenCount +
+    briefSelection.consumedTokenCount;
+  const thresholdBlockers: StewardIssue[] = [];
+  if (fullFidelitySelection.consumedTokenCount > input.requestedLowerBound) {
+    thresholdBlockers.push(
+      createStewardIssue({
+        code: "LOWER_THRESHOLD_UNREACHED",
+        message: `Full-fidelity selection alone consumed ${fullFidelitySelection.consumedTokenCount} tokens, exceeding requested lower bound ${input.requestedLowerBound}.`,
+        threadId: input.threadId,
+      }),
+    );
+  } else if (resultingTokenCount > input.requestedLowerBound) {
+    thresholdBlockers.push(
+      createStewardIssue({
+        code: "LOWER_THRESHOLD_UNREACHED",
+        message: `Deterministic rebuild consumed ${resultingTokenCount} tokens, which is above requested lower bound ${input.requestedLowerBound}.`,
+        threadId: input.threadId,
+      }),
+    );
+  }
+
+  const blockers = [
+    ...selectionBlockers,
+    ...materialized.issues,
+    ...thresholdBlockers,
+    ...degradedAccountingIssues,
+    ...degradedSmoothingIssues,
+  ];
+  const resultStatus = inferResultStatus(blockers, resultingTokenCount, input.requestedLowerBound);
+  const fullFidelityBand = {
+    ...materialized.fullFidelityBand,
+    targetTokenBudget: budgets.fullFidelity,
+    renderedStatus: materialized.fullFidelityBand.renderedStatus,
+  };
+  const smoothBand = {
+    ...materialized.smoothBand,
+    targetTokenBudget: budgets.smooth,
+    renderedStatus: materialized.smoothBand.renderedStatus,
+  };
+  const detailedBand = {
+    ...nextProjectionView.detailedBand,
+    renderedStatus: selectionBlockers.length > 0 ? "blocked" as const : materialized.bandStatuses.detailed,
+  };
+  const briefBand = {
+    ...nextProjectionView.briefBand,
+    renderedStatus: selectionBlockers.length > 0 ? "blocked" as const : materialized.bandStatuses.brief,
+  };
+  const compactSnapshot = buildCompactSnapshot({
+    sourceStateReference,
+    requestedLowerBound: input.requestedLowerBound,
+    requestedBandPercentages: input.requestedBandPercentages,
+    resultingTokenCount,
+    fullFidelityBand,
+    smoothBand,
+    detailedBand,
+    briefBand,
+    emittedMessages: materialized.emittedMessages,
+  });
+
+  return {
+    threadViewId,
+    status: resultStatus,
+    resultingTokenCount,
+    blockers,
+    sourceStateReference,
+    fullFidelityBand,
+    smoothBand,
+    detailedBand,
+    briefBand,
+    emittedMessages: materialized.emittedMessages,
+    compactSnapshot,
+  };
 }
 
 async function openOrCreateDraftView(

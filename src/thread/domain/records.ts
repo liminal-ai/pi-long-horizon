@@ -216,6 +216,10 @@ export interface ImportRecord {
 export interface ProjectionRevisionRecord {
   revisionId: string;
   threadId: string;
+  /**
+   * Legacy rollout/view identity. This no longer points at active ThreadViewStore
+   * state; it is retained as the generated rollout id embedded in PI files.
+   */
   threadViewId?: string;
   targetRuntime: TargetRuntime;
   generatedSessionId?: string;
@@ -226,7 +230,50 @@ export interface ProjectionRevisionRecord {
   modelId?: string;
   thinkingLevel?: string;
   sourceStateReference?: string;
+  compactSnapshot?: ProjectionCompactSnapshot;
   status: ProjectionStatus;
+}
+
+export type ProjectionBandType = "full_fidelity" | "smooth" | "detailed" | "brief";
+export type ProjectionSourceUnitType = "turn" | "chunk";
+export type ProjectionBandRenderedStatus = "ready" | "missing_artifacts" | "blocked" | "unknown";
+export type ProjectionGeneratedSource =
+  | "raw_turn_message"
+  | "smooth_turn"
+  | "detailed_chunk_summary"
+  | "brief_chunk_summary";
+
+export interface ProjectionBandSnapshot {
+  bandType: ProjectionBandType;
+  targetTokenBudget?: number;
+  sourceUnitType: ProjectionSourceUnitType;
+  selectedIds: string[];
+  exclusions?: string[];
+  renderedStatus: ProjectionBandRenderedStatus;
+}
+
+export interface ProjectionGeneratedEntrySnapshot {
+  index: number;
+  generatedSource: ProjectionGeneratedSource;
+  role: "user" | "assistant" | "toolResult" | "custom";
+  sourceReference?: string;
+  threadViewMessageId?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface ProjectionCompactSnapshot {
+  schemaVersion: "projection.compact-snapshot.v1";
+  sourceStateReference?: string;
+  requestedLowerBound?: number;
+  requestedBandPercentages?: {
+    fullFidelity: number;
+    smooth: number;
+    detailed: number;
+    brief: number;
+  };
+  resultingTokenCount?: number;
+  bands: Record<ProjectionBandType, ProjectionBandSnapshot>;
+  generatedEntries: ProjectionGeneratedEntrySnapshot[];
 }
 
 export interface FixtureRecord {

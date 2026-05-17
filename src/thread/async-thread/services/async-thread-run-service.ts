@@ -339,8 +339,7 @@ function isSmoothTurnReady(turn: TurnRecord, messages: readonly MessageRecord[])
     (materialized.status === "ready" || materialized.status === "degraded") &&
     typeof materialized.text === "string" &&
     materialized.text.length > 0 &&
-    typeof smooth?.tokenCountMetadata?.count === "number" &&
-    smooth.sourceRevision === turn.sourceRevision
+    typeof smooth?.tokenCountMetadata?.count === "number"
   );
 }
 

@@ -34,7 +34,6 @@ test("compaction audit report covers all bands for a medium large session", asyn
     },
     {
       threadStore: seeded.threadStore,
-      threadViewStore: seeded.threadViewStore,
       openAIInputTokenCounter: fakeOpenAICounter,
       asyncThreadDependencies: {
         tokenCountModel: "gpt-test",
@@ -66,7 +65,6 @@ test("compaction audit report covers all bands for a medium large session", asyn
     },
     {
       threadStore: seeded.threadStore,
-      threadViewStore: seeded.threadViewStore,
     },
   );
 

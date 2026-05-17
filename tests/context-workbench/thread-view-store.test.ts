@@ -70,7 +70,7 @@ test("persists Thread Views under thread-views directories and supports list/ope
     const openedActiveView = expectOk(await threadViewStore.openThreadView(thread.threadId, activeView.threadViewId));
     const persistedThread = JSON.parse(await readFile(resolveThreadPath(thread.threadId, "thread.json"), "utf8")) as ThreadRecord;
 
-    assert.equal(persistedThread.activeThreadViewId, activeView.threadViewId);
+    assert.equal(persistedThread.activeThreadViewId, undefined);
     assert.equal(
       JSON.parse(
         await readFile(
@@ -89,7 +89,7 @@ test("persists Thread Views under thread-views directories and supports list/ope
   });
 });
 
-test("active Thread View pointer and per-view state remain consistent on startup reconciliation", async () => {
+test("stale active Thread View pointer is ignored by legacy view-store reads", async () => {
   await withTempWorkbenchStore(async ({ storeRootDir, resolveThreadPath }) => {
     const threadStore = new FileThreadStore(storeRootDir);
     const threadViewStore = new FileThreadViewStore(storeRootDir, threadStore);
@@ -122,8 +122,8 @@ test("active Thread View pointer and per-view state remain consistent on startup
     const reconciledThread = expectOk(await threadStore.openThread(thread.threadId));
 
     assert.equal(listedViews.ok, true);
-    assert.equal(listedViews.issues?.[0]?.code, "THREAD_VIEW_STATE_CONFLICT");
-    assert.equal(reconciledThread.thread.activeThreadViewId, activeView.threadViewId);
+    assert.equal(listedViews.issues?.[0]?.code, undefined);
+    assert.equal(reconciledThread.thread.activeThreadViewId, "thread_view_stale");
     assert.deepEqual(expectOk(listedViews).map((view) => view.threadViewId), [activeView.threadViewId]);
   });
 });

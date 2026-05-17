@@ -681,14 +681,6 @@ export class FileThreadStore implements ThreadStore {
         };
       }
 
-      if (Object.prototype.hasOwnProperty.call(input.patch, "activeThreadViewId")) {
-        if (input.patch.activeThreadViewId) {
-          nextThread.activeThreadViewId = input.patch.activeThreadViewId;
-        } else {
-          delete nextThread.activeThreadViewId;
-        }
-      }
-
       nextThread.updatedAt = input.patch.updatedAt ?? new Date().toISOString();
 
       const targetIdentityPreserved = this.assertTargetIdentityPreserved(thread.value.target, nextThread.target);

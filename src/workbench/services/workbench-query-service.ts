@@ -3,6 +3,7 @@ import { createStewardIssue, type StewardIssue } from "../../thread/domain/error
 import type {
   FixtureRecord,
   MessageRecord,
+  ProjectionRevisionRecord,
   ThreadRecord,
   TurnRecord,
 } from "../../thread/domain/records.js";
@@ -31,7 +32,6 @@ import {
   okWorkbenchResult,
   type WorkbenchResult,
 } from "../domain/workbench-errors.js";
-import type { ThreadViewStore } from "../../thread-view/store/thread-view-store.js";
 
 export interface OpenWorkbenchThreadInput {
   threadId: string;
@@ -269,6 +269,69 @@ function cloneThread(thread: ThreadRecord): ThreadRecord {
   return structuredClone(thread);
 }
 
+function projectionToThreadViewRecord(
+  projection: ProjectionRevisionRecord,
+  currentThreadViewId: string | undefined,
+): ThreadViewRecord | undefined {
+  const snapshot = projection.compactSnapshot;
+  const threadViewId = projection.threadViewId ?? projection.revisionId;
+  if (!snapshot) {
+    return undefined;
+  }
+
+  return {
+    threadViewId,
+    threadId: projection.threadId,
+    state: threadViewId === currentThreadViewId ? "active" : "archived",
+    name: `Projection ${projection.revisionId}`,
+    purpose: snapshot.requestedLowerBound
+      ? `requestedLowerBound=${snapshot.requestedLowerBound}`
+      : "Projection compact snapshot",
+    createdAt: projection.createdAt,
+    updatedAt: projection.createdAt,
+    sourceStateReference: snapshot.sourceStateReference ?? projection.sourceStateReference,
+    fullFidelityBand: snapshot.bands.full_fidelity,
+    smoothBand: snapshot.bands.smooth,
+    detailedBand: snapshot.bands.detailed,
+    briefBand: snapshot.bands.brief,
+    emittedMessages: [],
+    status: projection.status === "available" ? "ready" : projection.status === "failed" ? "blocked" : "unknown",
+  };
+}
+
+async function scopeProjectionForThreadViewId(
+  threadStore: ThreadStore,
+  threadId: string,
+  threadViewId: string,
+): Promise<WorkbenchResult<ThreadViewSnapshotLike>> {
+  const snapshot = await threadStore.openThread(threadId);
+  if (!snapshot.ok) {
+    return failWorkbenchResult(...snapshot.issues);
+  }
+
+  const projection = snapshot.value.projections.find(
+    (candidate) => candidate.threadViewId === threadViewId || candidate.revisionId === threadViewId,
+  );
+  const view = projection
+    ? projectionToThreadViewRecord(projection, snapshot.value.thread.threadViewOutputSummary.currentThreadViewId)
+    : undefined;
+  if (!projection || !view) {
+    return failWorkbenchResult(
+      createWorkbenchIssue({
+        code: "THREAD_VIEW_NOT_FOUND",
+        message: `Projection compact snapshot ${threadViewId} was not found for thread ${threadId}.`,
+        threadId,
+      }),
+    );
+  }
+
+  return okWorkbenchResult({ view });
+}
+
+interface ThreadViewSnapshotLike {
+  view: ThreadViewRecord;
+}
+
 function cloneMessage(message: MessageRecord): MessageRecord {
   return structuredClone(message);
 }
@@ -285,16 +348,15 @@ function resolveActiveThreadView(
   thread: ThreadRecord,
   threadViews: readonly ThreadViewRecord[],
 ): ThreadViewRecord | undefined {
-  const pointedView = thread.activeThreadViewId
-    ? threadViews.find((view) => view.threadViewId === thread.activeThreadViewId)
+  const pointedView = thread.threadViewOutputSummary.currentThreadViewId
+    ? threadViews.find((view) => view.threadViewId === thread.threadViewOutputSummary.currentThreadViewId)
     : undefined;
 
-  if (pointedView?.state === "active") {
+  if (pointedView) {
     return cloneThreadViewRecord(pointedView);
   }
 
-  const activeView = threadViews.find((view) => view.state === "active");
-  return activeView ? cloneThreadViewRecord(activeView) : undefined;
+  return undefined;
 }
 
 function buildInspectionResult(
@@ -426,7 +488,7 @@ function buildReadinessEntry(
 export class WorkbenchQueryService {
   constructor(
     private readonly threadStore: ThreadStore,
-    private readonly threadViewStore: ThreadViewStore,
+    _legacyThreadViewStore?: unknown,
     private readonly chunkReader: WorkbenchChunkReader = new ThreadStoreChunkReader(threadStore),
   ) {}
 
@@ -478,17 +540,20 @@ export class WorkbenchQueryService {
       });
     }
 
-    const listedViews = await this.threadViewStore.listThreadViews(threadId);
-    if (!listedViews.ok) {
-      return failWorkbenchResult(...listedViews.issues);
-    }
+    const threadViews = threadSnapshot.value.projections
+      .map((projection) =>
+        projectionToThreadViewRecord(
+          projection,
+          threadSnapshot.value.thread.threadViewOutputSummary.currentThreadViewId,
+        ),
+      )
+      .filter((view): view is ThreadViewRecord => view !== undefined);
 
     return okWorkbenchResult(
       {
         snapshot: threadSnapshot.value,
-        threadViews: listedViews.value,
+        threadViews,
       },
-      listedViews.issues,
     );
   }
 
@@ -498,31 +563,27 @@ export class WorkbenchQueryService {
       return failWorkbenchResult(...threadSnapshot.issues);
     }
 
-    const listedViews = await this.threadViewStore.listThreadViews(input.threadId);
-    if (!listedViews.ok) {
-      return failWorkbenchResult(...listedViews.issues);
-    }
+    const threadViews = threadSnapshot.value.projections
+      .map((projection) =>
+        projectionToThreadViewRecord(
+          projection,
+          threadSnapshot.value.thread.threadViewOutputSummary.currentThreadViewId,
+        ),
+      )
+      .filter((view): view is ThreadViewRecord => view !== undefined);
 
-    const refreshedThreadSnapshot =
-      listedViews.issues && listedViews.issues.length > 0
-        ? await this.threadStore.openThread(input.threadId)
-        : threadSnapshot;
-    if (!refreshedThreadSnapshot.ok) {
-      return failWorkbenchResult(...refreshedThreadSnapshot.issues);
-    }
-
-    const readiness = checkMaintenanceReadiness(refreshedThreadSnapshot.value);
+    const readiness = checkMaintenanceReadiness(threadSnapshot.value);
     const asyncThreadBlockers = await this.loadAsyncThreadBlockers({
       threadId: input.threadId,
-      snapshot: refreshedThreadSnapshot.value,
+      snapshot: threadSnapshot.value,
     });
 
     return okWorkbenchResult(
       buildInspectionResult(
-        refreshedThreadSnapshot.value.thread,
-        listedViews.value,
-        mergeWorkbenchIssues(listedViews.issues, readiness.blockers, asyncThreadBlockers),
-        refreshedThreadSnapshot.value.thread.threadViewOutputSummary.generatedOutput,
+        threadSnapshot.value.thread,
+        threadViews,
+        mergeWorkbenchIssues(readiness.blockers, asyncThreadBlockers),
+        threadSnapshot.value.thread.threadViewOutputSummary.generatedOutput,
       ),
     );
   }
@@ -614,17 +675,21 @@ export class WorkbenchQueryService {
   async openThreadViewDetail(
     input: OpenThreadViewDetailInput,
   ): Promise<WorkbenchResult<ThreadViewDetailResult>> {
-    const openedView = await this.threadViewStore.openThreadView(input.threadId, input.threadViewId);
-    if (!openedView.ok) {
-      return failWorkbenchResult(...openedView.issues);
+    const resolvedView = await scopeProjectionForThreadViewId(
+      this.threadStore,
+      input.threadId,
+      input.threadViewId,
+    );
+    if (!resolvedView.ok) {
+      return failWorkbenchResult(...resolvedView.issues);
     }
 
     return okWorkbenchResult(
       {
-        view: cloneThreadViewRecord(openedView.value.view),
-        sourcePivots: buildThreadViewSourcePivots(openedView.value.view),
+        view: cloneThreadViewRecord(resolvedView.value.view),
+        sourcePivots: buildThreadViewSourcePivots(resolvedView.value.view),
       },
-      openedView.issues,
+      resolvedView.issues,
     );
   }
 
@@ -670,7 +735,7 @@ export class WorkbenchQueryService {
     const issues = mergeWorkbenchIssues(listedChunks.issues);
 
     if (input.threadViewId) {
-      const openedView = await this.threadViewStore.openThreadView(input.threadId, input.threadViewId);
+      const openedView = await scopeProjectionForThreadViewId(this.threadStore, input.threadId, input.threadViewId);
       if (!openedView.ok) {
         return failWorkbenchResult(...openedView.issues);
       }

@@ -205,7 +205,7 @@ test("stores mocked model-smoothed user prompt with provider metadata", async ()
   });
 });
 
-test("provider receives raw user prompt text while fallback remains deterministic-normalized", async () => {
+test("provider receives raw user prompt text while stored output is normalized", async () => {
   await withTempThreadStore(async ({ storeRootDir }) => {
     const store = new FileThreadStore(storeRootDir);
     const { message } = await seedUserTurn({
@@ -238,7 +238,7 @@ test("provider receives raw user prompt text while fallback remains deterministi
   });
 });
 
-test("failed smoothing logs visibly and writes degraded deterministic-preserved text", async () => {
+test("failed smoothing logs visibly, rejects, and writes no derived component", async () => {
   await withTempThreadStore(async ({ storeRootDir }) => {
     const store = new FileThreadStore(storeRootDir);
     const { message, turn } = await seedUserTurn({
@@ -248,7 +248,7 @@ test("failed smoothing logs visibly and writes degraded deterministic-preserved 
     });
     const errors: Array<{ message: string; details?: Record<string, unknown> }> = [];
 
-    await new UserPromptSmoothingService({
+    const service = new UserPromptSmoothingService({
       store,
       provider: {
         async smoothUserPrompt() {
@@ -261,47 +261,57 @@ test("failed smoothing logs visibly and writes degraded deterministic-preserved 
         },
         debug() {},
       },
-    }).run({ threadId: message.threadId, messageId: message.messageId });
+    });
+
+    await assert.rejects(
+      () => service.run({ threadId: message.threadId, messageId: message.messageId }),
+      /User prompt smoothing failed after 1 attempt/,
+    );
 
     assert.equal(errors.length, 1);
     assert.equal(errors[0]?.message, "User prompt smoothing attempt failed.");
-    assert.equal(errors[0]?.details?.cause, "provider unavailable");
+    assert.equal(errors[0]?.details?.integration, "openai_codex_smoothing");
+    assert.equal(errors[0]?.details?.operation, "smooth_user_prompt");
+    assert.match(String(errors[0]?.details?.cause), /provider unavailable/);
 
     const state = await readSmoothTurnState({ threadId: message.threadId, turnId: turn.turnId }, { store });
     const component = state.components?.find((candidate) => candidate.kind === "user_prompt");
-    assert.equal(component?.text, "CONTINUE FUCKING CONTINUE");
-    assert.equal(component?.status, "degraded");
-    assert.equal(component?.quality, "deterministic_preserved");
+    assert.equal(component, undefined);
   });
 });
 
-test("intentional skip writes deterministic-preserved text without provider failure", async () => {
+test("failed scheduled smoothing logs job failure and writes no derived component", async () => {
   await withTempThreadStore(async ({ storeRootDir }) => {
     const store = new FileThreadStore(storeRootDir);
     const { message, turn } = await seedUserTurn({
       store,
-      threadId: "thread-user-smooth-skip",
-      prompt: "please keep /a/b.ts exactly as-is",
+      threadId: "thread-user-smooth-schedule-failure",
+      prompt: "please smooth this through the provider",
     });
-    let calls = 0;
+    const errors: Array<{ message: string; details?: Record<string, unknown> }> = [];
 
-    await new UserPromptSmoothingService({
+    const service = new UserPromptSmoothingService({
       store,
       provider: {
         async smoothUserPrompt() {
-          calls += 1;
-          throw new Error("should not be called");
+          throw new Error("provider unavailable");
         },
       },
-      shouldSkip: () => true,
-    }).run({ threadId: message.threadId, messageId: message.messageId });
+      logger: {
+        error(message, details) {
+          errors.push({ message, details });
+        },
+        debug() {},
+      },
+    });
 
-    assert.equal(calls, 0);
-    const state = await readSmoothTurnState({ threadId: message.threadId, turnId: turn.turnId }, { store });
-    const component = state.components?.find((candidate) => candidate.kind === "user_prompt");
-    assert.equal(component?.text, "please keep /a/b.ts exactly as-is");
-    assert.equal(component?.status, "ready");
-    assert.equal(component?.quality, "deterministic_preserved");
+    assert.equal(service.schedule({ threadId: message.threadId, messageId: message.messageId }), true);
+    await waitForAssertion(async () => {
+      assert.ok(errors.some((entry) => entry.message === "User prompt smoothing job failed."));
+      const state = await readSmoothTurnState({ threadId: message.threadId, turnId: turn.turnId }, { store });
+      const component = state.components?.find((candidate) => candidate.kind === "user_prompt");
+      assert.equal(component, undefined);
+    }, "scheduled user prompt smoothing failure should not write a fallback component");
   });
 });
 
@@ -329,6 +339,7 @@ test("schedule dedupes in-flight user prompt smoothing and does not await provid
             turnId: "unused",
             messageId: message.messageId,
             rawText: "maybe smooth this",
+            protectedLiterals: [],
             sourceRevision: message.sourceRevision,
             promptVersion: USER_PROMPT_SMOOTHING_PROMPT_VERSION,
           });
@@ -407,6 +418,62 @@ test("slow smoothing merges user component into latest smooth state without drop
     assert.equal(userComponent?.quality, "model_smoothed");
     assert.equal(userComponent?.text, "Maybe smooth this prompt.");
     assert.equal(assistantComponent?.text, "Deterministic assistant component should survive.");
+  });
+});
+
+test("retries and rejects when model smoothing corrupts protected literals", async () => {
+  await withTempThreadStore(async ({ storeRootDir }) => {
+    const store = new FileThreadStore(storeRootDir);
+    const marker = "smart-compact-live-second-2f8528c2-d937-4870-821a-282a1b3fd691";
+    const targetPath = "/tmp/pi-long-horizon/scratch/smart-compact-continuation";
+    const { message, turn } = await seedUserTurn({
+      store,
+      threadId: "thread-user-smooth-protected-literals",
+      prompt: `Run pwd from ${targetPath} and include marker ${marker} in the final answer.`,
+    });
+    const errors: Array<{ message: string; details?: Record<string, unknown> }> = [];
+    let providerProtectedLiterals: readonly string[] = [];
+    let attempts = 0;
+
+    const service = new UserPromptSmoothingService({
+      store,
+      maxAttempts: 2,
+      provider: {
+        async smoothUserPrompt(input) {
+          attempts += 1;
+          providerProtectedLiterals = input.protectedLiterals;
+          return {
+            text: `Run pwd from ${targetPath} and include marker smart-compact-live-second-2f8528c2-d937-4870-821a-2821b3fd691 in the final answer.`,
+            providerId: "openai-codex",
+            modelId: "gpt-5.4-mini",
+            reasoningEffort: "none",
+            promptVersion: input.promptVersion,
+            elapsedMs: 2,
+            generatedAt: DEFAULT_TEST_TIMESTAMP,
+          };
+        },
+      },
+      logger: {
+        error(message, details) {
+          errors.push({ message, details });
+        },
+        debug() {},
+      },
+    });
+
+    await assert.rejects(
+      () => service.run({ threadId: message.threadId, messageId: message.messageId }),
+      /protected literal/,
+    );
+
+    assert.equal(attempts, 2);
+    assert.ok(providerProtectedLiterals.includes(marker));
+    assert.ok(providerProtectedLiterals.includes(targetPath));
+    assert.equal(errors.length, 2);
+    assert.match(String(errors[0]?.details?.cause), /protected literal/);
+    const state = await readSmoothTurnState({ threadId: message.threadId, turnId: turn.turnId }, { store });
+    const component = state.components?.find((candidate) => candidate.kind === "user_prompt");
+    assert.equal(component, undefined);
   });
 });
 

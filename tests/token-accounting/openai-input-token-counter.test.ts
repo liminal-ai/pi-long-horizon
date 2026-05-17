@@ -456,3 +456,35 @@ test("fetch client sends the Responses input token request and maps response/err
     },
   );
 });
+
+test("fetch client wraps thrown fetch failures with integration context and cause", async () => {
+  const request = convertGeneratedSessionToOpenAIResponsesInput(makeGeneratedSessionInput()).request;
+  const socketError = Object.assign(new Error("socket closed"), { code: "UND_ERR_SOCKET" });
+  const fetchError = new TypeError("fetch failed", { cause: socketError });
+  const client = new FetchOpenAIInputTokenCountClient({
+    endpoint: "https://api.openai.com/v1/responses/input_tokens",
+    apiKeyResolver: {
+      async resolveApiKey() {
+        return "sk-test-secret-value";
+      },
+    },
+    async fetchImpl() {
+      throw fetchError;
+    },
+  });
+
+  await assert.rejects(
+    () => client.countInputTokens(request),
+    (error: unknown) => {
+      assert.equal(error instanceof OpenAITokenCounterError, true);
+      assert.equal((error as OpenAITokenCounterError).code, "OPENAI_TOKEN_COUNT_FETCH_FAILED");
+      assert.equal((error as Error).cause, fetchError);
+      assert.match((error as Error).message, /operation=count_input_tokens/);
+      assert.match((error as Error).message, /endpoint=https:\/\/api\.openai\.com\/v1\/responses\/input_tokens/);
+      assert.match((error as Error).message, /TypeError: fetch failed/);
+      assert.match((error as Error).message, /UND_ERR_SOCKET/);
+      assert.equal((error as Error).message.includes("sk-test-secret-value"), false);
+      return true;
+    },
+  );
+});

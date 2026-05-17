@@ -51,7 +51,6 @@ test("smart compact integration path writes, archives, and records generated out
 
     const firstResult = await runSmartCompact(input, {
       threadStore: seeded.threadStore,
-      threadViewStore: seeded.threadViewStore,
       openAIInputTokenCounter: fakeOpenAICounter,
       piThreadViewWriterOptions: {
         pathResolver: createPathResolver(context),
@@ -80,7 +79,6 @@ test("smart compact integration path writes, archives, and records generated out
 
     const secondResult = await runSmartCompact(input, {
       threadStore: seeded.threadStore,
-      threadViewStore: seeded.threadViewStore,
       openAIInputTokenCounter: fakeOpenAICounter,
       piThreadViewWriterOptions: {
         pathResolver: createPathResolver(context),

@@ -3,7 +3,11 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
-import { USER_PROMPT_SMOOTHING_PROMPT_VERSION, type UserPromptSmoothingProvider } from "../src/thread/async-thread/services/user-prompt-smoothing-service.js";
+import {
+  USER_PROMPT_SMOOTHING_PROMPT_VERSION,
+  extractProtectedUserPromptLiterals,
+  type UserPromptSmoothingProvider,
+} from "../src/thread/async-thread/services/user-prompt-smoothing-service.js";
 import { PiCodexUserPromptSmoothingProvider } from "../src/thread/async-thread/services/pi-codex-user-prompt-smoothing-provider.js";
 import type { MessageRecord } from "../src/thread/domain/records.js";
 import { FileThreadStore } from "../src/thread/store/file-thread-store.js";
@@ -85,6 +89,7 @@ export async function runUserPromptSmoothingEval(
         turnId: entry.turn!.turnId,
         messageId: entry.message.messageId,
         rawText: entry.original,
+        protectedLiterals: extractProtectedUserPromptLiterals(entry.original),
         sourceRevision: entry.message.sourceRevision,
         promptVersion: USER_PROMPT_SMOOTHING_PROMPT_VERSION,
       });

@@ -1156,7 +1156,6 @@ export async function executeStatusCommand(input: {
 
 export async function executeSmartCompactCommand(input: {
   store: ThreadStore;
-  threadViewStore: ThreadViewStore;
   ctx: ExtensionCommandContext;
   args: string;
   activeThread?: ThreadRecord;
@@ -1206,7 +1205,6 @@ export async function executeSmartCompactCommand(input: {
       },
       {
         threadStore: input.store,
-        threadViewStore: input.threadViewStore,
         openAIInputTokenCounter: input.openAIInputTokenCounter,
         promptVisibleToolResultTruncation: input.liveToolResultTruncation,
         piSessionSwitch: {
@@ -1271,28 +1269,30 @@ function parseCompactReportCommandArgs(args: string): StewardResult<{ threadView
 
 async function resolveMostRecentThreadViewId(input: {
   threadId: string;
-  threadViewStore: ThreadViewStore;
+  store: ThreadStore;
 }): Promise<StewardResult<string | undefined>> {
-  const listed = await input.threadViewStore.listThreadViews(input.threadId);
-  if (!listed.ok) {
-    return listed;
+  const snapshot = await input.store.openThread(input.threadId);
+  if (!snapshot.ok) {
+    return snapshot;
   }
 
-  const mostRecent = [...listed.value].sort((left, right) => {
-    const updatedComparison = right.updatedAt.localeCompare(left.updatedAt);
-    if (updatedComparison !== 0) {
-      return updatedComparison;
-    }
+  const mostRecent = [...snapshot.value.projections]
+    .filter((projection) => projection.compactSnapshot)
+    .sort((left, right) => {
+      const createdComparison = right.createdAt.localeCompare(left.createdAt);
+      if (createdComparison !== 0) {
+        return createdComparison;
+      }
 
-    return right.threadViewId.localeCompare(left.threadViewId);
-  })[0];
+      return right.revisionId.localeCompare(left.revisionId);
+    })[0];
 
-  return ok(mostRecent?.threadViewId, listed.issues);
+  return ok(mostRecent?.threadViewId ?? mostRecent?.revisionId);
 }
 
 export async function executeCompactReportCommand(input: {
   store: ThreadStore;
-  threadViewStore: ThreadViewStore;
+  threadViewStore?: ThreadViewStore;
   ctx: ExtensionCommandContext;
   args: string;
   activeThread?: ThreadRecord;
@@ -1331,7 +1331,7 @@ export async function executeCompactReportCommand(input: {
     ? ok(parsed.value.threadViewId)
     : await resolveMostRecentThreadViewId({
         threadId: thread.value.threadId,
-        threadViewStore: input.threadViewStore,
+        store: input.store,
       });
   if (!resolvedThreadViewId.ok) {
     return resolvedThreadViewId;
@@ -1358,7 +1358,6 @@ export async function executeCompactReportCommand(input: {
       },
       {
         threadStore: input.store,
-        threadViewStore: input.threadViewStore,
       },
     );
 
@@ -1740,6 +1739,12 @@ export function registerContextStewardExtension(
         promptProjection.markClean(refreshed.cleanableToolCallIds);
       }
       skipped = refreshed.updated ? "updated" : refreshed.skippedReason ?? "unchanged";
+    } catch (error) {
+      if (isStalePiContextError(error)) {
+        skipped = "staleContext";
+        return;
+      }
+      throw error;
     } finally {
       logTiming("refreshActivePromptProjection", startedAt, {
         dirty: dirtyCount,
@@ -1858,10 +1863,11 @@ export function registerContextStewardExtension(
     });
   }
 
-  const reconcileCurrentSession = async (ctx: ExtensionContext) => {
+  const reconcileCurrentSession = async (ctx: ExtensionContext): Promise<ExtensionCommandContext | undefined> => {
+    let replacementSessionContext: ExtensionCommandContext | undefined;
     try {
       if (typeof (ctx as Partial<ExtensionCommandContext>).switchSession !== "function") {
-        return;
+        return undefined;
       }
 
       const store = createStore(ctx);
@@ -1870,6 +1876,8 @@ export function registerContextStewardExtension(
         ctx: ctx as unknown as PiExtensionSwitchContext,
         activeThread,
         onReplacementSession: async (nextCtx) => {
+          replacementSessionContext = nextCtx;
+          activeSessionContext = snapshotCaptureContext(nextCtx) ?? activeSessionContext;
           const refreshedStore = createStore(nextCtx);
           const refreshedThread = await resolveManagedThreadForCommand(refreshedStore, nextCtx, activeThread);
           if (refreshedThread.ok && refreshedThread.value) {
@@ -1893,9 +1901,10 @@ export function registerContextStewardExtension(
           "error",
         );
       }
+      return replacementSessionContext;
     } catch (error) {
       if (isStalePiContextError(error)) {
-        return;
+        return replacementSessionContext;
       }
       ctx.ui?.notify?.(
         formatCommandResult({
@@ -1912,6 +1921,7 @@ export function registerContextStewardExtension(
         }),
         "error",
       );
+      return replacementSessionContext;
     }
   };
 
@@ -1926,8 +1936,11 @@ export function registerContextStewardExtension(
       activeSessionContext = snapshotCaptureContext(ctx) ?? activeSessionContext;
       snapshotMs = Date.now() - stepStartedAt;
       stepStartedAt = Date.now();
-      await reconcileCurrentSession(ctx);
+      const replacementSessionContext = await reconcileCurrentSession(ctx);
       reconcileMs = Date.now() - stepStartedAt;
+      if (replacementSessionContext) {
+        return;
+      }
       stepStartedAt = Date.now();
       hydratePromptProjectionFromContext(ctx);
       hydrateMs = Date.now() - stepStartedAt;
@@ -2142,23 +2155,42 @@ export function registerContextStewardExtension(
     const startedAt = Date.now();
     let applyMs = 0;
     let messageCount = event.messages.length;
+    let staleFallback = false;
+    let result = "skipped";
     if (!liveTruncationEnabled) {
       return;
     }
 
     try {
-      syncPromptProjectionScope(ctx);
+      try {
+        syncPromptProjectionScope(ctx);
+      } catch (error) {
+        if (!isStalePiContextError(error) || !activeSessionContext) {
+          throw error;
+        }
+        staleFallback = true;
+        syncPromptProjectionScope(activeSessionContext);
+      }
       const stepStartedAt = Date.now();
       const messages = promptProjection.applyToMessages(event.messages);
       applyMs = Date.now() - stepStartedAt;
       messageCount = messages.length;
+      result = "applied";
       return {
         messages,
       };
+    } catch (error) {
+      if (isStalePiContextError(error)) {
+        result = "staleContext";
+        return;
+      }
+      throw error;
     } finally {
       logTiming("context", startedAt, {
         apply: `${applyMs}ms`,
         messages: messageCount,
+        staleFallback,
+        result,
       });
     }
   });
@@ -2362,11 +2394,9 @@ export function registerContextStewardExtension(
       "Run manual smart compact with explicit inputs: --lower-bound <tokens> --full <pct> --smooth <pct> --detailed <pct> --brief <pct> [--mode strict|prepare].",
     handler: async (args: string, ctx: ExtensionCommandContext) => {
       const store = createStore(ctx);
-      const threadViewStore = createThreadViewStore(ctx, store);
       let replacementSessionContext: ExtensionCommandContext | undefined;
       const executed = await executeSmartCompactCommand({
         store,
-        threadViewStore,
         ctx,
         args,
         activeThread,
@@ -2408,10 +2438,8 @@ export function registerContextStewardExtension(
     description: "Show a compaction audit report for the most recent thread view or --thread-view <id>.",
     handler: async (args: string, ctx: ExtensionCommandContext) => {
       const store = createStore(ctx);
-      const threadViewStore = createThreadViewStore(ctx, store);
       const executed = await executeCompactReportCommand({
         store,
-        threadViewStore,
         ctx,
         args,
         activeThread,

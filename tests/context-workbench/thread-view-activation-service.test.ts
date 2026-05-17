@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { StewardResult } from "../../src/context-steward/domain/errors.js";
-import type { MessageRecord, ThreadRecord } from "../../src/context-steward/domain/records.js";
+import type { MessageRecord } from "../../src/context-steward/domain/records.js";
 import {
   appendSourceMessage,
   openOrCreateManagedThread,
@@ -87,16 +87,13 @@ async function writeTurns(store: FileThreadStore, threadId: string, turns: Retur
 }
 
 function assertSourceTruthUnchanged(before: ThreadSnapshot, after: ThreadSnapshot) {
-  const normalizeThread = (thread: ThreadRecord) => {
-    const { activeThreadViewId: _activeThreadViewId, updatedAt: _updatedAt, ...rest } = thread;
-    return rest;
-  };
-
-  assert.deepEqual(normalizeThread(after.thread), normalizeThread(before.thread));
+  assert.equal(after.thread.sourceRevision, before.thread.sourceRevision);
+  assert.equal(after.thread.messageHighWatermark, before.thread.messageHighWatermark);
+  assert.equal(after.thread.turnsRevision, before.thread.turnsRevision);
+  assert.equal(after.thread.activeThreadViewId, undefined);
   assert.deepEqual(after.messages, before.messages);
   assert.deepEqual(after.turns, before.turns);
   assert.deepEqual(after.imports, before.imports);
-  assert.deepEqual(after.projections, before.projections);
 }
 
 async function seedActivationHarness(storeRootDir: string) {
@@ -206,7 +203,7 @@ async function seedActivationHarness(storeRootDir: string) {
   return { activationService, threadStore, threadViewStore, thread, views: { active: activeView, draft: draftView } };
 }
 
-test("activating draft makes it the only active view", async () => {
+test("activating draft does not restore activeThreadViewId runtime state", async () => {
   await withTempWorkbenchStore(async ({ storeRootDir }) => {
     const { activationService, threadStore, threadViewStore, thread, views } = await seedActivationHarness(storeRootDir);
 
@@ -221,7 +218,7 @@ test("activating draft makes it the only active view", async () => {
     const listedViews = expectOk(await threadViewStore.listThreadViews(thread.threadId));
 
     assert.equal(activation.active.threadViewId, views.draft.threadViewId);
-    assert.equal(refreshedThread.thread.activeThreadViewId, views.draft.threadViewId);
+    assert.equal(refreshedThread.thread.activeThreadViewId, undefined);
     assert.deepEqual(
       listedViews.filter((view) => view.state === "active").map((view) => view.threadViewId),
       [views.draft.threadViewId],

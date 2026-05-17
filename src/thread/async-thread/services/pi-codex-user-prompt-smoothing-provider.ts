@@ -12,6 +12,7 @@ import {
 const SYSTEM_PROMPT = `You smooth user prompts for long-horizon coding context.
 
 Preserve the user's intent, uncertainty, explicit constraints, file paths, commands, identifiers, numbers, thresholds, and priorities.
+When protected literals are provided, copy each one exactly; do not normalize, shorten, spell-correct, or regenerate those strings.
 Fix typos, grammar, capitalization, and whitespace.
 Reduce repetition, anger, profanity, and attention-spiking phrasing without moralizing, apologizing, or adding therapeutic framing.
 Return only the smoothed prompt text.`;
@@ -52,7 +53,20 @@ export class PiCodexUserPromptSmoothingProvider implements UserPromptSmoothingPr
         messages: [
           {
             role: "user",
-            content: [{ type: "text", text: input.rawText }],
+            content: [
+              {
+                type: "text",
+                text: input.protectedLiterals.length > 0
+                  ? [
+                      "Protected literals that must appear exactly in the output:",
+                      ...input.protectedLiterals.map((literal) => `- ${literal}`),
+                      "",
+                      "Prompt to smooth:",
+                      input.rawText,
+                    ].join("\n")
+                  : input.rawText,
+              },
+            ],
             timestamp: Date.now(),
           },
         ],

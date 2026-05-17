@@ -10,7 +10,6 @@ import {
   type BandRenderedStatus,
   type BandType,
 } from "../../thread-view/domain/thread-view-records.js";
-import type { ThreadViewStore } from "../../thread-view/store/thread-view-store.js";
 import {
   resolveChunkPlaceholderTokenAccounting,
   resolveRawTurnTokenAccounting,
@@ -103,7 +102,7 @@ export interface BuildCompactionAuditReportInput {
 
 export interface BuildCompactionAuditReportDependencies {
   threadStore: ThreadStore;
-  threadViewStore: ThreadViewStore;
+  legacyThreadViewStore?: unknown;
 }
 
 function bandRecordForType(
@@ -179,7 +178,7 @@ export async function buildCompactionAuditReport(
   input: BuildCompactionAuditReportInput,
   dependencies: BuildCompactionAuditReportDependencies,
 ): Promise<CompactionAuditReport> {
-  const query = new WorkbenchQueryService(dependencies.threadStore, dependencies.threadViewStore);
+  const query = new WorkbenchQueryService(dependencies.threadStore);
   const threadResult = await query.openThread({ threadId: input.threadId });
   if (!threadResult.ok) {
     throw new StewardResultError(threadResult.issues);
@@ -290,24 +289,10 @@ export async function buildCompactionAuditReport(
       const detailedAccounting = resolveChunkPlaceholderTokenAccounting({
         chunk,
         bandType: "detailed",
-        currentSmoothSource: currentSmoothSource
-          ? {
-              text: currentSmoothSource.text,
-              sourceRevision: currentSmoothSource.sourceRevision,
-              tokenCount: currentSmoothTokenCount!,
-            }
-          : undefined,
       });
       const briefAccounting = resolveChunkPlaceholderTokenAccounting({
         chunk,
         bandType: "brief",
-        currentSmoothSource: currentSmoothSource
-          ? {
-              text: currentSmoothSource.text,
-              sourceRevision: currentSmoothSource.sourceRevision,
-              tokenCount: currentSmoothTokenCount!,
-            }
-          : undefined,
       });
       const selectedBandAccounting = bandType === "detailed" ? detailedAccounting : briefAccounting;
       if (selectedBandAccounting) {

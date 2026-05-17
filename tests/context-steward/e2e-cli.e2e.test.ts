@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { after, before, describe, test } from "node:test";
 
@@ -8,16 +9,25 @@ const PROJECT_ROOT = resolve(import.meta.dirname, "../..");
 const PI_BIN = join(PROJECT_ROOT, "node_modules/.bin/pi");
 const EXTENSION_PATH = join(PROJECT_ROOT, ".pi/extensions/context-steward.ts");
 const PI_AGENT_DIR = join(PROJECT_ROOT, ".pi/agent");
+const FETCH_OBSERVER_PATH = join(PROJECT_ROOT, "tests/context-steward/pi-fetch-observer.mjs");
 
 interface PiRunResult {
   stdout: string;
   stderr: string;
   exitCode: number;
+  logPath: string;
 }
 
-function piEnv(): NodeJS.ProcessEnv {
+const piRunLogBySessionDir = new Map<string, string>();
+let piRunCounter = 0;
+
+function piEnv(fetchLogPath?: string): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env, PI_CODING_AGENT_DIR: PI_AGENT_DIR };
   delete env["CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST"];
+  if (fetchLogPath) {
+    env["PI_LONG_HORIZON_FETCH_LOG"] = fetchLogPath;
+    env["NODE_OPTIONS"] = [env["NODE_OPTIONS"], "--import", FETCH_OBSERVER_PATH].filter(Boolean).join(" ");
+  }
   return env;
 }
 
@@ -29,8 +39,13 @@ async function runPi(options: {
   withExtension?: boolean;
   timeout?: number;
 }): Promise<PiRunResult> {
+  const runId = `${Date.now()}-${++piRunCounter}`;
+  const logDir = join(tmpdir(), "pi-long-horizon-e2e-pi-runs");
+  const logPath = join(logDir, `${runId}.log`);
+  const fetchLogPath = join(logDir, `${runId}.fetch.jsonl`);
   const args = [
     "-p",
+    "--verbose",
     "--provider", "openai-codex",
     "--model", "gpt-5.4-mini",
     "--thinking", "low",
@@ -50,10 +65,33 @@ async function runPi(options: {
 
   const timeout = options.timeout ?? 60_000;
 
+  async function persistRunLog(result: Omit<PiRunResult, "logPath">): Promise<PiRunResult> {
+    await mkdir(logDir, { recursive: true });
+    const payload = [
+      `cwd=${options.cwd}`,
+      `sessionDir=${options.sessionDir}`,
+      options.sessionFile ? `sessionFile=${options.sessionFile}` : "sessionFile=",
+      `exitCode=${result.exitCode}`,
+      `args=${JSON.stringify(args)}`,
+      `fetchLog=${fetchLogPath}`,
+      "----- stdout -----",
+      result.stdout,
+      "----- stderr -----",
+      result.stderr,
+      "",
+    ].join("\n");
+    await writeFile(logPath, payload, "utf8");
+    piRunLogBySessionDir.set(options.sessionDir, logPath);
+    if (result.exitCode !== 0) {
+      console.error(`PI e2e run failed; log preserved at ${logPath}`);
+    }
+    return { ...result, logPath };
+  }
+
   return new Promise<PiRunResult>((resolve) => {
     const child = spawn(PI_BIN, args, {
       cwd: options.cwd,
-      env: piEnv(),
+      env: piEnv(fetchLogPath),
       stdio: ["ignore", "pipe", "pipe"],
     });
 
@@ -64,12 +102,12 @@ async function runPi(options: {
 
     const timer = setTimeout(() => {
       child.kill();
-      resolve({ stdout, stderr, exitCode: 124 });
+      void persistRunLog({ stdout, stderr, exitCode: 124 }).then(resolve);
     }, timeout);
 
     child.on("close", (code) => {
       clearTimeout(timer);
-      resolve({ stdout, stderr, exitCode: code ?? 1 });
+      void persistRunLog({ stdout, stderr, exitCode: code ?? 1 }).then(resolve);
     });
   });
 }
@@ -77,7 +115,10 @@ async function runPi(options: {
 async function findSessionFile(sessionDir: string): Promise<string> {
   const files = await readdir(sessionDir, { recursive: true });
   const jsonl = files.find((f) => f.endsWith(".jsonl"));
-  assert.ok(jsonl, `No PI session JSONL found in ${sessionDir}`);
+  assert.ok(
+    jsonl,
+    `No PI session JSONL found in ${sessionDir}. Last PI run log: ${piRunLogBySessionDir.get(sessionDir) ?? "none"}`,
+  );
   return join(sessionDir, jsonl);
 }
 
@@ -99,7 +140,11 @@ async function readJsonl<T>(filePath: string): Promise<T[]> {
 }
 
 function assertPiCleanExit(result: PiRunResult, label: string): void {
-  assert.equal(result.exitCode, 0, `${label}: PI exited with code ${result.exitCode}\nstderr: ${result.stderr}`);
+  assert.equal(
+    result.exitCode,
+    0,
+    `${label}: PI exited with code ${result.exitCode}; PI run log: ${result.logPath}\nstderr: ${result.stderr}`,
+  );
   assert.doesNotMatch(
     result.stderr,
     /Extension error|TARGET_ASSOCIATION_CONFLICT|CAPTURE_APPEND_FAILED|STORE_UNAVAILABLE/,

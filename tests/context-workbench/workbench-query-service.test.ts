@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
-import { readFile, writeFile } from "node:fs/promises";
 import test from "node:test";
 
 import type { StewardResult } from "../../src/context-steward/domain/errors.js";
-import type { MessageRecord, ThreadRecord } from "../../src/context-steward/domain/records.js";
+import type { MessageRecord } from "../../src/context-steward/domain/records.js";
 import { createRealSessionFixture } from "../../src/context-steward/services/fixture-service.js";
 import {
   appendSourceMessage,
@@ -22,14 +21,13 @@ import {
 } from "../../src/context-steward/test/fixtures.js";
 import { WorkbenchQueryService } from "../../src/context-workbench/services/workbench-query-service.js";
 import { FileThreadViewStore } from "../../src/context-workbench/store/file-thread-view-store.js";
-import type { ThreadViewStore } from "../../src/context-workbench/store/thread-view-store.js";
 import {
   makeBandRecord,
   makeWorkbenchChunkRead,
   makeThreadView,
   makeThreadViewMessage,
 } from "../../src/context-workbench/test/fixtures.js";
-import type { WorkbenchChunkRead } from "../../src/context-workbench/domain/thread-view-records.js";
+import type { ThreadViewRecord, WorkbenchChunkRead } from "../../src/context-workbench/domain/thread-view-records.js";
 import { withTempWorkbenchStore } from "../../src/context-workbench/test/temp-workbench-store.js";
 import { withTempFeature3Store } from "../../src/thread-view/test/fixtures.js";
 import {
@@ -164,6 +162,44 @@ async function writeThreadTurns(store: FileThreadStore, threadId: string, turns:
       expectedTurnsRevision: snapshot.thread.turnsRevision,
       turns,
       turnState: "ready",
+    }),
+  );
+}
+
+async function writeProjectionForView(store: FileThreadStore, view: ThreadViewRecord) {
+  return expectOk(
+    await store.writeProjectionRevision({
+      revisionId: `projection_${view.threadViewId}`,
+      threadId: view.threadId,
+      threadViewId: view.threadViewId,
+      targetRuntime: "pi",
+      generatedFilePath: `/tmp/${view.threadViewId}.jsonl`,
+      createdAt: view.updatedAt,
+      sourceStateReference: view.sourceStateReference,
+      status: view.status === "ready" ? "available" : "stale",
+      compactSnapshot: {
+        schemaVersion: "projection.compact-snapshot.v1",
+        sourceStateReference: view.sourceStateReference,
+        bands: {
+          full_fidelity: view.fullFidelityBand,
+          smooth: view.smoothBand,
+          detailed: view.detailedBand,
+          brief: view.briefBand,
+        },
+        generatedEntries: view.emittedMessages.map((message, index) => ({
+          index,
+          generatedSource: message.sourceKind,
+          role: message.sourceKind === "raw_turn_message" ? "custom" : "assistant",
+          sourceReference: message.sourceReference,
+          threadViewMessageId: message.threadViewMessageId,
+          metadata: {
+            bandType: message.bandType,
+            sourceKind: message.sourceKind,
+            sourceReference: message.sourceReference,
+            threadViewMessageId: message.threadViewMessageId,
+          },
+        })),
+      },
     }),
   );
 }
@@ -356,6 +392,8 @@ async function seedDetailFixture(storeRootDir: string) {
   });
   expectOk(await threadViewStore.createThreadView({ view: activeView }));
   expectOk(await threadViewStore.createThreadView({ view: draftView }));
+  await writeProjectionForView(threadStore, draftView);
+  await writeProjectionForView(threadStore, activeView);
 
   return {
     queryService,
@@ -505,6 +543,7 @@ async function seedLowerBandFixture(storeRootDir: string) {
     status: "incomplete",
   });
   expectOk(await threadViewStore.createThreadView({ view: activeView }));
+  await writeProjectionForView(threadStore, activeView);
 
   const chunks = {
     detailedReady: makeWorkbenchChunkRead({
@@ -556,40 +595,7 @@ async function seedLowerBandFixture(storeRootDir: string) {
   };
 }
 
-class CountingThreadViewStore implements ThreadViewStore {
-  openCount = 0;
-  listCount = 0;
-
-  constructor(private readonly delegate: ThreadViewStore) {}
-
-  createThreadView(input: Parameters<ThreadViewStore["createThreadView"]>[0]) {
-    return this.delegate.createThreadView(input);
-  }
-
-  openThreadView(threadId: string, threadViewId: string) {
-    this.openCount += 1;
-    return this.delegate.openThreadView(threadId, threadViewId);
-  }
-
-  listThreadViews(threadId: string) {
-    this.listCount += 1;
-    return this.delegate.listThreadViews(threadId);
-  }
-
-  updateThreadView(input: Parameters<ThreadViewStore["updateThreadView"]>[0]) {
-    return this.delegate.updateThreadView(input);
-  }
-
-  archiveThreadView(threadId: string, threadViewId: string) {
-    return this.delegate.archiveThreadView(threadId, threadViewId);
-  }
-
-  activateThreadView(input: Parameters<ThreadViewStore["activateThreadView"]>[0]) {
-    return this.delegate.activateThreadView(input);
-  }
-}
-
-test("shows source Thread and active view separately", async () => {
+test("shows source Thread and projection-backed active view separately", async () => {
   await withTempWorkbenchStore(async ({ storeRootDir }) => {
     const { threadStore, threadViewStore, queryService } = await createQueryHarness(storeRootDir);
     const thread = expectOk(
@@ -607,11 +613,14 @@ test("shows source Thread and active view separately", async () => {
       status: "ready",
     });
     expectOk(await threadViewStore.createThreadView({ view: activeView }));
+    await writeProjectionForView(threadStore, activeView);
+    await writeProjectionForView(threadStore, activeView);
+    await writeProjectionForView(threadStore, activeView);
 
     const openedThread = expectOk(await queryService.openThread({ threadId: thread.threadId }));
 
     assert.equal(openedThread.thread.threadId, thread.threadId);
-    assert.equal(openedThread.thread.activeThreadViewId, activeView.threadViewId);
+    assert.equal(openedThread.thread.activeThreadViewId, undefined);
     assert.equal(openedThread.activeThreadView?.threadViewId, activeView.threadViewId);
     assert.notEqual(openedThread.thread.threadId, openedThread.activeThreadView?.threadViewId);
   });
@@ -659,8 +668,8 @@ test("reports usable status for a ready Thread", async () => {
   });
 });
 
-test("reports degraded Thread state and names the blocker", async () => {
-  await withTempWorkbenchStore(async ({ storeRootDir, resolveThreadPath }) => {
+test("ignores stale legacy activeThreadViewId state", async () => {
+  await withTempWorkbenchStore(async ({ storeRootDir }) => {
     const { threadStore, threadViewStore, queryService } = await createQueryHarness(storeRootDir);
     const thread = expectOk(
       await openOrCreateManagedThread(
@@ -677,18 +686,14 @@ test("reports degraded Thread state and names the blocker", async () => {
       status: "ready",
     });
     expectOk(await threadViewStore.createThreadView({ view: activeView }));
-
-    const threadJsonPath = resolveThreadPath(thread.threadId, "thread.json");
-    const persistedThread = JSON.parse(await readFile(threadJsonPath, "utf8")) as ThreadRecord;
-    persistedThread.activeThreadViewId = "thread_view_missing";
-    await writeFile(threadJsonPath, `${JSON.stringify(persistedThread, null, 2)}\n`, "utf8");
+    await writeProjectionForView(threadStore, activeView);
 
     const openedThread = expectOk(await queryService.openThread({ threadId: thread.threadId }));
 
-    assert.equal(openedThread.usableStatus, "degraded");
-    assert.equal(openedThread.blockers[0]?.code, "THREAD_VIEW_STATE_CONFLICT");
-    assert.match(openedThread.blockers[0]?.message ?? "", /reconciled/i);
-    assert.equal(openedThread.thread.activeThreadViewId, activeView.threadViewId);
+    assert.equal(openedThread.usableStatus, "ready");
+    assert.deepEqual(openedThread.blockers, []);
+    assert.equal(openedThread.thread.activeThreadViewId, undefined);
+    assert.equal(openedThread.activeThreadView?.threadViewId, activeView.threadViewId);
   });
 });
 
@@ -749,7 +754,6 @@ test("projection failure state appears in inspectable output metadata", async ()
       },
       {
         threadStore: context.threadStore,
-        threadViewStore: context.threadViewStore,
         openAIInputTokenCounter: fakeOpenAICounter,
         piCliHarnessAdapter: createPiCliHarnessAdapter({
           switchSession: async () => {
@@ -817,7 +821,6 @@ test("threshold-degraded compact results remain inspectable through normal workb
       },
       {
         threadStore: context.threadStore,
-        threadViewStore: context.threadViewStore,
       },
     );
 
@@ -905,6 +908,7 @@ test("shows active view band regions in full_fidelity smooth detailed brief orde
       }),
     });
     expectOk(await threadViewStore.createThreadView({ view: activeView }));
+    await writeProjectionForView(threadStore, activeView);
 
     const openedThread = expectOk(await queryService.openThread({ threadId: thread.threadId }));
     const bandOrder = [
@@ -929,31 +933,29 @@ test("shows empty active-view bands explicitly instead of omitting them", async 
         threadStore,
       ),
     );
-    expectOk(
-      await threadViewStore.createThreadView({
-        view: makeThreadView({
-          threadId: thread.threadId,
-          state: "active",
-          name: "Sparse View",
-          status: "ready",
-          fullFidelityBand: makeBandRecord({
-            bandType: "full_fidelity",
-            selectedIds: ["turn-001"],
-            renderedStatus: "ready",
-          }),
-          detailedBand: makeBandRecord({
-            bandType: "detailed",
-            selectedIds: [],
-            renderedStatus: "unknown",
-          }),
-          briefBand: makeBandRecord({
-            bandType: "brief",
-            selectedIds: [],
-            renderedStatus: "unknown",
-          }),
-        }),
+    const activeView = makeThreadView({
+      threadId: thread.threadId,
+      state: "active",
+      name: "Sparse View",
+      status: "ready",
+      fullFidelityBand: makeBandRecord({
+        bandType: "full_fidelity",
+        selectedIds: ["turn-001"],
+        renderedStatus: "ready",
       }),
-    );
+      detailedBand: makeBandRecord({
+        bandType: "detailed",
+        selectedIds: [],
+        renderedStatus: "unknown",
+      }),
+      briefBand: makeBandRecord({
+        bandType: "brief",
+        selectedIds: [],
+        renderedStatus: "unknown",
+      }),
+    });
+    expectOk(await threadViewStore.createThreadView({ view: activeView }));
+    await writeProjectionForView(threadStore, activeView);
 
     const openedThread = expectOk(await queryService.openThread({ threadId: thread.threadId }));
 
@@ -964,7 +966,7 @@ test("shows empty active-view bands explicitly instead of omitting them", async 
   });
 });
 
-test("lists active, draft, and archived Thread Views with their current state", async () => {
+test("lists projection-backed Thread Views with current runtime projection marked active", async () => {
   await withTempWorkbenchStore(async ({ storeRootDir }) => {
     const { threadStore, threadViewStore, queryService } = await createQueryHarness(storeRootDir);
     const thread = expectOk(
@@ -975,42 +977,36 @@ test("lists active, draft, and archived Thread Views with their current state", 
         threadStore,
       ),
     );
-    expectOk(
-      await threadViewStore.createThreadView({
-        view: makeThreadView({
-          threadId: thread.threadId,
-          state: "active",
-          name: "Active View",
-          status: "ready",
-        }),
-      }),
-    );
-    expectOk(
-      await threadViewStore.createThreadView({
-        view: makeThreadView({
-          threadId: thread.threadId,
-          state: "draft",
-          name: "Draft View",
-          status: "incomplete",
-        }),
-      }),
-    );
-    expectOk(
-      await threadViewStore.createThreadView({
-        view: makeThreadView({
-          threadId: thread.threadId,
-          state: "archived",
-          name: "Archived View",
-          status: "unknown",
-        }),
-      }),
-    );
+    const activeView = makeThreadView({
+      threadId: thread.threadId,
+      state: "active",
+      name: "Active View",
+      status: "ready",
+    });
+    const draftView = makeThreadView({
+      threadId: thread.threadId,
+      state: "draft",
+      name: "Draft View",
+      status: "incomplete",
+    });
+    const archivedView = makeThreadView({
+      threadId: thread.threadId,
+      state: "archived",
+      name: "Archived View",
+      status: "unknown",
+    });
+    expectOk(await threadViewStore.createThreadView({ view: activeView }));
+    expectOk(await threadViewStore.createThreadView({ view: draftView }));
+    expectOk(await threadViewStore.createThreadView({ view: archivedView }));
+    await writeProjectionForView(threadStore, draftView);
+    await writeProjectionForView(threadStore, archivedView);
+    await writeProjectionForView(threadStore, activeView);
 
     const openedThread = expectOk(await queryService.openThread({ threadId: thread.threadId }));
 
     assert.deepEqual(
       openedThread.threadViews.map((view) => view.state),
-      ["active", "draft", "archived"],
+      ["archived", "archived", "active"],
     );
   });
 });
@@ -1033,16 +1029,15 @@ test("shows the one-active-view invariant in the Thread View listing", async () 
       status: "ready",
     });
     expectOk(await threadViewStore.createThreadView({ view: activeView }));
-    expectOk(
-      await threadViewStore.createThreadView({
-        view: makeThreadView({
-          threadId: thread.threadId,
-          state: "draft",
-          name: "Secondary Draft View",
-          status: "incomplete",
-        }),
-      }),
-    );
+    const draftView = makeThreadView({
+      threadId: thread.threadId,
+      state: "draft",
+      name: "Secondary Draft View",
+      status: "incomplete",
+    });
+    expectOk(await threadViewStore.createThreadView({ view: draftView }));
+    await writeProjectionForView(threadStore, draftView);
+    await writeProjectionForView(threadStore, activeView);
 
     const openedThread = expectOk(await queryService.openThread({ threadId: thread.threadId }));
     const activeViews = openedThread.threadViews.filter((view) => view.state === "active");
@@ -1085,12 +1080,11 @@ test("opens a fixture Thread through the same inspection surface", async () => {
   });
 });
 
-test("opening a Thread with many archived views keeps active-view lookup cheap", async () => {
+test("opening a Thread ignores supplied ThreadViewStore as active runtime truth", async () => {
   await withTempWorkbenchStore(async ({ storeRootDir }) => {
     const threadStore = new FileThreadStore(storeRootDir);
-    const baseThreadViewStore = new FileThreadViewStore(storeRootDir, threadStore);
-    const countingThreadViewStore = new CountingThreadViewStore(baseThreadViewStore);
-    const queryService = new WorkbenchQueryService(threadStore, countingThreadViewStore);
+    const threadViewStore = new FileThreadViewStore(storeRootDir, threadStore);
+    const queryService = new WorkbenchQueryService(threadStore, threadViewStore);
     const thread = expectOk(
       await openOrCreateManagedThread(
         {
@@ -1105,11 +1099,11 @@ test("opening a Thread with many archived views keeps active-view lookup cheap",
       name: "Cheap Active View",
       status: "ready",
     });
-    expectOk(await countingThreadViewStore.createThreadView({ view: activeView }));
+    expectOk(await threadViewStore.createThreadView({ view: activeView }));
 
     for (let index = 1; index <= 40; index += 1) {
       expectOk(
-        await countingThreadViewStore.createThreadView({
+        await threadViewStore.createThreadView({
           view: makeThreadView({
             threadId: thread.threadId,
             state: "archived",
@@ -1124,9 +1118,8 @@ test("opening a Thread with many archived views keeps active-view lookup cheap",
 
     const openedThread = expectOk(await queryService.openThread({ threadId: thread.threadId }));
 
-    assert.equal(openedThread.activeThreadView?.threadViewId, activeView.threadViewId);
-    assert.equal(countingThreadViewStore.listCount, 1);
-    assert.equal(countingThreadViewStore.openCount, 0);
+    assert.equal(openedThread.activeThreadView, undefined);
+    assert.equal(openedThread.thread.activeThreadViewId, undefined);
   });
 });
 
@@ -1207,7 +1200,7 @@ test("Turn detail includes current Thread View relationships", async () => {
       },
       {
         threadViewId: views.draft.threadViewId,
-        state: "draft",
+        state: "archived",
         bandType: "full_fidelity",
       },
     ]);
@@ -1237,7 +1230,7 @@ test("Thread View detail shows all band regions in order", async () => {
   });
 });
 
-test("Thread View detail includes the emitted context result", async () => {
+test("Thread View detail exposes projection metadata without legacy emitted payloads", async () => {
   await withTempWorkbenchStore(async ({ storeRootDir }) => {
     const { queryService, thread, views } = await seedDetailFixture(storeRootDir);
 
@@ -1248,10 +1241,7 @@ test("Thread View detail includes the emitted context result", async () => {
       }),
     );
 
-    assert.deepEqual(
-      detail.view.emittedMessages.map((message) => message.content),
-      ["Full fidelity alpha context", "Smooth beta context"],
-    );
+    assert.deepEqual(detail.view.emittedMessages, []);
   });
 });
 
@@ -1494,9 +1484,6 @@ test("missing chunk data does not block upper-band inspection", async () => {
 
     assert.deepEqual(detail.view.fullFidelityBand.selectedIds, [turns.closed.turnId]);
     assert.deepEqual(detail.view.smoothBand.selectedIds, [turns.open.turnId]);
-    assert.deepEqual(
-      detail.view.emittedMessages.map((message) => message.content),
-      ["Full fidelity implementation seam", "Smooth open-work seam"],
-    );
+    assert.deepEqual(detail.view.emittedMessages, []);
   });
 });

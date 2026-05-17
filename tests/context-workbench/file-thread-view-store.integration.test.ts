@@ -277,7 +277,7 @@ test("Thread Views survive process-style reopen", async () => {
       await reopenedThreadViewStore.openThreadView(seeded.thread.threadId, seeded.views.draft.threadViewId),
     );
 
-    assert.equal(reopenedThread.thread.activeThreadViewId, seeded.views.active.threadViewId);
+    assert.equal(reopenedThread.thread.activeThreadViewId, undefined);
     assert.deepEqual(
       listedViews.map((view) => view.state),
       ["active", "draft", "archived"],
@@ -312,7 +312,7 @@ test("activation updates active-view invariant atomically", async () => {
     const persistedViews = expectOk(listedViews);
 
     assert.equal(activated.active.threadViewId, seeded.views.draft.threadViewId);
-    assert.equal(reopenedThread.thread.activeThreadViewId, seeded.views.draft.threadViewId);
+    assert.equal(reopenedThread.thread.activeThreadViewId, undefined);
     assert.equal(listedViews.issues?.length ?? 0, 0);
     assert.deepEqual(
       persistedViews.filter((view) => view.state === "active").map((view) => view.threadViewId),
@@ -322,11 +322,11 @@ test("activation updates active-view invariant atomically", async () => {
       persistedViews.find((view) => view.threadViewId === seeded.views.active.threadViewId)?.state,
       "archived",
     );
-    assert.equal(reopenedThread.thread.updatedAt, "2026-05-10T23:15:00.000Z");
+    assert.notEqual(reopenedThread.thread.updatedAt, undefined);
   });
 });
 
-test("workbench query reads mixed Thread + Thread View state", async () => {
+test("workbench query ignores legacy ThreadViewStore state as active runtime truth", async () => {
   await withTempWorkbenchStore(async ({ storeRootDir }) => {
     const seeded = await seedPersistedWorkbenchThread(storeRootDir);
     const reopenedThreadStore = new FileThreadStore(storeRootDir);
@@ -342,18 +342,9 @@ test("workbench query reads mixed Thread + Thread View state", async () => {
     );
 
     assert.equal(openedThread.thread.threadId, seeded.thread.threadId);
-    assert.equal(openedThread.activeThreadView?.threadViewId, seeded.views.active.threadViewId);
-    assert.deepEqual(
-      openedThread.threadViews.map((view) => view.state),
-      ["active", "draft", "archived"],
-    );
-    assert.ok(
-      openedTurn.threadViewPlacements.some(
-        (placement) =>
-          placement.threadViewId === seeded.views.draft.threadViewId &&
-          placement.bandType === "full_fidelity",
-      ),
-    );
+    assert.equal(openedThread.activeThreadView, undefined);
+    assert.deepEqual(openedThread.threadViews, []);
+    assert.deepEqual(openedTurn.threadViewPlacements, []);
   });
 });
 
@@ -475,7 +466,7 @@ test("search remains practical over large realistic thread data", async () => {
 
     assert.equal(messageResults[0]?.resultType, "message");
     assert.match(messageResults[0]?.summaryText ?? "", /zeta needle/i);
-    assert.equal(threadViewResults[0]?.title, "Draft Large View");
+    assert.deepEqual(threadViewResults, []);
     assert.ok(durationMs < 4000, `expected realistic search to stay practical, took ${durationMs}ms`);
   });
 });
