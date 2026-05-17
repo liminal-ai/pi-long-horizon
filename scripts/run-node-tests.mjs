@@ -2,8 +2,14 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
-const mode = process.argv[2] ?? "unit";
+const mode = process.argv[2] ?? "service";
 const testsRoot = "tests";
+const supportedModes = new Set(["service", "e2e"]);
+
+if (!supportedModes.has(mode)) {
+  console.error(`Unknown test mode "${mode}". Expected one of: ${[...supportedModes].join(", ")}.`);
+  process.exit(1);
+}
 
 function listFiles(rootDir) {
   const stack = [rootDir];
@@ -33,18 +39,14 @@ function matchesMode(filePath) {
     return filePath.endsWith(".e2e.test.ts");
   }
 
-  if (mode === "integration") {
-    return filePath.endsWith(".integration.test.ts");
-  }
-
-  return filePath.endsWith(".test.ts") && !filePath.endsWith(".integration.test.ts") && !filePath.endsWith(".e2e.test.ts");
+  return filePath.endsWith(".test.ts") && !filePath.endsWith(".e2e.test.ts");
 }
 
 const testFiles = existsSync(testsRoot) ? listFiles(testsRoot).filter(matchesMode) : [];
 
 if (testFiles.length === 0) {
   console.log(`No ${mode} tests found.`);
-  process.exit(mode === "integration" ? 1 : 0);
+  process.exit(0);
 }
 
 const result = spawnSync(process.execPath, ["--import", "tsx", "--test", ...testFiles], {

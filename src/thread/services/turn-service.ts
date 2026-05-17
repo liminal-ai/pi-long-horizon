@@ -19,6 +19,18 @@ export interface CapturedTurnWriteResult {
   turns: TurnRecord[];
 }
 
+export interface FinalizeOpenTurnInput {
+  store: ThreadStore;
+  threadId: string;
+  closedAt?: string;
+}
+
+export interface FinalizeOpenTurnResult {
+  turns: TurnRecord[];
+  finalizedTurnId?: string;
+  finalized: boolean;
+}
+
 export type CapturedTurnWriter = (
   input: CapturedTurnWriteInput,
 ) => Promise<StewardResult<CapturedTurnWriteResult>>;
@@ -74,6 +86,10 @@ function isPromptMessage(message: MessageRecord): boolean {
   return message.messageKind === "prompt";
 }
 
+function isFinalAssistantMessage(message: MessageRecord): boolean {
+  return message.messageKind === "response" && message.targetMetadata?.stopReason === "stop";
+}
+
 function isAmbiguousTurnBoundaryMessage(message: MessageRecord): boolean {
   if (message.messageKind === "unknown") {
     return true;
@@ -120,6 +136,15 @@ function turnStateIncompleteIssue(threadId: string, message: MessageRecord, deta
     message: `Turn state for thread ${threadId} is incomplete: ${detail}`,
     threadId,
     sourceRange: createSourceRange(message.sourceOrder),
+  };
+}
+
+function turnStateLifecycleIssue(threadId: string, turn: TurnRecord, detail: string): StewardIssue {
+  return {
+    code: "TURN_STATE_INCOMPLETE",
+    message: `Turn state for thread ${threadId} is incomplete: ${detail}`,
+    threadId,
+    sourceRange: { ...turn.sourceRange },
   };
 }
 
@@ -183,6 +208,14 @@ function closeTurn(turn: TurnRecord, message: MessageRecord): TurnRecord {
   return nextTurn;
 }
 
+function closeTurnForLifecycleEnd(turn: TurnRecord, closedAt: string): TurnRecord {
+  const nextTurn = cloneTurn(turn);
+  nextTurn.lifecycleStatus = "closed";
+  nextTurn.closedAt = closedAt;
+  nextTurn.repairStatus = "ready";
+  return nextTurn;
+}
+
 function createPromptTurn(existingTurns: readonly TurnRecord[], message: MessageRecord): TurnRecord {
   const maxTurnOrder = existingTurns.reduce((highest, turn) => Math.max(highest, turn.turnOrder), 0);
 
@@ -219,7 +252,10 @@ export function applyCapturedMessageToTurns(input: ApplyTurnInput): StewardResul
   }
 
   if (openTurnIndex >= 0) {
-    turns[openTurnIndex] = appendMessageToOpenTurn(turns[openTurnIndex]!, input.capturedMessage);
+    const appended = appendMessageToOpenTurn(turns[openTurnIndex]!, input.capturedMessage);
+    turns[openTurnIndex] = isFinalAssistantMessage(input.capturedMessage)
+      ? closeTurn(appended, input.capturedMessage)
+      : appended;
     return ok(turns);
   }
 
@@ -271,6 +307,73 @@ export async function writeCapturedMessageTurns(
 
   return ok({
     turns: writtenTurns.value,
+  });
+}
+
+export async function finalizeOpenTurnOnTurnEnd(
+  input: FinalizeOpenTurnInput,
+): Promise<StewardResult<FinalizeOpenTurnResult>> {
+  const mutationCheck = await input.store.assertCanMutate(input.threadId);
+  if (!mutationCheck.ok) {
+    return mutationCheck;
+  }
+
+  const existingTurns = await input.store.readTurns(input.threadId);
+  if (!existingTurns.ok) {
+    return existingTurns;
+  }
+
+  const turns = sortTurns(existingTurns.value);
+  const openTurns = turns.filter((turn) => turn.lifecycleStatus === "open");
+  if (openTurns.length === 0) {
+    return ok({
+      turns,
+      finalized: false,
+    });
+  }
+
+  if (openTurns.length > 1) {
+    return fail(
+      turnStateLifecycleIssue(
+        input.threadId,
+        openTurns[0]!,
+        "multiple canonical turns are marked open.",
+      ),
+    );
+  }
+
+  const openTurn = openTurns[0]!;
+  const lastTurn = turns[turns.length - 1];
+  if (!lastTurn || lastTurn.turnId !== openTurn.turnId) {
+    return fail(
+      turnStateLifecycleIssue(
+        input.threadId,
+        openTurn,
+        "the open canonical turn is not the latest turn.",
+      ),
+    );
+  }
+
+  const closedAt = input.closedAt ?? new Date().toISOString();
+  const nextTurns = turns.map((turn) =>
+    turn.turnId === openTurn.turnId ? closeTurnForLifecycleEnd(turn, closedAt) : turn,
+  );
+  const writtenTurns = await input.store.writeTurns({
+    threadId: input.threadId,
+    expectedSourceRevision: mutationCheck.value.sourceRevision,
+    expectedMessageHighWatermark: mutationCheck.value.messageHighWatermark,
+    expectedTurnsRevision: mutationCheck.value.turnsRevision,
+    turns: nextTurns,
+    turnState: "ready",
+  });
+  if (!writtenTurns.ok) {
+    return writtenTurns;
+  }
+
+  return ok({
+    turns: writtenTurns.value,
+    finalizedTurnId: openTurn.turnId,
+    finalized: true,
   });
 }
 

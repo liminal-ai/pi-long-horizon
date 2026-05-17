@@ -29,7 +29,7 @@ import { createRealSessionFixture } from "../services/fixture-service.js";
 import { attachExistingPiSession } from "../services/import-service.js";
 import { repairTurnState } from "../services/repair-service.js";
 import { openOrCreateManagedThread } from "../services/thread-service.js";
-import { checkTurnHealth, writeCapturedMessageTurns } from "../services/turn-service.js";
+import { checkTurnHealth, finalizeOpenTurnOnTurnEnd, writeCapturedMessageTurns } from "../services/turn-service.js";
 import { maintainAsyncThread } from "../../thread/async-thread/services/async-thread-run-service.js";
 import { PiCodexUserPromptSmoothingProvider } from "../../thread/async-thread/services/pi-codex-user-prompt-smoothing-provider.js";
 import {
@@ -1947,6 +1947,7 @@ export function registerContextStewardExtension(
   pi.on("turn_end", async (event, ctx) => {
     const startedAt = Date.now();
     let resolveMs = 0;
+    let finalizeMs = 0;
     let maintenanceScheduleMs = 0;
     let refreshMs = 0;
     let threadId = "none";
@@ -1980,6 +1981,18 @@ export function registerContextStewardExtension(
 
       threadId = thread.threadId;
       let stepStartedAt = Date.now();
+      const eventTimestamp = (event as { timestamp?: unknown }).timestamp;
+      const finalized = await finalizeOpenTurnOnTurnEnd({
+        store,
+        threadId: thread.threadId,
+        closedAt: typeof eventTimestamp === "number" ? new Date(eventTimestamp).toISOString() : undefined,
+      });
+      finalizeMs = Date.now() - stepStartedAt;
+      if (!finalized.ok) {
+        throw new StewardResultError(finalized.issues);
+      }
+
+      stepStartedAt = Date.now();
       await refreshActivePromptProjectionFromContext({
         store,
         thread,
@@ -1997,6 +2010,7 @@ export function registerContextStewardExtension(
     } finally {
       logTiming("turn_end", startedAt, {
         resolve: `${resolveMs}ms`,
+        finalize: `${finalizeMs}ms`,
         refresh: `${refreshMs}ms`,
         maintenanceSchedule: `${maintenanceScheduleMs}ms`,
         staleFallback,

@@ -1,5 +1,6 @@
-import { complete, type Model, type Usage } from "@earendil-works/pi-ai";
+import { complete, getModel, type Usage } from "@earendil-works/pi-ai";
 import { AuthStorage } from "@earendil-works/pi-coding-agent";
+import { join } from "node:path";
 
 import {
   USER_PROMPT_SMOOTHING_PROMPT_VERSION,
@@ -15,22 +16,15 @@ Fix typos, grammar, capitalization, and whitespace.
 Reduce repetition, anger, profanity, and attention-spiking phrasing without moralizing, apologizing, or adding therapeutic framing.
 Return only the smoothed prompt text.`;
 
-const MODEL: Model<"openai-codex-responses"> = {
-  id: "gpt-5.4-mini",
-  name: "GPT-5.4 Mini",
-  api: "openai-codex-responses",
-  provider: "openai-codex",
-  baseUrl: "https://api.openai.com/v1",
-  reasoning: true,
-  thinkingLevelMap: { minimal: "none", low: "low", medium: "medium", high: "high", xhigh: "xhigh" },
-  input: ["text"],
-  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-  contextWindow: 400_000,
-  maxTokens: 2_000,
-};
+const MODEL = getModel("openai-codex", "gpt-5.4-mini");
 
 function usageToRecord(usage: Usage | undefined): Record<string, unknown> | undefined {
   return usage ? { ...usage } : undefined;
+}
+
+function defaultAuthPath(): string {
+  const agentDir = process.env.PI_CODING_AGENT_DIR?.trim();
+  return agentDir ? join(agentDir, "auth.json") : ".pi/agent/auth.json";
 }
 
 export interface PiCodexUserPromptSmoothingProviderOptions {
@@ -45,7 +39,7 @@ export class PiCodexUserPromptSmoothingProvider implements UserPromptSmoothingPr
 
   async smoothUserPrompt(input: UserPromptSmoothingProviderInput): Promise<UserPromptSmoothingProviderOutput> {
     const startedAt = Date.now();
-    const authStorage = this.options.authStorage ?? AuthStorage.create(this.options.authPath ?? ".pi/agent/auth.json");
+    const authStorage = this.options.authStorage ?? AuthStorage.create(this.options.authPath ?? defaultAuthPath());
     const apiKey = await authStorage.getApiKey("openai-codex");
     if (!apiKey) {
       throw new Error("OpenAI Codex OAuth credential is not configured for provider openai-codex.");
@@ -79,7 +73,12 @@ export class PiCodexUserPromptSmoothingProvider implements UserPromptSmoothingPr
     );
 
     if (response.stopReason !== "stop") {
-      throw new Error(`User prompt smoothing stopped with reason ${response.stopReason}.`);
+      const details = [
+        `User prompt smoothing stopped with reason ${response.stopReason}.`,
+        response.errorMessage ? `Error: ${response.errorMessage}` : undefined,
+        response.diagnostics?.length ? `Diagnostics: ${JSON.stringify(response.diagnostics)}` : undefined,
+      ].filter(Boolean);
+      throw new Error(details.join(" "));
     }
 
     const text = response.content

@@ -27,6 +27,32 @@ function expectOk<T>(result: StewardResult<T>): T {
   return result.value;
 }
 
+async function waitForAssertion(
+  assertion: () => Promise<void> | void,
+  description: string,
+  timeoutMs = 5_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  let lastError: unknown;
+
+  while (Date.now() < deadline) {
+    try {
+      await assertion();
+      return;
+    } catch (error) {
+      lastError = error;
+      await sleep(10);
+    }
+  }
+
+  if (lastError instanceof Error) {
+    lastError.message = `${description}: ${lastError.message}`;
+    throw lastError;
+  }
+
+  throw new Error(description);
+}
+
 async function seedUserTurn(input: {
   store: FileThreadStore;
   threadId: string;
@@ -282,7 +308,7 @@ test("intentional skip writes deterministic-preserved text without provider fail
 test("schedule dedupes in-flight user prompt smoothing and does not await provider", async () => {
   await withTempThreadStore(async ({ storeRootDir }) => {
     const store = new FileThreadStore(storeRootDir);
-    const { message } = await seedUserTurn({
+    const { message, turn } = await seedUserTurn({
       store,
       threadId: "thread-user-smooth-dedupe",
       prompt: "maybe smooth this",
@@ -317,7 +343,12 @@ test("schedule dedupes in-flight user prompt smoothing and does not await provid
     }
     assert.equal(calls, 1);
     release();
-    await sleep(50);
+    await waitForAssertion(async () => {
+      const state = await readSmoothTurnState({ threadId: message.threadId, turnId: turn.turnId }, { store });
+      const component = state.components?.find((candidate) => candidate.kind === "user_prompt");
+      assert.equal(component?.text, "Maybe smooth this.");
+      assert.equal(component?.quality, "model_smoothed");
+    }, "scheduled user prompt smoothing should finish before temp cleanup");
   });
 });
 

@@ -169,6 +169,10 @@ function upsertUserPromptComponent(
   };
 }
 
+function isRetryablePersistIssue(result: StewardResult<void>): boolean {
+  return !result.ok && result.issues.some((issue) => issue.code === "STALE_SOURCE_REVISION" || issue.code === "STORE_UNAVAILABLE");
+}
+
 async function persistComponent(input: {
   store: ThreadStore;
   threadId: string;
@@ -177,52 +181,62 @@ async function persistComponent(input: {
   component: TurnSmoothComponentRecord;
   generatedAt: string;
 }): Promise<void> {
-  const result = await withSerializedThreadOperation(input.threadId, async (): Promise<StewardResult<void>> => {
-    const snapshotResult = await input.store.openThread(input.threadId);
-    if (!snapshotResult.ok) {
-      return snapshotResult;
-    }
+  let result: StewardResult<void> | undefined;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    result = await withSerializedThreadOperation(input.threadId, async (): Promise<StewardResult<void>> => {
+      const snapshotResult = await input.store.openThread(input.threadId);
+      if (!snapshotResult.ok) {
+        return snapshotResult;
+      }
 
-    const snapshot = snapshotResult.value;
-    const latestTurn = findTurnForMessage(snapshot, input.messageId);
-    if (!latestTurn || latestTurn.turnId !== input.turnId) {
-      return fail({
-        code: "TURN_STATE_MISSING",
-        message: `Turn ${input.turnId} was not found for message ${input.messageId}.`,
+      const snapshot = snapshotResult.value;
+      const latestTurn = findTurnForMessage(snapshot, input.messageId);
+      if (!latestTurn || latestTurn.turnId !== input.turnId) {
+        return fail({
+          code: "TURN_STATE_MISSING",
+          message: `Turn ${input.turnId} was not found for message ${input.messageId}.`,
+          threadId: input.threadId,
+        });
+      }
+
+      const smooth = upsertUserPromptComponent(
+        latestTurn.smooth,
+        input.component,
+        input.threadId,
+        latestTurn,
+        input.generatedAt,
+      );
+      const turns = snapshot.turns.map((turn) =>
+        turn.turnId === latestTurn.turnId
+          ? {
+              ...structuredClone(turn),
+              smooth: toTurnSmoothRecord(smooth),
+            }
+          : structuredClone(turn),
+      );
+      const writeResult = await input.store.writeTurns({
         threadId: input.threadId,
+        expectedSourceRevision: snapshot.thread.sourceRevision,
+        expectedMessageHighWatermark: snapshot.thread.messageHighWatermark,
+        expectedTurnsRevision: snapshot.thread.turnsRevision,
+        turns,
+        turnState: snapshot.thread.status.turnState,
       });
-    }
+      if (!writeResult.ok) {
+        return fail(...writeResult.issues);
+      }
 
-    const smooth = upsertUserPromptComponent(
-      latestTurn.smooth,
-      input.component,
-      input.threadId,
-      latestTurn,
-      input.generatedAt,
-    );
-    const turns = snapshot.turns.map((turn) =>
-      turn.turnId === latestTurn.turnId
-        ? {
-            ...structuredClone(turn),
-            smooth: toTurnSmoothRecord(smooth),
-          }
-        : structuredClone(turn),
-    );
-    const writeResult = await input.store.writeTurns({
-      threadId: input.threadId,
-      expectedSourceRevision: snapshot.thread.sourceRevision,
-      expectedMessageHighWatermark: snapshot.thread.messageHighWatermark,
-      expectedTurnsRevision: snapshot.thread.turnsRevision,
-      turns,
-      turnState: snapshot.thread.status.turnState,
+      return ok(undefined);
     });
-    if (!writeResult.ok) {
-      return fail(...writeResult.issues);
+
+    if (result.ok || !isRetryablePersistIssue(result)) {
+      break;
     }
+  }
 
-    return ok(undefined);
-  });
-
+  if (!result) {
+    throw new Error("User prompt smoothing component persistence did not run.");
+  }
   if (!result.ok) {
     throw new StewardResultError(result.issues);
   }

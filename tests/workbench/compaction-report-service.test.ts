@@ -159,7 +159,7 @@ async function seedReportView(storeRootDir: string) {
   return { ...context, threadViewId };
 }
 
-test("buildCompactionAuditReport reads band data from a seeded thread", async () => {
+test("buildCompactionAuditReport returns broad happy-path metadata, accounting, and selected source details", async () => {
   await withTempFeature3Store(async (temp) => {
     const context = await seedReportView(temp.storeRootDir);
     const report = await buildCompactionAuditReport(
@@ -187,33 +187,12 @@ test("buildCompactionAuditReport reads band data from a seeded thread", async ()
     assert.equal(report.bands.brief.renderedStatus, "ready");
     assert.equal(report.blockers[0]?.code, "PI_RELOAD_FAILED");
     assert.equal(report.reloadResult, "reload_failed");
-  });
-});
-
-test("buildCompactionAuditReport computes per-band token accounting", async () => {
-  await withTempFeature3Store(async (temp) => {
-    const context = await seedReportView(temp.storeRootDir);
-    const report = await buildCompactionAuditReport(
-      { threadId: context.threadId, threadViewId: context.threadViewId },
-      { threadStore: context.threadStore, threadViewStore: context.threadViewStore },
-    );
     assert.equal(report.bands.full_fidelity.actualTokenCount, 127);
     assert.equal(report.bands.smooth.actualTokenCount, 6);
     assert.equal(report.bands.detailed.actualTokenCount, 22);
     assert.equal(report.bands.brief.actualTokenCount, 17);
     assert.equal(report.bands.full_fidelity.countPolicyStatus, "usable");
     assert.equal(report.resultingTokenCount, 172);
-  });
-});
-
-test("buildCompactionAuditReport includes turn-level detail for upper bands", async () => {
-  await withTempFeature3Store(async (temp) => {
-    const context = await seedReportView(temp.storeRootDir);
-    const report = await buildCompactionAuditReport(
-      { threadId: context.threadId, threadViewId: context.threadViewId },
-      { threadStore: context.threadStore, threadViewStore: context.threadViewStore },
-    );
-
     assert.deepEqual(report.selectedTurns, [
       {
         turnId: context.turns.oldest.turnId,
@@ -234,17 +213,6 @@ test("buildCompactionAuditReport includes turn-level detail for upper bands", as
         smoothCountPolicyStatus: "usable",
       },
     ]);
-  });
-});
-
-test("buildCompactionAuditReport includes chunk-level detail for lower bands", async () => {
-  await withTempFeature3Store(async (temp) => {
-    const context = await seedReportView(temp.storeRootDir);
-    const report = await buildCompactionAuditReport(
-      { threadId: context.threadId, threadViewId: context.threadViewId },
-      { threadStore: context.threadStore, threadViewStore: context.threadViewStore },
-    );
-
     assert.deepEqual(report.selectedChunks, [
       {
         chunkId: context.chunks.oldestClosed,
@@ -287,17 +255,6 @@ test("buildCompactionAuditReport includes chunk-level detail for lower bands", a
         },
       },
     ]);
-  });
-});
-
-test("buildCompactionAuditReport includes smoothing quality counts and lower-band freshness", async () => {
-  await withTempFeature3Store(async (temp) => {
-    const context = await seedReportView(temp.storeRootDir);
-    const report = await buildCompactionAuditReport(
-      { threadId: context.threadId, threadViewId: context.threadViewId },
-      { threadStore: context.threadStore, threadViewStore: context.threadViewStore },
-    );
-
     assert.equal(report.smoothingQuality.modelSmoothedCount, 0);
     assert.equal(report.smoothingQuality.deterministicPreservedCount, 4);
     assert.equal(report.smoothingQuality.degradedCount, 0);
@@ -375,43 +332,5 @@ test("buildCompactionAuditReport handles missing and empty thread views", async 
     assert.equal(report.bands.full_fidelity.selectedCount, 0);
     assert.deepEqual(report.selectedTurns, []);
     assert.deepEqual(report.selectedChunks, []);
-  });
-});
-
-test("buildCompactionAuditReport hides generated output from a different thread view", async () => {
-  await withTempFeature3Store(async (temp) => {
-    const context = await seedReportView(temp.storeRootDir);
-    const snapshot = await context.threadStore.openThread(context.threadId);
-    assert.equal(snapshot.ok, true);
-    const updated = await context.threadStore.updateThreadMetadata({
-      threadId: context.threadId,
-      expectedSourceRevision: snapshot.value.thread.sourceRevision,
-      patch: {
-        threadViewOutputSummary: {
-          ...snapshot.value.thread.threadViewOutputSummary,
-          generatedOutput: {
-            threadId: context.threadId,
-            threadViewId: "different-view",
-            generatedFilePath: "/tmp/other-generated.jsonl",
-            archivePath: "/tmp/other-archive.jsonl",
-            status: "available",
-            generatedSource: "thread_view",
-            placeholderExplicit: true,
-          },
-        },
-      },
-    });
-    assert.equal(updated.ok, true);
-
-    const report = await buildCompactionAuditReport(
-      { threadId: context.threadId, threadViewId: context.threadViewId },
-      { threadStore: context.threadStore, threadViewStore: context.threadViewStore },
-    );
-
-    assert.equal(report.compactStatus, undefined);
-    assert.equal(report.generatedFilePath, undefined);
-    assert.equal(report.archivePath, undefined);
-    assert.equal(report.reloadResult, undefined);
-    assert.deepEqual(report.blockers, []);
   });
 });

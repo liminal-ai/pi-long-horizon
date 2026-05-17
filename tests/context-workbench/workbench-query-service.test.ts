@@ -692,9 +692,9 @@ test("reports degraded Thread state and names the blocker", async () => {
   });
 });
 
-test("blocked smooth or chunk state appears in inspectable records", async () => {
+test("blocked smooth state appears in inspectable records without consumer-side placeholder stale checks", async () => {
   await withTempFeature3Store(async ({ storeRootDir }) => {
-    const context = await seedMissingDetailedPlaceholderThread(storeRootDir);
+    const context = await seedDeterministicRebuildThread(storeRootDir);
     const snapshot = await context.threadStore.openThread(context.threadId);
     assert.equal(snapshot.ok, true);
 
@@ -730,9 +730,9 @@ test("blocked smooth or chunk state appears in inspectable records", async () =>
 
     assert.equal(openedThread.usableStatus, "blocked");
     assert.equal(openedThread.blockers.some((issue) => issue.code === "SMOOTH_MISSING"), true);
-    assert.equal(openedThread.blockers.some((issue) => issue.code === "CHUNK_PLACEHOLDER_MISSING"), true);
+    assert.equal(openedThread.blockers.some((issue) => issue.code === "CHUNK_PLACEHOLDER_MISSING"), false);
     assert.equal(turnDetail.turn.smooth, undefined);
-    assert.equal(chunkDetail.chunk.issues?.some((issue) => issue.code === "CHUNK_PLACEHOLDER_MISSING"), true);
+    assert.equal(chunkDetail.chunk.issues?.some((issue) => issue.code === "CHUNK_PLACEHOLDER_MISSING") ?? false, false);
   });
 });
 

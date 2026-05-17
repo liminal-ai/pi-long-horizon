@@ -473,6 +473,7 @@ test("reconstructs prompt-bounded turns from imported prompts, responses, and to
         messages: [
           makePiUserMessage({ content: "Prompt one" }),
           makePiAssistantMessage({
+            stopReason: "toolUse",
             content: [{ type: "toolCall", id: "call-turn-import-001", name: "read", arguments: { path: "a.ts" } }],
           }),
           makePiToolResultMessage({
@@ -500,7 +501,7 @@ test("reconstructs prompt-bounded turns from imported prompts, responses, and to
 
     assert.equal(snapshot.turns.length, 2);
     assert.equal(snapshot.turns[0]?.lifecycleStatus, "closed");
-    assert.equal(snapshot.turns[1]?.lifecycleStatus, "open");
+    assert.equal(snapshot.turns[1]?.lifecycleStatus, "closed");
     assert.deepEqual(snapshot.turns.map((turn) => turn.messageIds.length), [3, 2]);
   });
 });

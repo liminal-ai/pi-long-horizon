@@ -4,6 +4,7 @@ import test from "node:test";
 
 import { ensureSmoothTurn } from "../../src/thread/async-thread/services/smooth-turn-service.js";
 import { updateChunkState } from "../../src/thread/async-thread/services/chunk-service.js";
+import { ensurePlaceholderArtifacts } from "../../src/thread/async-thread/services/placeholder-artifact-service.js";
 import { estimateDeterministicTokenCount } from "../../src/thread/async-thread/domain/smooth-turn-state.js";
 import { estimateCompactedTextTokenCount } from "../../src/thread-view/services/pi-token-estimator.js";
 import { FileThreadStore } from "../../src/thread/store/file-thread-store.js";
@@ -713,5 +714,102 @@ test("hard-max closure creates the next open chunk in the same update pass", asy
     assert.equal(chunks[1]?.lifecycleStatus, "open");
     assert.deepEqual(chunks[1]?.sourceTurnIds, []);
     assert.equal(countOpenChunks(chunks), 1);
+  });
+});
+
+test("closed chunk refreshes from changed component smooth source and clears stale placeholders", async () => {
+  await withTempThreadStore(async ({ storeRootDir }) => {
+    const store = new FileThreadStore(storeRootDir);
+    const threadId = "thread-chunk-refresh-component-source";
+    await createThread(store, threadId);
+
+    const turn = await appendTurn(store, {
+      threadId,
+      turnId: "turn-refresh-source",
+      lifecycleStatus: "closed",
+      userText: "Refresh the chunk from component source.",
+      assistantText: "Original assistant component text.",
+      smooth: true,
+    });
+
+    await updateChunkState(
+      { threadId },
+      {
+        store,
+        settings: {
+          targetMinSmoothTokens: 1,
+          targetSoftMaxSmoothTokens: 1,
+          hardMaxSmoothTokens: 1,
+        },
+        now: () => new Date(DEFAULT_TEST_TIMESTAMP),
+      },
+    );
+
+    const closedChunk = (await readChunks(store, threadId)).find((chunk) => chunk.lifecycleStatus === "closed");
+    assert.ok(closedChunk);
+    await ensurePlaceholderArtifacts(
+      {
+        threadId,
+        chunkId: closedChunk.chunkId,
+      },
+      {
+        store,
+        now: () => new Date(DEFAULT_TEST_TIMESTAMP),
+      },
+    );
+
+    const withPlaceholders = (await readChunks(store, threadId)).find((chunk) => chunk.chunkId === closedChunk.chunkId);
+    assert.ok(withPlaceholders?.placeholders?.detailed?.text);
+    assert.ok(withPlaceholders?.placeholders?.brief?.text);
+
+    const snapshot = expectOk(await store.openThread(threadId));
+    const nextTurns = snapshot.turns.map((candidate) =>
+      candidate.turnId === turn.turnId && candidate.smooth?.components
+        ? {
+            ...candidate,
+            sourceRevision: candidate.sourceRevision + 1,
+            smooth: {
+              ...candidate.smooth,
+              sourceRevision: candidate.sourceRevision + 1,
+              tokenCountMetadata: undefined,
+              materialized: undefined,
+              components: candidate.smooth.components.map((component) =>
+                component.kind === "assistant_message"
+                  ? {
+                      ...component,
+                      text: "Updated assistant component text.",
+                      sourceRevision: candidate.sourceRevision + 1,
+                    }
+                  : {
+                      ...component,
+                      sourceRevision: candidate.sourceRevision + 1,
+                    }),
+            },
+          }
+        : candidate);
+    expectOk(
+      await store.writeTurns({
+        threadId,
+        expectedSourceRevision: snapshot.thread.sourceRevision,
+        expectedMessageHighWatermark: snapshot.thread.messageHighWatermark,
+        expectedTurnsRevision: snapshot.thread.turnsRevision,
+        turns: nextTurns,
+        turnState: snapshot.thread.status.turnState,
+      }),
+    );
+
+    await updateChunkState(
+      { threadId },
+      {
+        store,
+        now: () => new Date(DEFAULT_TEST_TIMESTAMP),
+      },
+    );
+
+    const refreshed = (await readChunks(store, threadId)).find((chunk) => chunk.chunkId === closedChunk.chunkId);
+    assert.ok(refreshed);
+    assert.match(refreshed.smoothText ?? "", /Updated assistant component text\./);
+    assert.equal(refreshed.sourceRevision, turn.sourceRevision + 1);
+    assert.equal(refreshed.placeholders, undefined);
   });
 });

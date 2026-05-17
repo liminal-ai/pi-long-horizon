@@ -439,40 +439,32 @@ test("closed chunk can enter lower band", async () => {
   });
 });
 
-test("strict lower-band selection rejects placeholders stale against current component smooth source", async () => {
+test("strict lower-band selection ignores stale placeholder provenance", async () => {
   await withTempFeature3Store(async ({ storeRootDir }) => {
     const context = await seedDeterministicRebuildThread(storeRootDir);
     const snapshot = await context.threadStore.openThread(context.threadId);
     assert.equal(snapshot.ok, true);
-    const turns = snapshot.value.turns.map((turn) =>
-      turn.turnId === context.turns.middleOlder.turnId
-        ? {
-            ...turn,
-            smooth: turn.smooth
-              ? {
-                  ...turn.smooth,
-                  components: turn.smooth.components?.map((component) =>
-                    component.kind === "user_prompt"
-                      ? {
-                          ...component,
-                          text: "model smoothed replacement text that makes persisted chunk placeholders stale",
-                          quality: "model_smoothed" as const,
-                          strategy: "gpt_5_4_mini_user_prompt_v1" as const,
-                        }
-                      : component,
-                  ),
-                }
-              : turn.smooth,
-          }
-        : turn,
-    );
-    const writeResult = await context.threadStore.writeTurns({
+    const chunks = await context.threadStore.readChunks(context.threadId);
+    assert.equal(chunks.ok, true);
+
+    const writeResult = await context.threadStore.writeChunks({
       threadId: context.threadId,
       expectedSourceRevision: snapshot.value.thread.sourceRevision,
       expectedMessageHighWatermark: snapshot.value.thread.messageHighWatermark,
       expectedTurnsRevision: snapshot.value.thread.turnsRevision,
-      turns,
-      turnState: snapshot.value.thread.status.turnState,
+      chunks: chunks.value.map((chunk) =>
+        chunk.chunkId === context.chunks.newerClosed && chunk.placeholders?.detailed
+          ? {
+              ...chunk,
+              placeholders: {
+                ...chunk.placeholders,
+                detailed: {
+                  ...chunk.placeholders.detailed,
+                  smoothSourceRevision: 999,
+                },
+              },
+            }
+          : chunk),
     });
     assert.equal(writeResult.ok, true);
 
@@ -489,15 +481,13 @@ test("strict lower-band selection rejects placeholders stale against current com
       },
     );
 
-    assert.equal(result.status, "blocked");
-    assert.equal(
-      result.blockers.some(
-        (issue) =>
-          issue.code === "CHUNK_PLACEHOLDER_MISSING" &&
-          issue.cause === "placeholder_smooth_source_stale",
-      ),
-      true,
-    );
+    const opened = await context.threadViewStore.openThreadView(context.threadId, result.draftThreadViewId);
+
+    assert.equal(result.status, "ready");
+    assert.equal(result.blockers.some((issue) => issue.code === "CHUNK_PLACEHOLDER_MISSING"), false);
+    assert.equal(opened.ok, true);
+    assert.deepEqual(opened.value.view.detailedBand.selectedIds, [context.chunks.newerClosed]);
+    assert.deepEqual(opened.value.view.briefBand.selectedIds, [context.chunks.oldestClosed]);
   });
 });
 

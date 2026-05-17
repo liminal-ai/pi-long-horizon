@@ -16,6 +16,7 @@ import {
   makePiAssistantMessage,
   makePiExtensionContext,
   makePiSessionEntries,
+  makePiToolResultMessage,
   makePiUserMessage,
   makeThreadTarget,
 } from "../../src/context-steward/test/fixtures.js";
@@ -199,7 +200,16 @@ test("PI session fixture imports through file path", async () => {
   await withTempThreadStore(async ({ storeRootDir, resolveProjectPath, resolveStorePath }) => {
     const store = new FileThreadStore(storeRootDir);
     const target = await createSessionFixture(resolveProjectPath, {
-      entries: makePiSessionEntries(),
+      entries: makePiSessionEntries({
+        messages: [
+          makePiUserMessage(),
+          makePiAssistantMessage({
+            stopReason: "toolUse",
+            content: [{ type: "toolCall", id: "call-file-thread-import-001", name: "bash", arguments: { cmd: "pwd" } }],
+          }),
+          makePiToolResultMessage({ toolCallId: "call-file-thread-import-001" }),
+        ],
+      }),
     });
 
     const fixture = expectOk(

@@ -326,8 +326,12 @@ test("repair assigns between-boundary messages to the first prompt turn", async 
       thread.threadId,
       ctx,
       makePiAssistantMessage({
+        stopReason: "toolUse",
         responseId: "response-between-001",
-        content: [{ type: "text", text: "Assistant between prompts." }],
+        content: [
+          { type: "text", text: "Assistant between prompts." },
+          { type: "toolCall", id: "call-between-001", name: "bash", arguments: { cmd: "pwd" } },
+        ],
       }),
     );
     const toolResult = await capturePiMessage(
@@ -370,7 +374,13 @@ test("repair preserves the final open turn", async () => {
       store,
       thread.threadId,
       ctx,
-      makePiAssistantMessage({ content: [{ type: "text", text: "Still open." }] }),
+      makePiAssistantMessage({
+        stopReason: "toolUse",
+        content: [
+          { type: "text", text: "Still open." },
+          { type: "toolCall", id: "call-open-001", name: "bash", arguments: { cmd: "pwd" } },
+        ],
+      }),
     );
     await clearTurnState(store, thread.threadId);
 

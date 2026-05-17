@@ -1233,7 +1233,7 @@ test("production PI handlers do not store session and turn lifecycle events as m
   });
 });
 
-test("production turn_end handler smooths closed turns and skips open turns", async () => {
+test("production turn_end handler closes the latest open turn and smooths closed turns", async () => {
   await withTempThreadStore(async ({ storeRootDir, projectDir, resolveProjectPath }) => {
     const target = makeThreadTarget({
       sessionId: "session-production-turn-end-smooth",
@@ -1299,16 +1299,20 @@ test("production turn_end handler smooths closed turns and skips open turns", as
       const after = expectOk(await store.openThread(thread.threadId));
       assert.equal(after.turns[0]?.smooth?.schemaVersion, "component_smooth_turn_v1");
       assert.equal(Array.isArray(after.turns[0]?.smooth?.components), true);
+      assert.equal(after.turns[1]?.lifecycleStatus, "closed");
       assert.equal(typeof after.thread.status.tokenCounting?.status, "string");
-    }, "background turn_end maintenance should smooth the closed turn");
+    }, "background turn_end maintenance should close latest turn and smooth eligible closed turns");
 
     const after = expectOk(await store.openThread(thread.threadId));
     assert.equal(after.turns[0]?.lifecycleStatus, "closed");
-    assert.equal(after.turns[1]?.lifecycleStatus, "open");
+    assert.equal(after.turns[1]?.lifecycleStatus, "closed");
     assert.equal(after.turns[0]?.smooth?.text, undefined);
     assert.equal(after.turns[0]?.smooth?.schemaVersion, "component_smooth_turn_v1");
     assert.equal(after.turns[0]?.smooth?.tokenCountMetadata?.count !== undefined, true);
-    assert.equal(after.turns[1]?.smooth, undefined);
+    const secondKinds = new Set(after.turns[1]?.smooth?.components?.map((component) => component.kind) ?? []);
+    assert.equal(secondKinds.has("assistant_message"), false);
+    assert.equal(secondKinds.has("thinking"), false);
+    assert.equal(secondKinds.has("tool_exchange"), false);
   });
 });
 

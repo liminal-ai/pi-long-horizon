@@ -12,8 +12,6 @@ import {
   type TokenCountSourceDecision,
 } from "../../token-accounting/index.js";
 import type { ChunkState } from "../../thread/async-thread/domain/chunk-state.js";
-import { materializeChunkSmoothTextFromTurns } from "../../thread/async-thread/services/chunk-service.js";
-import { isPlaceholderFreshForChunk } from "../../thread/async-thread/services/placeholder-artifact-service.js";
 import { materializeSmoothTurnFromState } from "../../thread/async-thread/services/smooth-turn-service.js";
 import type { MessageRecord, ThreadRecord, TurnRecord } from "../../thread/domain/records.js";
 import type { ThreadStore } from "../../thread/store/thread-store.js";
@@ -281,30 +279,13 @@ export function resolveChunkPlaceholderTokenAccounting(input: {
   bandType: "detailed" | "brief";
   policyMode?: CounterSourcePolicyMode;
   now?: () => Date;
-  currentSmoothSource?: {
-    text: string;
-    sourceRevision: number;
-    tokenCount: number;
-  };
 }): SelectedTokenAccounting | undefined {
   const policyMode = input.policyMode ?? "prepare";
   const placeholder = input.bandType === "detailed"
     ? input.chunk.placeholders?.detailed
     : input.chunk.placeholders?.brief;
 
-  if (!placeholder?.text) {
-    return undefined;
-  }
-
-  if (
-    !isPlaceholderFreshForChunk(
-      input.chunk,
-      placeholder,
-      input.currentSmoothSource?.text,
-      input.currentSmoothSource?.sourceRevision,
-      input.currentSmoothSource?.tokenCount,
-    )
-  ) {
+  if (placeholder?.status !== "ready" || !placeholder.text) {
     return undefined;
   }
 
@@ -330,36 +311,6 @@ export function resolveChunkPlaceholderTokenAccounting(input: {
     requestedScope: input.bandType === "detailed" ? "detailed_chunk_materialized" : "brief_chunk_materialized",
     policyMode,
   });
-}
-
-function resolveCurrentChunkSmoothSource(input: {
-  chunk: ChunkState;
-  turnsById: ReadonlyMap<string, TurnRecord>;
-  messagesById: ReadonlyMap<string, MessageRecord>;
-  now?: () => Date;
-}): { text: string; sourceRevision: number; tokenCount: number } | undefined {
-  const materialized = materializeChunkSmoothTextFromTurns({
-    chunk: input.chunk,
-    turnsById: input.turnsById,
-    messagesById: input.messagesById,
-  });
-  if (!materialized) {
-    return undefined;
-  }
-
-  const tokenCount = countChunkSmoothMaterialized(
-    {
-      ...input.chunk,
-      smoothText: materialized.text,
-      sourceRevision: materialized.sourceRevision,
-    },
-    { now: input.now },
-  ).count;
-
-  return {
-    ...materialized,
-    tokenCount,
-  };
 }
 
 function allocateBandBudgets(
@@ -531,45 +482,15 @@ function selectLowerBandChunkIds(
   let consumedCandidateCount = 0;
 
   for (const candidate of candidates) {
-    const placeholder = bandType === "detailed"
-      ? candidate.chunk.placeholders?.detailed
-      : candidate.chunk.placeholders?.brief;
-    const currentSmoothSource = resolveCurrentChunkSmoothSource({
-      chunk: candidate.chunk,
-      turnsById,
-      messagesById,
-      now,
-    });
     const accounting = resolveChunkPlaceholderTokenAccounting({
       chunk: candidate.chunk,
       bandType,
       policyMode,
       now,
-      currentSmoothSource,
     });
 
     if (selectedChunkIds.length === 0) {
-      if (!placeholder?.text || !accounting) {
-        if (
-          placeholder?.text &&
-          currentSmoothSource &&
-          !isPlaceholderFreshForChunk(
-            candidate.chunk,
-            placeholder,
-            currentSmoothSource.text,
-            currentSmoothSource.sourceRevision,
-            currentSmoothSource.tokenCount,
-          )
-        ) {
-          blockers.push(
-            createStewardIssue({
-              code: "CHUNK_PLACEHOLDER_MISSING",
-              message: `Chunk ${candidate.chunk.chunkId} has stale ${bandType} placeholder provenance for the current component smooth source.`,
-              threadId: candidate.chunk.threadId,
-              cause: "placeholder_smooth_source_stale",
-            }),
-          );
-        }
+      if (!accounting) {
         break;
       }
 
@@ -580,27 +501,7 @@ function selectLowerBandChunkIds(
       continue;
     }
 
-    if (!placeholder?.text || !accounting) {
-      if (
-        placeholder?.text &&
-        currentSmoothSource &&
-        !isPlaceholderFreshForChunk(
-          candidate.chunk,
-          placeholder,
-          currentSmoothSource.text,
-          currentSmoothSource.sourceRevision,
-          currentSmoothSource.tokenCount,
-        )
-      ) {
-        blockers.push(
-          createStewardIssue({
-            code: "CHUNK_PLACEHOLDER_MISSING",
-            message: `Chunk ${candidate.chunk.chunkId} has stale ${bandType} placeholder provenance for the current component smooth source.`,
-            threadId: candidate.chunk.threadId,
-            cause: "placeholder_smooth_source_stale",
-          }),
-        );
-      }
+    if (!accounting) {
       break;
     }
 

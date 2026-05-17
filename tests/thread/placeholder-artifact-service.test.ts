@@ -250,105 +250,62 @@ async function createClosedChunk(store: FileThreadStore, threadId: string): Prom
   return readClosedChunk(store, threadId);
 }
 
-test("closed chunk gets 30 percent placeholder", async () => {
-  await withTempThreadStore(async ({ storeRootDir }) => {
+test("closed chunk gets detailed placeholder with marker, strategy, and persisted token metadata", async () => {
+  await withTempThreadStore(async ({ storeRootDir, resolveChunksPath }) => {
     const store = new FileThreadStore(storeRootDir);
     const chunk = await createClosedChunk(store, "thread-placeholder-detailed");
 
     const result = await ensurePlaceholderArtifacts(
-      {
-        threadId: "thread-placeholder-detailed",
-        chunkId: chunk.chunkId,
-      },
-      {
-        store,
-        now: () => new Date(DEFAULT_TEST_TIMESTAMP),
-      },
+      { threadId: "thread-placeholder-detailed", chunkId: chunk.chunkId },
+      { store, now: () => new Date(DEFAULT_TEST_TIMESTAMP) },
     );
 
-    const persisted = await readClosedChunk(store, "thread-placeholder-detailed");
+    const reopenedStore = new FileThreadStore(storeRootDir);
+    const persisted = await readClosedChunk(reopenedStore, "thread-placeholder-detailed");
+    const persistedJson = JSON.parse(
+      await readFile(resolveChunksPath("thread-placeholder-detailed"), "utf8"),
+    ) as ChunkState[];
     const expected = buildExpectedPlaceholder(persisted, "detailed");
 
     assert.equal(result.detailedReady, true);
     assert.equal(persisted.placeholders?.detailed?.text, expected.text);
-    assert.equal(persisted.placeholders?.detailed?.tokenCountMetadata?.count, persisted.placeholders?.detailed?.tokenCountMetadata?.count);
+    assert.match(persisted.placeholders?.detailed?.text ?? "", /\[deterministic-placeholder:detailed\]/);
+    assert.match(persisted.placeholders?.detailed?.text ?? "", /\[not-semantic-summary\]/);
     assert.equal(persisted.placeholders?.detailed?.tokenCountMetadata?.scope, "detailed_chunk_materialized");
+    assert.match(persisted.placeholders?.detailed?.tokenCountMetadata?.representationHash ?? "", /^sha256:/);
     assert.equal(persisted.placeholders?.detailed?.strategy, "deterministic_truncate_30");
-  });
-});
-
-test("detailed placeholder explicitly marked", async () => {
-  await withTempThreadStore(async ({ storeRootDir }) => {
-    const store = new FileThreadStore(storeRootDir);
-    const chunk = await createClosedChunk(store, "thread-placeholder-detailed-marker");
-
-    await ensurePlaceholderArtifacts(
-      {
-        threadId: "thread-placeholder-detailed-marker",
-        chunkId: chunk.chunkId,
-      },
-      {
-        store,
-        now: () => new Date(DEFAULT_TEST_TIMESTAMP),
-      },
+    assert.deepEqual(
+      persistedJson[0]?.placeholders?.detailed?.tokenCountMetadata,
+      persisted.placeholders?.detailed?.tokenCountMetadata,
     );
-
-    const detailedText = (await readClosedChunk(store, "thread-placeholder-detailed-marker")).placeholders?.detailed?.text;
-    assert.match(detailedText ?? "", /\[deterministic-placeholder:detailed\]/);
-    assert.match(detailedText ?? "", /\[not-semantic-summary\]/);
   });
 });
 
-test("closed chunk gets 5 percent placeholder", async () => {
+test("closed chunk gets brief placeholder with marker, strategy, and token metadata", async () => {
   await withTempThreadStore(async ({ storeRootDir }) => {
     const store = new FileThreadStore(storeRootDir);
     const chunk = await createClosedChunk(store, "thread-placeholder-brief");
 
     const result = await ensurePlaceholderArtifacts(
-      {
-        threadId: "thread-placeholder-brief",
-        chunkId: chunk.chunkId,
-      },
-      {
-        store,
-        now: () => new Date(DEFAULT_TEST_TIMESTAMP),
-      },
+      { threadId: "thread-placeholder-brief", chunkId: chunk.chunkId },
+      { store, now: () => new Date(DEFAULT_TEST_TIMESTAMP) },
     );
 
-    const persisted = await readClosedChunk(store, "thread-placeholder-brief");
+    const reopenedStore = new FileThreadStore(storeRootDir);
+    const persisted = await readClosedChunk(reopenedStore, "thread-placeholder-brief");
     const expected = buildExpectedPlaceholder(persisted, "brief");
 
     assert.equal(result.briefReady, true);
     assert.equal(persisted.placeholders?.brief?.text, expected.text);
-    assert.equal(persisted.placeholders?.brief?.tokenCountMetadata?.count, persisted.placeholders?.brief?.tokenCountMetadata?.count);
+    assert.match(persisted.placeholders?.brief?.text ?? "", /\[deterministic-placeholder:brief\]/);
+    assert.match(persisted.placeholders?.brief?.text ?? "", /\[not-semantic-summary\]/);
     assert.equal(persisted.placeholders?.brief?.tokenCountMetadata?.scope, "brief_chunk_materialized");
+    assert.match(persisted.placeholders?.brief?.tokenCountMetadata?.representationHash ?? "", /^sha256:/);
     assert.equal(persisted.placeholders?.brief?.strategy, "deterministic_truncate_5");
   });
 });
 
-test("brief placeholder explicitly marked", async () => {
-  await withTempThreadStore(async ({ storeRootDir }) => {
-    const store = new FileThreadStore(storeRootDir);
-    const chunk = await createClosedChunk(store, "thread-placeholder-brief-marker");
-
-    await ensurePlaceholderArtifacts(
-      {
-        threadId: "thread-placeholder-brief-marker",
-        chunkId: chunk.chunkId,
-      },
-      {
-        store,
-        now: () => new Date(DEFAULT_TEST_TIMESTAMP),
-      },
-    );
-
-    const briefText = (await readClosedChunk(store, "thread-placeholder-brief-marker")).placeholders?.brief?.text;
-    assert.match(briefText ?? "", /\[deterministic-placeholder:brief\]/);
-    assert.match(briefText ?? "", /\[not-semantic-summary\]/);
-  });
-});
-
-test("placeholder output deterministic for same source state", async () => {
+test("placeholder output is deterministic for the same source state", async () => {
   await withTempThreadStore(async ({ storeRootDir }) => {
     const store = new FileThreadStore(storeRootDir);
     const chunk = await createClosedChunk(store, "thread-placeholder-deterministic");
@@ -382,7 +339,7 @@ test("placeholder output deterministic for same source state", async () => {
   });
 });
 
-test("placeholder output can regenerate after deletion", async () => {
+test("placeholder output can regenerate after deletion or invalid persisted records", async () => {
   await withTempThreadStore(async ({ storeRootDir }) => {
     const store = new FileThreadStore(storeRootDir);
     const chunk = await createClosedChunk(store, "thread-placeholder-regenerate");
@@ -427,91 +384,13 @@ test("placeholder output can regenerate after deletion", async () => {
     assert.equal(regenerated.placeholders?.brief?.text, originalChunk.placeholders?.brief?.text);
     assert.equal(regenerated.placeholders?.detailed?.generatedAt, SECOND_TEST_TIMESTAMP);
     assert.equal(regenerated.placeholders?.brief?.generatedAt, SECOND_TEST_TIMESTAMP);
-  });
-});
 
-test("detailed placeholder records token count", async () => {
-  await withTempThreadStore(async ({ storeRootDir, resolveChunksPath }) => {
-    const store = new FileThreadStore(storeRootDir);
-    const chunk = await createClosedChunk(store, "thread-placeholder-detailed-token");
-
-    await ensurePlaceholderArtifacts(
-      {
-        threadId: "thread-placeholder-detailed-token",
-        chunkId: chunk.chunkId,
-      },
-      {
-        store,
-        now: () => new Date(DEFAULT_TEST_TIMESTAMP),
-      },
-    );
-
-    const reopenedStore = new FileThreadStore(storeRootDir);
-    const reopenedChunk = await readClosedChunk(reopenedStore, "thread-placeholder-detailed-token");
-    const persistedJson = JSON.parse(
-      await readFile(resolveChunksPath("thread-placeholder-detailed-token"), "utf8"),
-    ) as ChunkState[];
-
-    assert.equal(reopenedChunk.placeholders?.detailed?.tokenCountMetadata?.scope, "detailed_chunk_materialized");
-    assert.equal(reopenedChunk.placeholders?.detailed?.tokenCountMetadata?.count, reopenedChunk.placeholders?.detailed?.tokenCountMetadata?.count);
-    assert.match(reopenedChunk.placeholders?.detailed?.tokenCountMetadata?.representationHash ?? "", /^sha256:/);
-    assert.equal(persistedJson[0]?.placeholders?.detailed?.tokenCountMetadata?.count, reopenedChunk.placeholders?.detailed?.tokenCountMetadata?.count);
-    assert.deepEqual(
-      persistedJson[0]?.placeholders?.detailed?.tokenCountMetadata,
-      reopenedChunk.placeholders?.detailed?.tokenCountMetadata,
-    );
-  });
-});
-
-test("brief placeholder records token count and strategy", async () => {
-  await withTempThreadStore(async ({ storeRootDir }) => {
-    const store = new FileThreadStore(storeRootDir);
-    const chunk = await createClosedChunk(store, "thread-placeholder-brief-token");
-
-    await ensurePlaceholderArtifacts(
-      {
-        threadId: "thread-placeholder-brief-token",
-        chunkId: chunk.chunkId,
-      },
-      {
-        store,
-        now: () => new Date(DEFAULT_TEST_TIMESTAMP),
-      },
-    );
-
-    const reopenedStore = new FileThreadStore(storeRootDir);
-    const reopenedChunk = await readClosedChunk(reopenedStore, "thread-placeholder-brief-token");
-
-    assert.equal(reopenedChunk.placeholders?.brief?.tokenCountMetadata?.scope, "brief_chunk_materialized");
-    assert.equal(reopenedChunk.placeholders?.brief?.tokenCountMetadata?.count, reopenedChunk.placeholders?.brief?.tokenCountMetadata?.count);
-    assert.match(reopenedChunk.placeholders?.brief?.tokenCountMetadata?.representationHash ?? "", /^sha256:/);
-    assert.equal(reopenedChunk.placeholders?.brief?.strategy, "deterministic_truncate_5");
-  });
-});
-
-test("repeated regeneration preserves explicit placeholder markers", async () => {
-  await withTempThreadStore(async ({ storeRootDir }) => {
-    const store = new FileThreadStore(storeRootDir);
-    const chunk = await createClosedChunk(store, "thread-placeholder-markers-regenerate");
-
-    await ensurePlaceholderArtifacts(
-      {
-        threadId: "thread-placeholder-markers-regenerate",
-        chunkId: chunk.chunkId,
-      },
-      {
-        store,
-        now: () => new Date(DEFAULT_TEST_TIMESTAMP),
-      },
-    );
-
-    const invalidChunk = await readClosedChunk(store, "thread-placeholder-markers-regenerate");
-    const chunks = await readChunks(store, "thread-placeholder-markers-regenerate");
+    const chunksAfterDeletionRepair = await readChunks(store, "thread-placeholder-regenerate");
     await writeChunks(
       store,
-      "thread-placeholder-markers-regenerate",
-      chunks.map((candidate) =>
-        candidate.chunkId === invalidChunk.chunkId
+      "thread-placeholder-regenerate",
+      chunksAfterDeletionRepair.map((candidate) =>
+        candidate.chunkId === regenerated.chunkId
           ? {
               ...candidate,
               sourceTurnIds: [...candidate.sourceTurnIds],
@@ -542,19 +421,7 @@ test("repeated regeneration preserves explicit placeholder markers", async () =>
 
     await ensurePlaceholderArtifacts(
       {
-        threadId: "thread-placeholder-markers-regenerate",
-        chunkId: chunk.chunkId,
-      },
-      {
-        store,
-        now: () => new Date(SECOND_TEST_TIMESTAMP),
-      },
-    );
-    const repaired = await readClosedChunk(store, "thread-placeholder-markers-regenerate");
-
-    await ensurePlaceholderArtifacts(
-      {
-        threadId: "thread-placeholder-markers-regenerate",
+        threadId: "thread-placeholder-regenerate",
         chunkId: chunk.chunkId,
       },
       {
@@ -562,7 +429,19 @@ test("repeated regeneration preserves explicit placeholder markers", async () =>
         now: () => new Date(THIRD_TEST_TIMESTAMP),
       },
     );
-    const repeated = await readClosedChunk(store, "thread-placeholder-markers-regenerate");
+    const repaired = await readClosedChunk(store, "thread-placeholder-regenerate");
+
+    await ensurePlaceholderArtifacts(
+      {
+        threadId: "thread-placeholder-regenerate",
+        chunkId: chunk.chunkId,
+      },
+      {
+        store,
+        now: () => new Date(THIRD_TEST_TIMESTAMP),
+      },
+    );
+    const repeated = await readClosedChunk(store, "thread-placeholder-regenerate");
 
     assert.match(repaired.placeholders?.detailed?.text ?? "", /\[deterministic-placeholder:detailed\]/);
     assert.match(repaired.placeholders?.brief?.text ?? "", /\[deterministic-placeholder:brief\]/);

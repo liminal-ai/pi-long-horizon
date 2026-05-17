@@ -217,7 +217,16 @@ test("creates a fixture from a PI session import without creating a managed thre
   await withTempThreadStore(async ({ storeRootDir, resolveProjectPath, resolveStorePath }) => {
     const store = new FileThreadStore(storeRootDir);
     const target = await createSessionFixture(resolveProjectPath, {
-      entries: makePiSessionEntries(),
+      entries: makePiSessionEntries({
+        messages: [
+          makePiUserMessage(),
+          makePiAssistantMessage({
+            stopReason: "toolUse",
+            content: [{ type: "toolCall", id: "call-fixture-import-001", name: "bash", arguments: { cmd: "pwd" } }],
+          }),
+          makePiToolResultMessage({ toolCallId: "call-fixture-import-001" }),
+        ],
+      }),
     });
 
     const fixture = expectOk(
