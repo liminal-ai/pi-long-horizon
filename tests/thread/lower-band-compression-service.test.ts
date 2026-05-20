@@ -498,17 +498,21 @@ test("routing uses ceil(chars divided by 3.5) and persists lean semantic artifac
     const persisted = await readChunk(store, threadId, chunkId);
     assert.deepEqual(
       Object.keys(persisted.lowerBand?.detailed ?? {}).sort(),
-      ["band", "status", "text", "tokenCountMetadata", "updatedAt"],
+      ["band", "providerMetadata", "status", "text", "tokenCountMetadata", "updatedAt"],
     );
+    assert.equal(persisted.lowerBand?.detailed?.providerMetadata?.providerId, "openai-codex");
+    assert.equal(persisted.lowerBand?.detailed?.providerMetadata?.modelId, "gpt-5.4-mini");
+    assert.equal(persisted.lowerBand?.detailed?.providerMetadata?.reasoningEffort, "medium");
+    assert.equal(persisted.lowerBand?.detailed?.providerMetadata?.promptVersion, "lower_band_detailed_v1");
   });
 });
 
-test("oversized transcript warns on stderr and truncates provider input to the 4,000 estimated-token ceiling", async () => {
+test("oversized transcript warns on stderr and truncates provider input to the 8,500 estimated-token ceiling", async () => {
   await withTempThreadStore(async ({ storeRootDir }) => {
     const store = new FileThreadStore(storeRootDir);
     const threadId = "thread-lower-band-truncate";
     const chunkId = "chunk-truncate";
-    const transcriptText = "x".repeat(15_000);
+    const transcriptText = "x".repeat(35_000);
     await createThread(store, threadId);
     await seedClosedChunk(store, { threadId, chunkId, transcriptText });
 
@@ -550,8 +554,8 @@ test("oversized transcript warns on stderr and truncates provider input to the 4
       process.stderr.write = originalWrite;
     }
 
-    assert.ok(warnings.some((warning) => warning.includes("exceeded 4000 estimated tokens")));
-    assert.equal(capturedTranscriptLength, 14_000);
+    assert.ok(warnings.some((warning) => warning.includes("exceeded 8500 estimated tokens")));
+    assert.equal(capturedTranscriptLength, 29_750);
   });
 });
 
@@ -720,8 +724,12 @@ test("third lower-band size attempt escalates to GPT-5.5 medium and accepts the 
     assert.equal(persisted.lowerBand?.detailed?.text, "q".repeat(10));
     assert.deepEqual(
       Object.keys(persisted.lowerBand?.detailed ?? {}).sort(),
-      ["band", "status", "text", "tokenCountMetadata", "updatedAt"],
+      ["band", "providerMetadata", "status", "text", "tokenCountMetadata", "updatedAt"],
     );
+    assert.equal(persisted.lowerBand?.detailed?.providerMetadata?.providerId, "openai-codex");
+    assert.equal(persisted.lowerBand?.detailed?.providerMetadata?.modelId, "gpt-5.5");
+    assert.equal(persisted.lowerBand?.detailed?.providerMetadata?.reasoningEffort, "medium");
+    assert.equal(persisted.lowerBand?.detailed?.providerMetadata?.promptVersion, "lower_band_detailed_v1");
   });
 });
 

@@ -1921,7 +1921,6 @@ export function registerContextStewardExtension(
         {
           store: createStore(input.ctx),
           openAIInputTokenCounter,
-          exactTokenCountRepairEnabled: false,
           tokenCountModel: input.tokenCountModel,
         },
       );

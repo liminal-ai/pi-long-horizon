@@ -34,6 +34,14 @@ import { openOrCreateManagedThread } from "../../src/context-steward/services/th
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { TokenCountingMaintenanceRecord } from "../../src/thread/domain/records.js";
 import type { UpdateThreadMetadataInput } from "../../src/thread/store/thread-store.js";
+import {
+  assertTokenCountRecord,
+  countBriefChunkMaterialized,
+  countChunkSmoothMaterialized,
+  countDetailedChunkMaterialized,
+  countRawTurnMaterialized,
+  countSmoothTurnMaterialized,
+} from "../../src/token-accounting/index.js";
 
 function expectOk<T>(result: StewardResult<T>): T {
   assert.equal(result.ok, true, result.ok ? undefined : result.issues.map((issue) => issue.code).join(", "));
@@ -113,6 +121,52 @@ class FirstReadTurnsBlockingFileThreadStore extends FileThreadStore {
 
     return super.readTurns(threadId);
   }
+}
+
+class ExactCountingTestCounter {
+  rawCalls = 0;
+  smoothCalls = 0;
+  chunkSmoothCalls = 0;
+  detailedCalls = 0;
+  briefCalls = 0;
+
+  async countRawTurnMaterialized(input: any) {
+    this.rawCalls += 1;
+    return exactTokenRecord(countRawTurnMaterialized(input), 10_000 + this.rawCalls, input.model);
+  }
+
+  async countSmoothTurnMaterialized(turn: any, options: any = {}) {
+    this.smoothCalls += 1;
+    return exactTokenRecord(countSmoothTurnMaterialized(turn), 20_000 + this.smoothCalls, options.model);
+  }
+
+  async countChunkSmoothMaterialized(chunk: any, options: any = {}) {
+    this.chunkSmoothCalls += 1;
+    return exactTokenRecord(countChunkSmoothMaterialized(chunk), 30_000 + this.chunkSmoothCalls, options.model);
+  }
+
+  async countDetailedChunkMaterialized(chunk: any, options: any = {}) {
+    this.detailedCalls += 1;
+    return exactTokenRecord(countDetailedChunkMaterialized(chunk), 40_000 + this.detailedCalls, options.model);
+  }
+
+  async countBriefChunkMaterialized(chunk: any, options: any = {}) {
+    this.briefCalls += 1;
+    return exactTokenRecord(countBriefChunkMaterialized(chunk), 50_000 + this.briefCalls, options.model);
+  }
+}
+
+function exactTokenRecord(expected: any, count: number, model?: string) {
+  return assertTokenCountRecord({
+    ...expected,
+    count,
+    source: "provider_input_count",
+    trustClass: "exact",
+    provider: "openai",
+    model: model ?? "gpt-test-exact-counter",
+    createdAt: DEFAULT_TEST_TIMESTAMP,
+    provenance: "tests.context-steward.capture-service.exact-counter",
+  });
 }
 
 class TokenCountingTrackingStore extends FileThreadStore {
@@ -1335,8 +1389,10 @@ test("production turn_end handler closes the latest open turn and smooths closed
     assert.equal(before.turns[1]?.smooth, undefined);
 
     const pi = new FakeExtensionApi();
+    const tokenCounter = new ExactCountingTestCounter();
     registerContextStewardExtension(pi as unknown as ExtensionAPI, {
       createStore: () => store,
+      openAIInputTokenCounter: tokenCounter as any,
     });
     await pi.emit(
       "turn_end",
@@ -1353,6 +1409,10 @@ test("production turn_end handler closes the latest open turn and smooths closed
       thread.threadId,
       "background turn_end maintenance should close latest turn and smooth eligible closed turns",
     );
+    const deadline = Date.now() + 5_000;
+    while ((tokenCounter.rawCalls < 2 || tokenCounter.smoothCalls < 2) && Date.now() < deadline) {
+      await sleep(10);
+    }
 
     const after = expectOk(await store.openThread(thread.threadId));
     assert.equal(after.turns[0]?.lifecycleStatus, "closed");
@@ -1360,7 +1420,13 @@ test("production turn_end handler closes the latest open turn and smooths closed
     assert.equal(after.turns[0]?.smooth?.text, undefined);
     assert.equal(after.turns[0]?.smooth?.schemaVersion, "component_smooth_turn_v1");
     assert.equal(Array.isArray(after.turns[0]?.smooth?.components), true);
-    assert.equal(after.turns[0]?.smooth?.tokenCountMetadata?.count !== undefined, true);
+    assert.equal(after.turns[0]?.rawTokenCountMetadata?.source, "provider_input_count");
+    assert.equal(after.turns[0]?.rawTokenCountMetadata?.trustClass, "exact");
+    assert.equal(after.turns[0]?.smooth?.tokenCountMetadata?.source, "provider_input_count");
+    assert.equal(after.turns[0]?.smooth?.tokenCountMetadata?.trustClass, "exact");
+    assert.equal(after.thread.status.tokenCounting?.status, "ready");
+    assert.equal(tokenCounter.rawCalls >= 2, true);
+    assert.equal(tokenCounter.smoothCalls >= 2, true);
     const secondKinds = new Set(after.turns[1]?.smooth?.components?.map((component) => component.kind) ?? []);
     assert.equal(secondKinds.has("assistant_message"), false);
     assert.equal(secondKinds.has("thinking"), false);

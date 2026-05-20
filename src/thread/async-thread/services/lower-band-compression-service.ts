@@ -28,7 +28,7 @@ import {
 export const LOWER_BAND_DETAIL_PROMPT_VERSION = "lower_band_detailed_v1" as const;
 export const LOWER_BAND_BRIEF_PROMPT_VERSION = "lower_band_brief_v1" as const;
 export const LOWER_BAND_ROUTING_DIVISOR = 3.5;
-export const LOWER_BAND_MAX_ESTIMATED_INPUT_TOKENS = 4_000;
+export const LOWER_BAND_MAX_ESTIMATED_INPUT_TOKENS = 8_500;
 export const LOWER_BAND_MAX_ATTEMPTS = 3;
 export const LOWER_BAND_ESCALATED_MODEL_ID = "gpt-5.5" as const;
 export const LOWER_BAND_ESCALATED_REASONING_EFFORT = "medium" as const;
