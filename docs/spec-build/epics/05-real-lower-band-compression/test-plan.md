@@ -122,7 +122,7 @@ to service-tier or provider-backed names when practical.
 
 ### Quarantined Heavyweight Prep Proof
 
-The repo currently contains a skipped, quarantined pseudo-test at:
+The repo previously carried a skipped, quarantined pseudo-test at:
 
 - `tests/thread-view/real-long-thread-fixture-prep.NEEDS-REFACTOR.ts`
 
@@ -131,6 +131,8 @@ not be restored as a standalone proof. The clean decomposition is:
 
 - `tests/thread-view/real-long-thread-fixture-prep.ts` remains reusable test
   infrastructure for cloning and preparing the real long-thread fixture
+- focused file-backed prep invariants now live in
+  `tests/thread-view/real-long-thread-fixture-prep.test.ts`
 - any unique prep invariants that are still unproven move into focused
   file-backed service-tier tests
 - real runtime proof remains in
@@ -342,7 +344,7 @@ hazards that AC/TC coverage alone will miss.
 | Placeholder-free generated rollout | `tests/context-steward/long-thread-real-pi-execution.e2e.test.ts` | Same Story 5 runtime E2E asserts generated output contains semantic lower-band text and no deterministic placeholder fallback | Placeholder cutover needs one full-runtime proof that the final generated artifact is clean |
 | Operator command surface inspection | `tests/context-steward/e2e-cli.e2e.test.ts` | Real outer command surface can report lower-band readiness/failure without reading placeholder-era summaries | Service-tier workbench tests prove formatting; one E2E proves the operator can reach it through the real surface |
 | Exact threshold golden cases | `tests/thread/chunk-service.test.ts` | Boundary cases for min/soft max/hard max use fixed expected decisions | Mirrored helper logic could pass while both implementation and test misunderstand the rule |
-| Heavyweight long-thread prep proof decomposition | `tests/thread-view/real-long-thread-fixture-prep.NEEDS-REFACTOR.ts`, `tests/thread-view/real-long-thread-fixture-prep.ts`, `tests/context-steward/long-thread-real-pi-execution.e2e.test.ts` | Quarantined pseudo-test is split into helper infrastructure, focused service-tier assertions, and real E2E runtime proof | Prevents an ambiguous middle-tier proof from lingering as a skipped can-kick |
+| Heavyweight long-thread prep proof decomposition | `tests/thread-view/real-long-thread-fixture-prep.test.ts`, `tests/thread-view/real-long-thread-fixture-prep.ts`, `tests/context-steward/long-thread-real-pi-execution.e2e.test.ts` | Quarantined pseudo-test is split into helper infrastructure, focused service-tier assertions, and real E2E runtime proof | Prevents an ambiguous middle-tier proof from lingering as a skipped can-kick |
 | Semantic counter rewiring | `tests/token-accounting/materialized-representation-counter.test.ts`, `tests/token-accounting/openai-input-token-counter.test.ts` | Detailed/brief counts read semantic lower-band artifact text, not placeholder text, and the new projection scope is validated | ACs describe persisted counts and semantic artifacts, but not the counter-source implementation hazard |
 | External integration error redaction | `tests/thread/lower-band-compression-service.test.ts`, `tests/token-accounting/openai-input-token-counter.test.ts` | Provider/auth/model failures surface actionable context without leaking bearer tokens or raw credentials | Epic requires visible failures, but not the redaction hazard introduced by real provider logs |
 | Workbench query/search cutover | `tests/context-workbench/workbench-query-service.test.ts`, `tests/context-workbench/workbench-search-service.test.ts` | Workbench summaries and readiness queries stop blessing placeholder output as valid semantic lower-band state | Epic covers runtime correctness, but workbench drift can leave the operator seeing the wrong truth |

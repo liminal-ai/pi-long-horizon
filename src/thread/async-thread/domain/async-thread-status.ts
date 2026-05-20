@@ -6,7 +6,7 @@ export const ASYNC_THREAD_BLOCKER_CODES = [
   "SMOOTH_MISSING",
   "SMOOTH_INVALID",
   "CHUNK_STATE_INVALID",
-  "CHUNK_PLACEHOLDER_MISSING",
+  "CHUNK_LOWER_BAND_MISSING",
   "THREAD_VIEW_STATE_CONFLICT",
   "LOWER_THRESHOLD_UNREACHED",
   "GENERATED_WRITE_FAILED",
@@ -22,7 +22,7 @@ export interface AsyncThreadStatus {
   status: AsyncThreadStatusLevel;
   smoothReady: boolean;
   chunksReady: boolean;
-  placeholdersReady: boolean;
+  lowerBandReady: boolean;
   blockers: StewardIssue[];
 }
 
@@ -31,7 +31,7 @@ export interface PrepareAsyncThreadInput {
   mode: "strict" | "prepare";
   requestedLowerBound?: number;
   requestedBandPercentages?: ThreadViewBandPercentages;
-  requiredPlaceholderBands?: {
+  requiredLowerBandArtifacts?: {
     detailed: boolean;
     brief: boolean;
   };
@@ -41,7 +41,7 @@ export interface PrepareAsyncThreadResult {
   threadId: string;
   smoothReady: boolean;
   chunksReady: boolean;
-  placeholdersReady: boolean;
+  lowerBandReady: boolean;
   blockers: StewardIssue[];
 }
 

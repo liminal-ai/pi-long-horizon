@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "command": "story-implement",
+  "status": "completed",
+  "phase": "finalizing",
+  "startedAt": "2026-05-18T02:00:30.854Z",
+  "updatedAt": "2026-05-18T02:16:43.571Z",
+  "lastOutputAt": "2026-05-18T02:16:43.480Z",
+  "providerLiveness": "completed",
+  "provider": "codex",
+  "pid": 70578,
+  "cwd": "/Users/leemoore/code/pi-long-horizon",
+  "timeoutMs": 7200000,
+  "configuredStartupTimeoutMs": 300000,
+  "configuredSilenceTimeoutMs": 600000,
+  "artifactPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/05-real-lower-band-compression/artifacts/02-chunk-assembly-from-turn-projections/012-implementor.json",
+  "streamPaths": {
+    "stdoutPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/05-real-lower-band-compression/artifacts/02-chunk-assembly-from-turn-projections/streams/012-implementor.stdout.log",
+    "stderrPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/05-real-lower-band-compression/artifacts/02-chunk-assembly-from-turn-projections/streams/012-implementor.stderr.log"
+  },
+  "progressPaths": {
+    "statusPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/05-real-lower-band-compression/artifacts/02-chunk-assembly-from-turn-projections/progress/012-implementor.status.json",
+    "progressPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/05-real-lower-band-compression/artifacts/02-chunk-assembly-from-turn-projections/progress/012-implementor.progress.jsonl"
+  },
+  "lastEvent": "completed",
+  "lastEventSummary": "story-implement completed for 02-chunk-assembly-from-turn-projections with outcome ready-for-verification.",
+  "selfReviewPassesCompleted": 0,
+  "selfReviewPassesPlanned": 0
+}

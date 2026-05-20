@@ -11,17 +11,23 @@ import {
 import { createTempThreadStoreContext } from "../../thread/async-thread/test/temp-thread-store.js";
 import {
   makeChunkState,
+  makeChunkLowerBandArtifacts,
+  makeLegacyPlaceholderChunkState,
   makePlaceholderArtifactState,
   makeSmoothTurnState,
+  makeTurnLowerBandProjection,
 } from "../../thread/async-thread/test/fixtures.js";
 import type { PiThreadViewEntry, PiThreadViewFile } from "../domain/pi-thread-view-file.js";
 
 export {
   DEFAULT_TEST_TIMESTAMP,
+  makeChunkLowerBandArtifacts,
+  makeLegacyPlaceholderChunkState,
   makeBandRecord,
   makeChunkState,
   makePlaceholderArtifactState,
   makeSmoothTurnState,
+  makeTurnLowerBandProjection,
   makeThreadSnapshot,
   makeThreadView,
   makeThreadViewMessage,

@@ -13,11 +13,11 @@ import {
   stringifyPiVisibleContentForLiveEstimate,
 } from "../../src/thread-view/services/live-tool-result-truncation.js";
 import { withTempFeature3Store } from "../../src/thread-view/test/fixtures.js";
-import { makeSelectedLowerBandView, seedDeterministicRebuildThread } from "./helpers.js";
+import { makeSelectedLowerBandView, seedDeterministicRebuildThread, seedDeterministicRebuildThreadWithOptions } from "./helpers.js";
 
 test("materialized emitted sequence preserves band order", async () => {
   await withTempFeature3Store(async ({ storeRootDir }) => {
-    const context = await seedDeterministicRebuildThread(storeRootDir);
+    const context = await seedDeterministicRebuildThreadWithOptions(storeRootDir, { canonicalClosedChunks: true });
     const materializer = new ThreadViewMaterializer(context.threadStore);
     const draftView = makeSelectedLowerBandView({
       threadId: context.threadId,
@@ -46,14 +46,14 @@ test("materialized emitted sequence preserves band order", async () => {
         { bandType: "brief", sourceKind: "brief_chunk_summary" },
       ],
     );
-    assert.match(String(result.value.emittedMessages[3]?.content), /\[deterministic-placeholder:detailed\]/);
-    assert.match(String(result.value.emittedMessages[4]?.content), /\[deterministic-placeholder:brief\]/);
+    assert.equal(result.value.emittedMessages[3]?.content, `semantic detailed ${context.chunks.newerClosed}`);
+    assert.equal(result.value.emittedMessages[4]?.content, `semantic brief ${context.chunks.oldestClosed}`);
   });
 });
 
 test("empty band does not corrupt materialization", async () => {
   await withTempFeature3Store(async ({ storeRootDir }) => {
-    const context = await seedDeterministicRebuildThread(storeRootDir);
+    const context = await seedDeterministicRebuildThreadWithOptions(storeRootDir, { canonicalClosedChunks: true });
     const materializer = new ThreadViewMaterializer(context.threadStore);
     const draftView = makeSelectedLowerBandView({
       threadId: context.threadId,
@@ -88,7 +88,7 @@ test("empty band does not corrupt materialization", async () => {
 
 test("band order is preserved when multiple middle or lower bands are empty", async () => {
   await withTempFeature3Store(async ({ storeRootDir }) => {
-    const context = await seedDeterministicRebuildThread(storeRootDir);
+    const context = await seedDeterministicRebuildThreadWithOptions(storeRootDir, { canonicalClosedChunks: true });
     const materializer = new ThreadViewMaterializer(context.threadStore);
     const draftView = makeSelectedLowerBandView({
       threadId: context.threadId,

@@ -10,7 +10,7 @@ import {
   estimateRawMessageTokenCount,
 } from "../../../thread-view/services/pi-token-estimator.js";
 import {
-  resolveChunkPlaceholderTokenAccounting,
+  resolveChunkSemanticArtifactAccounting,
   resolveChunkSmoothTokenAccounting,
   resolveRawTurnTokenAccounting,
   resolveSmoothTurnTokenAccounting,
@@ -18,18 +18,33 @@ import {
 import type { ThreadStore } from "../../store/thread-store.js";
 import type { MessageRecord, TurnRecord } from "../../domain/records.js";
 import { createStewardIssue, StewardResultError, type StewardIssue } from "../../domain/errors.js";
-import type { ChunkState } from "../domain/chunk-state.js";
-import { ensurePlaceholderArtifacts, isPlaceholderFreshForChunk } from "./placeholder-artifact-service.js";
+import {
+  getReadyChunkLowerBandArtifact,
+  isLegacyPlaceholderChunkState,
+  type ChunkState,
+} from "../domain/chunk-state.js";
+import type { ChunkSemanticArtifactBand } from "../domain/lower-band-artifact-state.js";
+import {
+  LowerBandCompressionService,
+  type LowerBandCompressionLogger,
+  type LowerBandCompressionProvider,
+} from "./lower-band-compression-service.js";
+import { ensureLowerBandTurnProjection } from "./lower-band-turn-projection-service.js";
+import { PiCodexLowerBandCompressionProvider } from "./pi-codex-lower-band-compression-provider.js";
 import { ensureSmoothTurn, materializeSmoothTurnFromState } from "./smooth-turn-service.js";
 import { materializeChunkSmoothTextFromTurns, updateChunkState } from "./chunk-service.js";
 import {
   countRawTurnMaterialized,
+  createMaterializedRepresentationHash,
   OpenAIInputTokenCounter,
   type TokenCountRecord,
 } from "../../../token-accounting/index.js";
 
 export interface AsyncThreadRunDependencies {
   store: ThreadStore;
+  lowerBandCompressionProvider?: LowerBandCompressionProvider;
+  lowerBandCompressionLogger?: LowerBandCompressionLogger;
+  lowerBandCompressionEnabled?: boolean;
   openAIInputTokenCounter?: Pick<
     OpenAIInputTokenCounter,
     | "countRawTurnMaterialized"
@@ -37,7 +52,9 @@ export interface AsyncThreadRunDependencies {
     | "countChunkSmoothMaterialized"
     | "countDetailedChunkMaterialized"
     | "countBriefChunkMaterialized"
-  >;
+  > &
+    Partial<Pick<OpenAIInputTokenCounter, "countTurnLowerBandProjectionMaterialized">>;
+  exactTokenCountRepairEnabled?: boolean;
   tokenCountModel?: string;
   now?: () => Date;
 }
@@ -58,6 +75,7 @@ interface SelectionAwareReadinessPlan {
   smoothTurnIds: ReadonlySet<string>;
   detailedChunkIds: ReadonlySet<string>;
   briefChunkIds: ReadonlySet<string>;
+  lowerBandBlockers: readonly StewardIssue[];
 }
 
 interface TokenizedTurnCandidate {
@@ -76,6 +94,11 @@ interface LowerBandSelectionResult {
   remainingCandidates: OrderedChunkCandidate[];
 }
 
+interface LowerBandCatchUpTarget {
+  chunkId: string;
+  band: ChunkSemanticArtifactBand;
+}
+
 function logAsyncMaintenanceTiming(threadId: string, label: string, startedAt: number, parts: Record<string, unknown> = {}): void {
   const debugDir = join(process.cwd(), ".context-steward", "debug");
   const logPath = join(debugDir, "lh-timing.log");
@@ -92,6 +115,41 @@ function logAsyncMaintenanceTiming(threadId: string, label: string, startedAt: n
     .catch(() => undefined);
 }
 
+function writeVisibleCatchUpWarning(message: string): void {
+  try {
+    process.stderr.write(`${message}\n`);
+  } catch {
+    // Best-effort operator warning only.
+  }
+}
+
+function isRetryableThreadMutationIssue(issue: StewardIssue): boolean {
+  return issue.code === "STALE_SOURCE_REVISION" || issue.code === "STORE_UNAVAILABLE";
+}
+
+function createLowerBandCompressionScheduler(
+  dependencies: AsyncThreadRunDependencies,
+): LowerBandCompressionService | undefined {
+  if (dependencies.lowerBandCompressionEnabled === false) {
+    return undefined;
+  }
+
+  const provider = dependencies.lowerBandCompressionProvider ??
+    (process.env.NODE_TEST_CONTEXT === undefined ? new PiCodexLowerBandCompressionProvider() : undefined);
+  if (!provider) {
+    return undefined;
+  }
+
+  return new LowerBandCompressionService({
+    store: dependencies.store,
+    provider,
+    openAIInputTokenCounter: dependencies.openAIInputTokenCounter,
+    tokenCountModel: dependencies.tokenCountModel,
+    now: dependencies.now,
+    logger: dependencies.lowerBandCompressionLogger,
+  });
+}
+
 const BAND_ALLOCATION_KEYS = ["fullFidelity", "smooth", "detailed", "brief"] as const;
 
 function blockedReadiness(threadId: string, issues: readonly StewardIssue[]): PrepareAsyncThreadResult {
@@ -99,7 +157,7 @@ function blockedReadiness(threadId: string, issues: readonly StewardIssue[]): Pr
     threadId,
     smoothReady: false,
     chunksReady: false,
-    placeholdersReady: false,
+    lowerBandReady: false,
     blockers: issues.map((issue) => createStewardIssue(issue)),
   };
 }
@@ -235,8 +293,9 @@ function buildOrderedChunkCandidates(
   chunks: readonly ChunkState[],
   turnsById: ReadonlyMap<string, TurnRecord>,
   boundaryTurnOrder: number,
-): OrderedChunkCandidate[] {
+): { candidates: OrderedChunkCandidate[]; blockers: StewardIssue[] } {
   const candidates: OrderedChunkCandidate[] = [];
+  const blockers: StewardIssue[] = [];
 
   for (const chunk of chunks) {
     if (chunk.lifecycleStatus !== "closed") {
@@ -256,19 +315,34 @@ function buildOrderedChunkCandidates(
       continue;
     }
 
+    if (isLegacyPlaceholderChunkState(chunk)) {
+      blockers.push(
+        createAsyncThreadBlocker({
+          code: "CHUNK_STATE_INVALID",
+          message: `Chunk ${chunk.chunkId} is legacy placeholder-era lower-band state and cannot be selected for lower-band output.`,
+          threadId: chunk.threadId,
+          cause: "legacy_placeholder_chunk_state",
+        }),
+      );
+      continue;
+    }
+
     candidates.push({
       chunk,
       newestTurnOrder,
     });
   }
 
-  return candidates.sort((left, right) => {
-    if (left.newestTurnOrder !== right.newestTurnOrder) {
-      return right.newestTurnOrder - left.newestTurnOrder;
-    }
+  return {
+    candidates: candidates.sort((left, right) => {
+      if (left.newestTurnOrder !== right.newestTurnOrder) {
+        return right.newestTurnOrder - left.newestTurnOrder;
+      }
 
-    return right.chunk.chunkId.localeCompare(left.chunk.chunkId);
-  });
+      return right.chunk.chunkId.localeCompare(left.chunk.chunkId);
+    }),
+    blockers,
+  };
 }
 
 function selectLowerBandChunkIds(
@@ -288,17 +362,15 @@ function selectLowerBandChunkIds(
   let consumedCandidateCount = 0;
 
   for (const candidate of candidates) {
-    const placeholder = bandType === "detailed"
-      ? candidate.chunk.placeholders?.detailed
-      : candidate.chunk.placeholders?.brief;
-    const accounting = resolveChunkPlaceholderTokenAccounting({
+    const artifact = getReadyChunkLowerBandArtifact(candidate.chunk, bandType);
+    const accounting = resolveChunkSemanticArtifactAccounting({
       chunk: candidate.chunk,
       bandType,
       policyMode: "prepare",
     });
 
     if (selectedChunkIds.length === 0) {
-      if (!placeholder?.text || !accounting) {
+      if (!artifact?.text || !accounting) {
         break;
       }
 
@@ -308,7 +380,7 @@ function selectLowerBandChunkIds(
       continue;
     }
 
-    if (!placeholder?.text || !accounting) {
+    if (!artifact?.text || !accounting) {
       break;
     }
 
@@ -323,6 +395,57 @@ function selectLowerBandChunkIds(
 
   return {
     selectedChunkIds,
+    remainingCandidates: candidates.slice(consumedCandidateCount),
+  };
+}
+
+function findLowerBandCatchUpTarget(
+  candidates: readonly OrderedChunkCandidate[],
+  budget: number,
+  bandType: ChunkSemanticArtifactBand,
+): { target?: LowerBandCatchUpTarget; remainingCandidates: OrderedChunkCandidate[] } {
+  if (budget <= 0 || candidates.length === 0) {
+    return {
+      target: undefined,
+      remainingCandidates: [...candidates],
+    };
+  }
+
+  let consumedTokenCount = 0;
+  let consumedCandidateCount = 0;
+
+  for (const candidate of candidates) {
+    const accounting = resolveChunkSemanticArtifactAccounting({
+      chunk: candidate.chunk,
+      bandType,
+      policyMode: "prepare",
+    });
+    if (!accounting) {
+      return {
+        target: {
+          chunkId: candidate.chunk.chunkId,
+          band: bandType,
+        },
+        remainingCandidates: candidates.slice(consumedCandidateCount),
+      };
+    }
+
+    if (consumedCandidateCount === 0) {
+      consumedCandidateCount += 1;
+      consumedTokenCount += accounting.count;
+      continue;
+    }
+
+    if (consumedTokenCount + accounting.count > budget) {
+      break;
+    }
+
+    consumedCandidateCount += 1;
+    consumedTokenCount += accounting.count;
+  }
+
+  return {
+    target: undefined,
     remainingCandidates: candidates.slice(consumedCandidateCount),
   };
 }
@@ -343,6 +466,27 @@ function isSmoothTurnReady(turn: TurnRecord, messages: readonly MessageRecord[])
   );
 }
 
+function isCurrentExactLowerBandProjection(turn: TurnRecord): boolean {
+  const projection = turn.smooth?.lowerBandProjection;
+  if (
+    projection?.status !== "ready" ||
+    typeof projection.text !== "string" ||
+    projection.text.length === 0 ||
+    !projection.tokenCountMetadata
+  ) {
+    return false;
+  }
+
+  return (
+    projection.tokenCountMetadata.scope === "turn_lower_band_projection_materialized" &&
+    projection.tokenCountMetadata.source === "provider_input_count" &&
+    projection.tokenCountMetadata.trustClass === "exact" &&
+    projection.tokenCountMetadata.provider === "openai" &&
+    projection.tokenCountMetadata.representationHash === createMaterializedRepresentationHash(projection.text) &&
+    projection.tokenCountMetadata.sourceRevision === projection.sourceRevision
+  );
+}
+
 function withSmoothMaterializedText(turn: TurnRecord, messages: readonly MessageRecord[]): TurnRecord {
   const materialized = materializeSmoothTurnFromState({ turn, messages });
   if (
@@ -360,26 +504,6 @@ function withSmoothMaterializedText(turn: TurnRecord, messages: readonly Message
       text: materialized.text,
     },
   };
-}
-
-function areChunkPlaceholdersReady(chunk: ChunkState): boolean {
-  if (chunk.lifecycleStatus !== "closed" || !chunk.smoothText || typeof chunk.smoothTokenCountMetadata?.count !== "number") {
-    return false;
-  }
-
-  const detailed = chunk.placeholders?.detailed;
-  const brief = chunk.placeholders?.brief;
-
-  return (
-    detailed?.status === "ready" &&
-    typeof detailed.text === "string" &&
-    detailed.text.length > 0 &&
-    typeof detailed.tokenCountMetadata?.count === "number" &&
-    brief?.status === "ready" &&
-    typeof brief.text === "string" &&
-    brief.text.length > 0 &&
-    typeof brief.tokenCountMetadata?.count === "number"
-  );
 }
 
 function resolveSmoothTokenCount(
@@ -410,6 +534,21 @@ function tokenCountBlockedIssue(input: {
   });
 }
 
+function lowerBandAccountingBlockedIssue(input: {
+  threadId: string;
+  chunkId: string;
+  bandType: "detailed" | "brief";
+  mode: PrepareAsyncThreadInput["mode"];
+}): StewardIssue {
+  return tokenCountBlockedIssue({
+    threadId: input.threadId,
+    message:
+      `Chunk ${input.chunkId} has ready ${input.bandType} lower-band output, ` +
+      `but ${input.mode} smart compact cannot derive usable token accounting for it. ` +
+      "Selection would silently drop this chunk until exact lower-band accounting is repaired.",
+  });
+}
+
 function isOpenAIProviderInputCount(input: {
   record: TokenCountRecord | undefined;
   expected: TokenCountRecord | undefined;
@@ -428,33 +567,6 @@ function isOpenAIProviderInputCount(input: {
     input.record.representationHash === input.expected.representationHash &&
     input.record.sourceRevision === input.expected.sourceRevision
   );
-}
-
-function refreshPlaceholderSmoothSourceTokenCount(chunk: ChunkState): boolean {
-  const sourceTokenCount = chunk.smoothTokenCountMetadata?.count;
-  if (typeof sourceTokenCount !== "number") {
-    return false;
-  }
-
-  let changed = false;
-  for (const placeholder of [chunk.placeholders?.detailed, chunk.placeholders?.brief]) {
-    if (
-      placeholder?.text &&
-      placeholder.smoothSourceTokenCount !== sourceTokenCount &&
-      isPlaceholderFreshForChunk(
-        chunk,
-        placeholder,
-        chunk.smoothText,
-        chunk.sourceRevision,
-        placeholder.smoothSourceTokenCount,
-      )
-    ) {
-      placeholder.smoothSourceTokenCount = sourceTokenCount;
-      changed = true;
-    }
-  }
-
-  return changed;
 }
 
 function tokenCountIssueFromError(error: unknown, threadId: string, message: string): StewardIssue {
@@ -528,13 +640,16 @@ function buildSelectionAwareReadinessPlan(input: {
     .filter((turnOrder): turnOrder is number => turnOrder !== undefined)
     .reduce((lowest, turnOrder) => Math.min(lowest, turnOrder), Number.MAX_SAFE_INTEGER);
 
-  const orderedChunkCandidates = buildOrderedChunkCandidates(
-    input.chunks,
-    turnsById,
-    lowerBandBoundaryTurnOrder,
-  );
+  const orderedChunkCandidates =
+    budgets.detailed > 0 || budgets.brief > 0
+      ? buildOrderedChunkCandidates(
+        input.chunks,
+        turnsById,
+        lowerBandBoundaryTurnOrder,
+      )
+      : { candidates: [] as OrderedChunkCandidate[], blockers: [] as StewardIssue[] };
   const detailedSelection = selectLowerBandChunkIds(
-    orderedChunkCandidates,
+    orderedChunkCandidates.candidates,
     budgets.detailed,
     "detailed",
   );
@@ -549,13 +664,15 @@ function buildSelectionAwareReadinessPlan(input: {
     smoothTurnIds: new Set(smoothTurnIds),
     detailedChunkIds: new Set(detailedSelection.selectedChunkIds),
     briefChunkIds: new Set(briefSelection.selectedChunkIds),
+    lowerBandBlockers: orderedChunkCandidates.blockers,
   };
 }
 
 function buildReadinessBlockers(input: {
   threadId: string;
+  mode: PrepareAsyncThreadInput["mode"];
   tokenCountModel?: string;
-  requiredPlaceholderBands?: {
+  requiredLowerBandArtifacts?: {
     detailed: boolean;
     brief: boolean;
   };
@@ -564,7 +681,7 @@ function buildReadinessBlockers(input: {
   messages: ReadonlyArray<MessageRecord>;
   chunks: ReadonlyArray<ChunkState>;
 }): PrepareAsyncThreadResult {
-  const requiredPlaceholderBands = input.requiredPlaceholderBands ?? {
+  const requiredLowerBandArtifacts = input.requiredLowerBandArtifacts ?? {
     detailed: true,
     brief: true,
   };
@@ -577,7 +694,10 @@ function buildReadinessBlockers(input: {
       ? new Set([...(requiredDetailedChunkIds ?? []), ...(requiredBriefChunkIds ?? [])])
       : undefined;
   const messagesById = new Map(input.messages.map((message) => [message.messageId, message]));
-  const blockers = input.turns
+  let lowerBandAccountingBlocked = false;
+  const blockers = [
+    ...(input.selectionPlan?.lowerBandBlockers ?? []),
+    ...input.turns
     .filter((turn) => requiredSmoothTurnIds?.has(turn.turnId) ?? turn.lifecycleStatus === "closed")
     .filter((turn) => {
       const messages = sortMessagesInSourceOrder(
@@ -593,7 +713,8 @@ function buildReadinessBlockers(input: {
         message: `Turn ${turn.turnId} is missing deterministic smooth output required for smart compact.`,
         threadId: input.threadId,
       }),
-    );
+    ),
+  ];
 
   for (const turn of input.turns) {
     if (!requiredFullFidelityTurnIds?.has(turn.turnId)) {
@@ -663,6 +784,44 @@ function buildReadinessBlockers(input: {
           tokenCountBlockedIssue({
             threadId: input.threadId,
             message: `Turn ${turn.turnId} is missing current OpenAI smooth materialized token count required for strict smart compact allocation.`,
+          }),
+        );
+      }
+    }
+
+    if (turn.lifecycleStatus === "closed" && turn.smooth?.lowerBandProjection) {
+      const projection = turn.smooth.lowerBandProjection;
+      if (projection.status === "failed") {
+        blockers.push(
+          tokenCountBlockedIssue({
+            threadId: input.threadId,
+            message: `Turn ${turn.turnId} is missing current OpenAI conversation-only lower-band projection token count required for lower-band eligibility.`,
+            cause: projection.errorMessage ?? projection.errorCode,
+          }),
+        );
+      } else if (projection.status === "invalid") {
+        blockers.push(
+          createAsyncThreadBlocker({
+            code: "SMOOTH_INVALID",
+            message: `Turn ${turn.turnId} has invalid conversation-only lower-band projection state.`,
+            threadId: input.threadId,
+            cause: projection.errorMessage ?? projection.errorCode,
+          }),
+        );
+      } else if (projection.status === "pending") {
+        blockers.push(
+          createAsyncThreadBlocker({
+            code: "SMOOTH_MISSING",
+            message: `Turn ${turn.turnId} is missing conversation-only lower-band projection state required for lower-band eligibility.`,
+            threadId: input.threadId,
+            cause: projection.errorMessage ?? projection.errorCode,
+          }),
+        );
+      } else if (!isCurrentExactLowerBandProjection(turn)) {
+        blockers.push(
+          tokenCountBlockedIssue({
+            threadId: input.threadId,
+            message: `Turn ${turn.turnId} has stale conversation-only lower-band projection token count required for lower-band eligibility.`,
           }),
         );
       }
@@ -740,25 +899,21 @@ function buildReadinessBlockers(input: {
       }
     }
 
-    const detailed = chunk.placeholders?.detailed;
-    const brief = chunk.placeholders?.brief;
-    const missingDetailed =
+    const detailed = getReadyChunkLowerBandArtifact(chunk, "detailed");
+    const brief = getReadyChunkLowerBandArtifact(chunk, "brief");
+    const requiresDetailed =
       (requiredDetailedChunkIds?.has(chunk.chunkId) ?? true) &&
-      requiredPlaceholderBands.detailed &&
-      (detailed?.status !== "ready" ||
-        !detailed.text ||
-        typeof detailed.tokenCountMetadata?.count !== "number");
-    const missingBrief =
+      requiredLowerBandArtifacts.detailed;
+    const requiresBrief =
       (requiredBriefChunkIds?.has(chunk.chunkId) ?? true) &&
-      requiredPlaceholderBands.brief &&
-      (brief?.status !== "ready" ||
-        !brief.text ||
-        typeof brief.tokenCountMetadata?.count !== "number");
+      requiredLowerBandArtifacts.brief;
+    const missingDetailed = requiresDetailed && !detailed?.text;
+    const missingBrief = requiresBrief && !brief?.text;
 
     if (missingDetailed || missingBrief) {
       const requiredBands = [
-        requiredPlaceholderBands.detailed ? "detailed" : undefined,
-        requiredPlaceholderBands.brief ? "brief" : undefined,
+        requiredLowerBandArtifacts.detailed ? "detailed" : undefined,
+        requiredLowerBandArtifacts.brief ? "brief" : undefined,
       ].filter((value): value is "detailed" | "brief" => value !== undefined);
       const requiredBandLabel =
         requiredBands.length === 2
@@ -766,56 +921,53 @@ function buildReadinessBlockers(input: {
           : requiredBands[0] ?? "detailed/brief";
       blockers.push(
         createAsyncThreadBlocker({
-          code: "CHUNK_PLACEHOLDER_MISSING",
-          message: `Chunk ${chunk.chunkId} is missing deterministic ${requiredBandLabel} placeholder output required for lower-band rebuild.`,
+          code: "CHUNK_LOWER_BAND_MISSING",
+          message: `Chunk ${chunk.chunkId} is missing ready ${requiredBandLabel} lower-band output required for lower-band rebuild.`,
           threadId: input.threadId,
         }),
       );
     }
 
-    if (requiredDetailedChunkIds?.has(chunk.chunkId)) {
-      const expected = resolveChunkPlaceholderTokenAccounting({
+    if (
+      requiredDetailedChunkIds?.has(chunk.chunkId) &&
+      detailed?.text &&
+      resolveChunkSemanticArtifactAccounting({
         chunk,
         bandType: "detailed",
-        policyMode: "prepare",
-      })?.record;
-      if (
-        !isOpenAIProviderInputCount({
-          record: detailed?.tokenCountMetadata,
-          expected,
-          model: input.tokenCountModel,
-        })
-      ) {
-        blockers.push(
-          tokenCountBlockedIssue({
-            threadId: input.threadId,
-            message: `Chunk ${chunk.chunkId} is missing current OpenAI detailed placeholder token count required for strict smart compact allocation.`,
-          }),
-        );
-      }
+        policyMode: input.mode,
+      }) === undefined
+    ) {
+      lowerBandAccountingBlocked = true;
+      blockers.push(
+        lowerBandAccountingBlockedIssue({
+          threadId: input.threadId,
+          chunkId: chunk.chunkId,
+          bandType: "detailed",
+          mode: input.mode,
+        }),
+      );
     }
 
-    if (requiredBriefChunkIds?.has(chunk.chunkId)) {
-      const expected = resolveChunkPlaceholderTokenAccounting({
+    if (
+      requiredBriefChunkIds?.has(chunk.chunkId) &&
+      brief?.text &&
+      resolveChunkSemanticArtifactAccounting({
         chunk,
         bandType: "brief",
-        policyMode: "prepare",
-      })?.record;
-      if (
-        !isOpenAIProviderInputCount({
-          record: brief?.tokenCountMetadata,
-          expected,
-          model: input.tokenCountModel,
-        })
-      ) {
-        blockers.push(
-          tokenCountBlockedIssue({
-            threadId: input.threadId,
-            message: `Chunk ${chunk.chunkId} is missing current OpenAI brief placeholder token count required for strict smart compact allocation.`,
-          }),
-        );
-      }
+        policyMode: input.mode,
+      }) === undefined
+    ) {
+      lowerBandAccountingBlocked = true;
+      blockers.push(
+        lowerBandAccountingBlockedIssue({
+          threadId: input.threadId,
+          chunkId: chunk.chunkId,
+          bandType: "brief",
+          mode: input.mode,
+        }),
+      );
     }
+
   }
 
   const smoothReady = !blockers.some(
@@ -824,23 +976,113 @@ function buildReadinessBlockers(input: {
   const chunksReady = !blockers.some(
     (issue) => issue.code === "CHUNK_STATE_INVALID" || issue.code === "THREAD_VIEW_STATE_CONFLICT",
   );
-  const placeholdersReady = !blockers.some((issue) => issue.code === "CHUNK_PLACEHOLDER_MISSING");
+  const lowerBandReady =
+    !blockers.some((issue) => issue.code === "CHUNK_LOWER_BAND_MISSING") &&
+    !lowerBandAccountingBlocked;
 
   return {
     threadId: input.threadId,
     smoothReady,
     chunksReady,
-    placeholdersReady,
+    lowerBandReady,
     blockers,
   };
+}
+
+function findSelectedLowerBandCatchUpTarget(input: {
+  requestedLowerBound?: number;
+  requestedBandPercentages?: ThreadViewBandPercentages;
+  turns: readonly TurnRecord[];
+  messages: readonly MessageRecord[];
+  chunks: readonly ChunkState[];
+}): LowerBandCatchUpTarget | undefined {
+  if (
+    input.requestedLowerBound === undefined ||
+    !Number.isFinite(input.requestedLowerBound) ||
+    input.requestedLowerBound <= 0 ||
+    input.requestedBandPercentages === undefined
+  ) {
+    return undefined;
+  }
+
+  const budgets = allocateBandBudgets(input.requestedLowerBound, input.requestedBandPercentages);
+  const orderedTurns = sortTurnsInSourceOrder(input.turns);
+  const turnsById = new Map(orderedTurns.map((turn) => [turn.turnId, turn]));
+  const messagesById = new Map(input.messages.map((message) => [message.messageId, message]));
+  const tokenizedTurns = [...orderedTurns]
+    .map((turn) => {
+      const messages = sortMessagesInSourceOrder(
+        turn.messageIds
+          .map((messageId) => messagesById.get(messageId))
+          .filter((message): message is MessageRecord => message !== undefined),
+      );
+      const rawTokenCount = messages.reduce((total, message) => total + estimateRawMessageTokenCount(message), 0);
+      return {
+        turn,
+        rawTokenCount,
+        smoothTokenCount: resolveSmoothTokenCount(turn, messages) || rawTokenCount,
+      };
+    })
+    .sort((left, right) => right.turn.turnOrder - left.turn.turnOrder);
+
+  const fullFidelityTurnIds = selectTurnIds(
+    tokenizedTurns,
+    budgets.fullFidelity,
+    (candidate) => candidate.rawTokenCount,
+  );
+  const oldestFullFidelityTurnOrder = fullFidelityTurnIds.length > 0
+    ? Math.min(
+        ...fullFidelityTurnIds.map((turnId) => turnsById.get(turnId)?.turnOrder ?? Number.MAX_SAFE_INTEGER),
+      )
+    : Number.MAX_SAFE_INTEGER;
+  const smoothTurnIds = selectTurnIds(
+    tokenizedTurns.filter(
+      (candidate) =>
+        candidate.turn.lifecycleStatus === "closed" &&
+        !fullFidelityTurnIds.includes(candidate.turn.turnId) &&
+        candidate.turn.turnOrder < oldestFullFidelityTurnOrder &&
+        candidate.smoothTokenCount > 0,
+    ),
+    budgets.smooth,
+    (candidate) => candidate.smoothTokenCount,
+  );
+
+  const lowerBandBoundaryTurnOrder = [...fullFidelityTurnIds, ...smoothTurnIds]
+    .map((turnId) => turnsById.get(turnId)?.turnOrder)
+    .filter((turnOrder): turnOrder is number => turnOrder !== undefined)
+    .reduce((lowest, turnOrder) => Math.min(lowest, turnOrder), Number.MAX_SAFE_INTEGER);
+  const orderedChunkCandidates =
+    budgets.detailed > 0 || budgets.brief > 0
+      ? buildOrderedChunkCandidates(
+        input.chunks,
+        turnsById,
+        lowerBandBoundaryTurnOrder,
+      )
+      : { candidates: [] as OrderedChunkCandidate[], blockers: [] as StewardIssue[] };
+
+  const detailedTarget = findLowerBandCatchUpTarget(
+    orderedChunkCandidates.candidates,
+    budgets.detailed,
+    "detailed",
+  );
+  if (detailedTarget.target) {
+    return detailedTarget.target;
+  }
+
+  return findLowerBandCatchUpTarget(
+    detailedTarget.remainingCandidates,
+    budgets.brief,
+    "brief",
+  ).target;
 }
 
 async function readReadiness(
   input: {
     threadId: string;
+    mode: PrepareAsyncThreadInput["mode"];
     requestedLowerBound?: number;
     requestedBandPercentages?: ThreadViewBandPercentages;
-    requiredPlaceholderBands?: {
+    requiredLowerBandArtifacts?: {
       detailed: boolean;
       brief: boolean;
     };
@@ -859,8 +1101,9 @@ async function readReadiness(
 
   return buildReadinessBlockers({
     threadId: input.threadId,
+    mode: input.mode,
     tokenCountModel: dependencies.tokenCountModel,
-    requiredPlaceholderBands: input.requiredPlaceholderBands,
+    requiredLowerBandArtifacts: input.requiredLowerBandArtifacts,
     selectionPlan: buildSelectionAwareReadinessPlan({
       requestedLowerBound: input.requestedLowerBound,
       requestedBandPercentages: input.requestedBandPercentages,
@@ -875,16 +1118,26 @@ async function readReadiness(
 }
 
 async function repairMissingArtifacts(
-  threadId: string,
+  input: {
+    threadId: string;
+    requestedLowerBound?: number;
+    requestedBandPercentages?: ThreadViewBandPercentages;
+  },
   dependencies: AsyncThreadRunDependencies,
+  options: {
+    warnOnSmoothCatchUp?: boolean;
+  } = {},
 ): Promise<StewardIssue[]> {
   const startedAt = Date.now();
+  const threadId = input.threadId;
   let openThreadMs = 0;
   let smoothMs = 0;
+  let projectionMs = 0;
   let updateChunkMs = 0;
   let readChunksMs = 0;
-  let placeholderMs = 0;
+  let lowerBandCatchUpMs = 0;
   let closedTurns = 0;
+  let projectedTurns = 0;
   let closedChunks = 0;
   let result = "unknown";
   let stepStartedAt = Date.now();
@@ -917,6 +1170,11 @@ async function repairMissingArtifacts(
     }
 
     try {
+      if (options.warnOnSmoothCatchUp) {
+        writeVisibleCatchUpWarning(
+          `[smart-compact] Smooth catch-up required for turn ${turn.turnId} before lower-band preparation can continue.`,
+        );
+      }
       await ensureSmoothTurn(
         {
           threadId,
@@ -941,6 +1199,62 @@ async function repairMissingArtifacts(
   }
   smoothMs = Date.now() - stepStartedAt;
 
+  if (dependencies.openAIInputTokenCounter?.countTurnLowerBandProjectionMaterialized) {
+    stepStartedAt = Date.now();
+    const projectionSnapshot = await dependencies.store.openThread(threadId);
+    if (!projectionSnapshot.ok) {
+      result = "projectionOpenThreadFailed";
+      logAsyncMaintenanceTiming(threadId, "repairMissingArtifacts", startedAt, {
+        result,
+        openThreadMs,
+        smoothMs,
+        projectionMs: Date.now() - stepStartedAt,
+        closedTurns,
+      });
+      return projectionSnapshot.issues;
+    }
+
+    for (const turn of projectionSnapshot.value.turns) {
+      if (turn.lifecycleStatus !== "closed" || isCurrentExactLowerBandProjection(turn)) {
+        continue;
+      }
+
+      projectedTurns += 1;
+      try {
+        await ensureLowerBandTurnProjection(
+          {
+            threadId,
+            turnId: turn.turnId,
+          },
+          {
+            store: dependencies.store,
+            openAIInputTokenCounter: {
+              countTurnLowerBandProjectionMaterialized:
+                dependencies.openAIInputTokenCounter.countTurnLowerBandProjectionMaterialized.bind(
+                  dependencies.openAIInputTokenCounter,
+                ),
+            },
+            tokenCountModel: dependencies.tokenCountModel,
+            now: dependencies.now,
+          },
+        );
+      } catch (error) {
+        projectionMs += Date.now() - stepStartedAt;
+        result = "projectionFailed";
+        logAsyncMaintenanceTiming(threadId, "repairMissingArtifacts", startedAt, {
+          result,
+          openThreadMs,
+          smoothMs,
+          projectionMs,
+          closedTurns,
+          projectedTurns,
+        });
+        return issuesFromUnknownError(error, threadId);
+      }
+    }
+    projectionMs = Date.now() - stepStartedAt;
+  }
+
   try {
     stepStartedAt = Date.now();
     await updateChunkState(
@@ -950,6 +1264,7 @@ async function repairMissingArtifacts(
       {
         store: dependencies.store,
         now: dependencies.now,
+        lowerBandCompressionScheduler: createLowerBandCompressionScheduler(dependencies),
       },
     );
     updateChunkMs = Date.now() - stepStartedAt;
@@ -960,8 +1275,10 @@ async function repairMissingArtifacts(
       result,
       openThreadMs,
       smoothMs,
+      projectionMs,
       updateChunkMs,
       closedTurns,
+      projectedTurns,
     });
     return issuesFromUnknownError(error, threadId);
   }
@@ -975,62 +1292,139 @@ async function repairMissingArtifacts(
       result,
       openThreadMs,
       smoothMs,
+      projectionMs,
       updateChunkMs,
       readChunksMs,
       closedTurns,
+      projectedTurns,
     });
     return chunksSnapshot.issues;
   }
 
-  stepStartedAt = Date.now();
-  for (const chunk of chunksSnapshot.value) {
-    if (chunk.lifecycleStatus !== "closed") {
-      continue;
-    }
+  closedChunks = chunksSnapshot.value.filter((chunk) => chunk.lifecycleStatus === "closed").length;
 
-    closedChunks += 1;
-    if (areChunkPlaceholdersReady(chunk)) {
-      continue;
-    }
+  const lowerBandCompressionService = createLowerBandCompressionScheduler(dependencies);
+  if (lowerBandCompressionService) {
+    stepStartedAt = Date.now();
+    const maxCatchUpAttempts = Math.max(1, closedChunks * 2);
 
-    try {
-      await ensurePlaceholderArtifacts(
-        {
-          threadId,
-          chunkId: chunk.chunkId,
-        },
-        {
-          store: dependencies.store,
-          now: dependencies.now,
-        },
-      );
-    } catch (error) {
-      placeholderMs += Date.now() - stepStartedAt;
-      result = "placeholderFailed";
-      logAsyncMaintenanceTiming(threadId, "repairMissingArtifacts", startedAt, {
-        result,
-        openThreadMs,
-        smoothMs,
-        updateChunkMs,
-        readChunksMs,
-        placeholderMs,
-        closedTurns,
-        closedChunks,
+    for (let attempt = 0; attempt < maxCatchUpAttempts; attempt += 1) {
+      const catchUpThreadSnapshot = await dependencies.store.openThread(threadId);
+      if (!catchUpThreadSnapshot.ok) {
+        lowerBandCatchUpMs = Date.now() - stepStartedAt;
+        result = "lowerBandCatchUpOpenThreadFailed";
+        logAsyncMaintenanceTiming(threadId, "repairMissingArtifacts", startedAt, {
+          result,
+          openThreadMs,
+          smoothMs,
+          projectionMs,
+          updateChunkMs,
+          readChunksMs,
+          lowerBandCatchUpMs,
+          closedTurns,
+          projectedTurns,
+          closedChunks,
+        });
+        return catchUpThreadSnapshot.issues;
+      }
+
+      const catchUpChunksSnapshot = await dependencies.store.readChunks(threadId);
+      if (!catchUpChunksSnapshot.ok) {
+        lowerBandCatchUpMs = Date.now() - stepStartedAt;
+        result = "lowerBandCatchUpReadChunksFailed";
+        logAsyncMaintenanceTiming(threadId, "repairMissingArtifacts", startedAt, {
+          result,
+          openThreadMs,
+          smoothMs,
+          projectionMs,
+          updateChunkMs,
+          readChunksMs,
+          lowerBandCatchUpMs,
+          closedTurns,
+          projectedTurns,
+          closedChunks,
+        });
+        return catchUpChunksSnapshot.issues;
+      }
+
+      const catchUpTarget = findSelectedLowerBandCatchUpTarget({
+        requestedLowerBound: input.requestedLowerBound,
+        requestedBandPercentages: input.requestedBandPercentages,
+        turns: catchUpThreadSnapshot.value.turns,
+        messages: catchUpThreadSnapshot.value.messages,
+        chunks: catchUpChunksSnapshot.value,
       });
-      return issuesFromUnknownError(error, threadId);
+      if (!catchUpTarget) {
+        break;
+      }
+
+      writeVisibleCatchUpWarning(
+        `[smart-compact] Lower-band catch-up required for chunk ${catchUpTarget.chunkId} ` +
+        `(${catchUpTarget.band}) before lower-band preparation can continue.`,
+      );
+
+      try {
+        const catchUpResult = await lowerBandCompressionService.run({
+          threadId,
+          chunkId: catchUpTarget.chunkId,
+          requiredBands: [catchUpTarget.band],
+          mode: "prepare_catch_up",
+        });
+        if (catchUpResult.blockers.length > 0) {
+          lowerBandCatchUpMs = Date.now() - stepStartedAt;
+          result = "lowerBandCatchUpFailed";
+          logAsyncMaintenanceTiming(threadId, "repairMissingArtifacts", startedAt, {
+            result,
+            openThreadMs,
+            smoothMs,
+            projectionMs,
+            updateChunkMs,
+            readChunksMs,
+            lowerBandCatchUpMs,
+            closedTurns,
+            projectedTurns,
+            closedChunks,
+          });
+          return catchUpResult.blockers.map((issue) =>
+            createStewardIssue({
+              ...issue,
+              message: `Lower-band catch-up failed during compact preparation: ${issue.message}`,
+            })
+          );
+        }
+      } catch (error) {
+        lowerBandCatchUpMs = Date.now() - stepStartedAt;
+        result = "lowerBandCatchUpException";
+        logAsyncMaintenanceTiming(threadId, "repairMissingArtifacts", startedAt, {
+          result,
+          openThreadMs,
+          smoothMs,
+          projectionMs,
+          updateChunkMs,
+          readChunksMs,
+          lowerBandCatchUpMs,
+          closedTurns,
+          projectedTurns,
+          closedChunks,
+        });
+        return issuesFromUnknownError(error, threadId);
+      }
     }
+
+    lowerBandCatchUpMs = Date.now() - stepStartedAt;
   }
-  placeholderMs = Date.now() - stepStartedAt;
 
   result = "ok";
   logAsyncMaintenanceTiming(threadId, "repairMissingArtifacts", startedAt, {
     result,
     openThreadMs,
     smoothMs,
+    projectionMs,
     updateChunkMs,
     readChunksMs,
-    placeholderMs,
+    lowerBandCatchUpMs,
     closedTurns,
+    projectedTurns,
     closedChunks,
   });
   return [];
@@ -1276,59 +1670,65 @@ async function repairOpenAITokenCounts(
           model: dependencies.tokenCountModel,
           now: dependencies.now,
         });
-        refreshPlaceholderSmoothSourceTokenCount(chunk);
         chunksChanged = true;
       }
 
-      if (chunk.placeholders?.detailed?.text) {
-        const expectedDetailed = resolveChunkPlaceholderTokenAccounting({
-          chunk,
-          bandType: "detailed",
-          policyMode: "prepare",
-        })?.record;
-        if (
-          !isOpenAIProviderInputCount({
-            record: chunk.placeholders.detailed.tokenCountMetadata,
-            expected: expectedDetailed,
-            model: dependencies.tokenCountModel,
-          })
-        ) {
-          detailedCounts += 1;
-          chunk.placeholders.detailed = {
-            ...chunk.placeholders.detailed,
+      const expectedDetailed = resolveChunkSemanticArtifactAccounting({
+        chunk,
+        bandType: "detailed",
+        policyMode: "prepare",
+      })?.record;
+      if (
+        expectedDetailed &&
+        chunk.lowerBand?.detailed &&
+        !isOpenAIProviderInputCount({
+          record: chunk.lowerBand?.detailed?.tokenCountMetadata,
+          expected: expectedDetailed,
+          model: dependencies.tokenCountModel,
+        })
+      ) {
+        detailedCounts += 1;
+        chunk.lowerBand = {
+          ...(chunk.lowerBand ?? {}),
+          detailed: {
+            ...chunk.lowerBand.detailed,
             tokenCountMetadata: await counter.countDetailedChunkMaterialized(chunk, {
               model: dependencies.tokenCountModel,
               now: dependencies.now,
             }),
-          };
-          chunksChanged = true;
-        }
+          },
+        };
+        chunksChanged = true;
       }
 
-      if (chunk.placeholders?.brief?.text) {
-        const expectedBrief = resolveChunkPlaceholderTokenAccounting({
-          chunk,
-          bandType: "brief",
-          policyMode: "prepare",
-        })?.record;
-        if (
-          !isOpenAIProviderInputCount({
-            record: chunk.placeholders.brief.tokenCountMetadata,
-            expected: expectedBrief,
-            model: dependencies.tokenCountModel,
-          })
-        ) {
-          briefCounts += 1;
-          chunk.placeholders.brief = {
-            ...chunk.placeholders.brief,
+      const expectedBrief = resolveChunkSemanticArtifactAccounting({
+        chunk,
+        bandType: "brief",
+        policyMode: "prepare",
+      })?.record;
+      if (
+        expectedBrief &&
+        chunk.lowerBand?.brief &&
+        !isOpenAIProviderInputCount({
+          record: chunk.lowerBand?.brief?.tokenCountMetadata,
+          expected: expectedBrief,
+          model: dependencies.tokenCountModel,
+        })
+      ) {
+        briefCounts += 1;
+        chunk.lowerBand = {
+          ...(chunk.lowerBand ?? {}),
+          brief: {
+            ...chunk.lowerBand.brief,
             tokenCountMetadata: await counter.countBriefChunkMaterialized(chunk, {
               model: dependencies.tokenCountModel,
               now: dependencies.now,
             }),
-          };
-          chunksChanged = true;
-        }
+          },
+        };
+        chunksChanged = true;
       }
+
     }
     chunkLoopMs = Date.now() - stepStartedAt;
   } catch (error) {
@@ -1422,90 +1822,121 @@ async function persistDegradedRawTokenCountsForClosedTurns(
   let turnsVisited = 0;
   let changedTurns = 0;
   let result = "unknown";
-  let stepStartedAt = Date.now();
-  const snapshot = await dependencies.store.openThread(threadId);
-  openThreadMs = Date.now() - stepStartedAt;
-  if (!snapshot.ok) {
-    result = "openThreadFailed";
-    logAsyncMaintenanceTiming(threadId, "persistDegradedRawTokenCountsForClosedTurns", startedAt, {
-      result,
-      openThreadMs,
-    });
-    return snapshot.issues;
-  }
+  let lastIssues: StewardIssue[] = [];
 
-  const messagesById = new Map(snapshot.value.messages.map((message) => [message.messageId, message]));
-  const nextTurns = structuredClone(snapshot.value.turns);
-  let turnsChanged = false;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    turnsVisited = 0;
+    changedTurns = 0;
 
-  stepStartedAt = Date.now();
-  for (const turn of nextTurns) {
-    turnsVisited += 1;
-    if (turn.lifecycleStatus !== "closed") {
-      continue;
+    let stepStartedAt = Date.now();
+    const snapshot = await dependencies.store.openThread(threadId);
+    openThreadMs += Date.now() - stepStartedAt;
+    if (!snapshot.ok) {
+      result = "openThreadFailed";
+      lastIssues = snapshot.issues;
+      if (attempt < 3 && snapshot.issues.some(isRetryableThreadMutationIssue)) {
+        continue;
+      }
+      logAsyncMaintenanceTiming(threadId, "persistDegradedRawTokenCountsForClosedTurns", startedAt, {
+        result,
+        openThreadMs,
+        attempt,
+      });
+      return snapshot.issues;
     }
 
-    const messages = sortMessagesInSourceOrder(
-      turn.messageIds
-        .map((messageId) => messagesById.get(messageId))
-        .filter((message): message is MessageRecord => message !== undefined),
-    );
-    if (messages.length !== turn.messageIds.length) {
-      continue;
+    const messagesById = new Map(snapshot.value.messages.map((message) => [message.messageId, message]));
+    const nextTurns = structuredClone(snapshot.value.turns);
+    let turnsChanged = false;
+
+    stepStartedAt = Date.now();
+    for (const turn of nextTurns) {
+      turnsVisited += 1;
+      if (turn.lifecycleStatus !== "closed") {
+        continue;
+      }
+
+      const messages = sortMessagesInSourceOrder(
+        turn.messageIds
+          .map((messageId) => messagesById.get(messageId))
+          .filter((message): message is MessageRecord => message !== undefined),
+      );
+      if (messages.length !== turn.messageIds.length) {
+        continue;
+      }
+
+      const expected = countRawTurnMaterialized({
+        turn,
+        messages,
+        now: dependencies.now,
+      });
+      if (
+        isOpenAIProviderInputCount({
+          record: turn.rawTokenCountMetadata,
+          expected,
+          model: dependencies.tokenCountModel,
+        }) ||
+        (
+          turn.rawTokenCountMetadata?.scope === expected.scope &&
+          turn.rawTokenCountMetadata.source === expected.source &&
+          turn.rawTokenCountMetadata.trustClass === expected.trustClass &&
+          turn.rawTokenCountMetadata.sourceRevision === expected.sourceRevision &&
+          turn.rawTokenCountMetadata.representationHash === expected.representationHash &&
+          turn.rawTokenCountMetadata.count === expected.count
+        )
+      ) {
+        continue;
+      }
+
+      turn.rawTokenCountMetadata = expected;
+      turnsChanged = true;
+      changedTurns += 1;
+    }
+    loopMs += Date.now() - stepStartedAt;
+
+    if (!turnsChanged) {
+      result = "unchanged";
+      logAsyncMaintenanceTiming(threadId, "persistDegradedRawTokenCountsForClosedTurns", startedAt, {
+        result,
+        openThreadMs,
+        loopMs,
+        turnsVisited,
+        changedTurns,
+        attempt,
+      });
+      return [];
     }
 
-    const expected = countRawTurnMaterialized({
-      turn,
-      messages,
-      now: dependencies.now,
+    stepStartedAt = Date.now();
+    const writeTurnsResult = await dependencies.store.writeTurns({
+      threadId,
+      expectedSourceRevision: snapshot.value.thread.sourceRevision,
+      expectedMessageHighWatermark: snapshot.value.thread.messageHighWatermark,
+      expectedTurnsRevision: snapshot.value.thread.turnsRevision,
+      turns: nextTurns,
+      turnState: snapshot.value.thread.status.turnState,
     });
-    if (
-      isOpenAIProviderInputCount({
-        record: turn.rawTokenCountMetadata,
-        expected,
-        model: dependencies.tokenCountModel,
-      }) ||
-      (
-        turn.rawTokenCountMetadata?.scope === expected.scope &&
-        turn.rawTokenCountMetadata.source === expected.source &&
-        turn.rawTokenCountMetadata.trustClass === expected.trustClass &&
-        turn.rawTokenCountMetadata.sourceRevision === expected.sourceRevision &&
-        turn.rawTokenCountMetadata.representationHash === expected.representationHash &&
-        turn.rawTokenCountMetadata.count === expected.count
-      )
-    ) {
-      continue;
+    writeMs += Date.now() - stepStartedAt;
+    result = writeTurnsResult.ok ? "updated" : "writeFailed";
+    if (writeTurnsResult.ok) {
+      logAsyncMaintenanceTiming(threadId, "persistDegradedRawTokenCountsForClosedTurns", startedAt, {
+        result,
+        openThreadMs,
+        loopMs,
+        writeMs,
+        turnsVisited,
+        changedTurns,
+        attempt,
+      });
+      return [];
     }
 
-    turn.rawTokenCountMetadata = expected;
-    turnsChanged = true;
-    changedTurns += 1;
-  }
-  loopMs = Date.now() - stepStartedAt;
-
-  if (!turnsChanged) {
-    result = "unchanged";
-    logAsyncMaintenanceTiming(threadId, "persistDegradedRawTokenCountsForClosedTurns", startedAt, {
-      result,
-      openThreadMs,
-      loopMs,
-      turnsVisited,
-      changedTurns,
-    });
-    return [];
+    lastIssues = writeTurnsResult.issues;
+    if (!writeTurnsResult.issues.some(isRetryableThreadMutationIssue)) {
+      break;
+    }
   }
 
-  stepStartedAt = Date.now();
-  const writeTurnsResult = await dependencies.store.writeTurns({
-    threadId,
-    expectedSourceRevision: snapshot.value.thread.sourceRevision,
-    expectedMessageHighWatermark: snapshot.value.thread.messageHighWatermark,
-    expectedTurnsRevision: snapshot.value.thread.turnsRevision,
-    turns: nextTurns,
-    turnState: snapshot.value.thread.status.turnState,
-  });
-  writeMs = Date.now() - stepStartedAt;
-  result = writeTurnsResult.ok ? "updated" : "writeFailed";
   logAsyncMaintenanceTiming(threadId, "persistDegradedRawTokenCountsForClosedTurns", startedAt, {
     result,
     openThreadMs,
@@ -1513,9 +1944,10 @@ async function persistDegradedRawTokenCountsForClosedTurns(
     writeMs,
     turnsVisited,
     changedTurns,
+    attempts: 3,
   });
 
-  return writeTurnsResult.ok ? [] : writeTurnsResult.issues;
+  return lastIssues;
 }
 
 async function persistTokenCountingMaintenanceStatus(input: {
@@ -1604,19 +2036,34 @@ export async function maintainAsyncThread(
   }
 
   let stepStartedAt = Date.now();
-  const artifactIssues = await repairMissingArtifacts(input.threadId, dependencies);
+  const artifactIssues = await repairMissingArtifacts(
+    {
+      threadId: input.threadId,
+    },
+    dependencies,
+  );
   artifactsMs = Date.now() - stepStartedAt;
   stepStartedAt = Date.now();
   const degradedRawIssues = await persistDegradedRawTokenCountsForClosedTurns(input.threadId, dependencies);
   degradedRawMs = Date.now() - stepStartedAt;
   stepStartedAt = Date.now();
-  const tokenCountIssues = await repairOpenAITokenCounts(input.threadId, dependencies, {
-    includeOpenRawTurns: false,
-    missingCounterMessage:
-      "OpenAI materialized token counter is not configured; async maintenance left exact materialized token counts repair-needed for smart compact prepare.",
-    failureMessage:
-      "OpenAI materialized token counting failed during async maintenance; deterministic artifacts were left with repair-needed heuristic counts for smart compact prepare.",
-  });
+  const tokenCountIssues =
+    dependencies.exactTokenCountRepairEnabled === false
+      ? [
+          tokenCountBlockedIssue({
+            threadId: input.threadId,
+            message:
+              "OpenAI materialized token count repair was intentionally skipped during PI async background maintenance; exact materialized counts remain repair-needed for smart compact prepare.",
+            cause: "exact_token_count_repair_skipped",
+          }),
+        ]
+      : await repairOpenAITokenCounts(input.threadId, dependencies, {
+          includeOpenRawTurns: false,
+          missingCounterMessage:
+            "OpenAI materialized token counter is not configured; async maintenance left exact materialized token counts repair-needed for smart compact prepare.",
+          failureMessage:
+            "OpenAI materialized token counting failed during async maintenance; deterministic artifacts were left with repair-needed heuristic counts for smart compact prepare.",
+        });
   exactCountsMs = Date.now() - stepStartedAt;
   const tokenCountingIssues = [...degradedRawIssues, ...tokenCountIssues];
   stepStartedAt = Date.now();
@@ -1672,7 +2119,17 @@ export async function prepareAsyncThread(
     return initialReadiness;
   }
 
-  const repairIssues = await repairMissingArtifacts(input.threadId, dependencies);
+  const repairIssues = await repairMissingArtifacts(
+    {
+      threadId: input.threadId,
+      requestedLowerBound: input.requestedLowerBound,
+      requestedBandPercentages: input.requestedBandPercentages,
+    },
+    dependencies,
+    {
+      warnOnSmoothCatchUp: true,
+    },
+  );
   if (repairIssues.length > 0) {
     return blockedReadiness(input.threadId, repairIssues);
   }
@@ -1680,5 +2137,16 @@ export async function prepareAsyncThread(
   if (tokenCountRepairIssues.length > 0) {
     return blockedReadiness(input.threadId, tokenCountRepairIssues);
   }
-  return readReadiness(input, dependencies);
+  const finalReadiness = await readReadiness(input, dependencies);
+
+  return {
+    ...finalReadiness,
+    blockers: finalReadiness.blockers.map((issue) =>
+      issue.code === "SMOOTH_MISSING" || issue.code === "SMOOTH_INVALID"
+        ? createStewardIssue({
+            ...issue,
+            message: `Smooth catch-up failed during compact preparation: ${issue.message}`,
+          })
+        : issue),
+  };
 }

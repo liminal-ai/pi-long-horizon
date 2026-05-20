@@ -23,9 +23,9 @@
     "guard:no-test-changes": "node scripts/guard-no-test-changes.mjs"
   },
   "dependencies": {
-    "@earendil-works/pi-ai": "0.74.0",
-    "@earendil-works/pi-agent-core": "0.74.0",
-    "@earendil-works/pi-coding-agent": "0.74.0"
+    "@earendil-works/pi-agent-core": "0.75.3",
+    "@earendil-works/pi-ai": "0.75.3",
+    "@earendil-works/pi-coding-agent": "0.75.3"
   },
   "devDependencies": {
     "@types/node": "^24.10.1",

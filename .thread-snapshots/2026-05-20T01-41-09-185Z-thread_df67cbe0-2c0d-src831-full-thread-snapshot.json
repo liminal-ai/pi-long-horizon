@@ -1,0 +1,63 @@
+{
+  "capturedAt": "2026-05-20T01:41:09.185Z",
+  "label": "post-second-smart-compact-heavy-full-fidelity-growth",
+  "description": "Thread has had multiple smart compacts and extensive verbose post-compact work. Active projected thread-view is near 79% of 272k, with many post-compact full-fidelity/live turns and prompt-visible tool-result pruning. Canonical raw history is over one million estimated tokens, dominated by tool output. Lower-band projections and chunks are broadly present; newer post-compact raw/smooth materialized counts remain partly heuristic pending prepare/exact repair.",
+  "threadId": "thread_df67cbe0-2c0d-4c6e-90fa-570b04cd9bcc",
+  "threadDir": ".context-steward/threads/thread_df67cbe0-2c0d-4c6e-90fa-570b04cd9bcc",
+  "archive": ".thread-snapshots/2026-05-20T01-41-09-185Z-thread_df67cbe0-2c0d-src831-full-thread-snapshot.zip",
+  "sourceRevision": 831,
+  "messageHighWatermark": 831,
+  "updatedAt": "2026-05-20T01:40:31.262Z",
+  "turns": {
+    "total": 101,
+    "closed": 100,
+    "open": 1
+  },
+  "messages": {
+    "total": 831,
+    "byKind": {
+      "prompt": 101,
+      "response": 381,
+      "tool_result": 349
+    },
+    "byActorType": {
+      "human": 101,
+      "agent": 381,
+      "tool": 349
+    }
+  },
+  "chunks": {
+    "total": 27,
+    "closed": 26,
+    "open": 1
+  },
+  "tokenEstimates": {
+    "canonicalRawChars": 3819517,
+    "canonicalRawTokens": 1032703,
+    "toolResultChars": 2717083,
+    "toolResultTokens": 734512
+  },
+  "tokenMetadata": {
+    "rawTurn": {
+      "provider_input_count/exact": 52,
+      "pi_heuristic/heuristic_estimate": 48,
+      "missing": 1
+    },
+    "smoothTurn": {
+      "provider_input_count/exact": 52,
+      "pi_heuristic/heuristic_estimate": 48,
+      "missing": 1
+    },
+    "lowerBandProjection": {
+      "provider_input_count/exact": 100,
+      "missing": 1
+    }
+  },
+  "activeGenerated": {
+    "path": "/Users/leemoore/code/pi-long-horizon/.context-steward/threads/thread_df67cbe0-2c0d-4c6e-90fa-570b04cd9bcc/generated/projection_0dd9a3fc-b582-424f-8ec0-0cfeb03112d1-thread_view_b7a83ce1-2021-4362-b86e-8f55f29176f8.jsonl",
+    "fileName": "projection_0dd9a3fc-b582-424f-8ec0-0cfeb03112d1-thread_view_b7a83ce1-2021-4362-b86e-8f55f29176f8.jsonl",
+    "records": 444,
+    "lastAssistantUsageTotalTokens": 216942,
+    "percentOf272k": 0.7975808823529412
+  }
+}

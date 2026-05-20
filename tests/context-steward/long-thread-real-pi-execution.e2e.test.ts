@@ -42,6 +42,7 @@ interface PiRunResult {
   stderr: string;
   exitCode: number;
   logPath: string;
+  fetchLogPath: string;
 }
 
 let piRunCounter = 0;
@@ -109,7 +110,7 @@ async function runPiWithTools(options: {
 
   const timeout = options.timeout ?? 180_000;
 
-  async function persistRunLog(result: Omit<PiRunResult, "logPath">): Promise<PiRunResult> {
+  async function persistRunLog(result: Omit<PiRunResult, "logPath" | "fetchLogPath">): Promise<PiRunResult> {
     await mkdir(logDir, { recursive: true });
     const payload = [
       `cwd=${options.cwd}`,
@@ -128,7 +129,7 @@ async function runPiWithTools(options: {
     if (result.exitCode !== 0) {
       console.error(`PI e2e run failed; log preserved at ${logPath}`);
     }
-    return { ...result, logPath };
+    return { ...result, logPath, fetchLogPath };
   }
 
   return new Promise<PiRunResult>((resolveRun) => {
@@ -159,14 +160,21 @@ async function runPiWithTools(options: {
   });
 }
 
-function assertPiCleanExit(result: PiRunResult, label: string): void {
+function assertPiCleanExit(
+  result: PiRunResult,
+  label: string,
+  options: { allowedStderrPattern?: RegExp } = {},
+): void {
   assert.equal(
     result.exitCode,
     0,
     `${label}: PI exited with code ${result.exitCode}; PI run log: ${result.logPath}\nstderr: ${result.stderr}`,
   );
+  const stderr = options.allowedStderrPattern
+    ? result.stderr.replace(options.allowedStderrPattern, "")
+    : result.stderr;
   assert.doesNotMatch(
-    result.stderr,
+    stderr,
     /Extension error|TARGET_ASSOCIATION_CONFLICT|CAPTURE_APPEND_FAILED|STORE_UNAVAILABLE/,
     `${label}: PI stderr contains extension error: ${result.stderr}`,
   );
@@ -253,6 +261,7 @@ interface GeneratedOutputMetadataRow {
     threadId?: string;
     threadViewId?: string;
     fileName?: string;
+    placeholderExplicit?: boolean;
     entries?: Array<{
       generatedSource?: string;
       role?: string;
@@ -263,6 +272,48 @@ interface GeneratedOutputMetadataRow {
       };
     }>;
   };
+}
+
+interface FetchObserverEvent {
+  event?: string;
+  url?: string;
+  callSite?: string;
+}
+
+interface LowerBandArtifactWithProviderMetadata {
+  status?: string;
+  text?: string;
+  providerMetadata?: {
+    providerId?: string;
+    modelId?: string;
+    reasoningEffort?: string;
+    promptVersion?: string;
+    elapsedMs?: number;
+  };
+}
+
+async function readFetchObserverEvents(filePath: string): Promise<FetchObserverEvent[]> {
+  if (!existsSync(filePath)) {
+    return [];
+  }
+  return (await readJsonl(filePath)) as FetchObserverEvent[];
+}
+
+async function assertOpenAIInputTokenCountingObserved(input: {
+  run: PiRunResult;
+  description: string;
+}): Promise<void> {
+  const events = await readFetchObserverEvents(input.run.fetchLogPath);
+  assert.ok(events.length > 0, `${input.description}: expected fetch observer events.`);
+  assert.ok(
+    events.some(
+      (event) =>
+        event.event === "fetch_start" &&
+        (event.url?.includes("/responses/input_tokens") ?? false) &&
+        (event.callSite?.includes("openai-input-token-counter") ?? false),
+    ),
+    `${input.description}: expected async thread view to call OpenAI input token counting.`,
+  );
 }
 
 async function waitForClosedModelSmoothedTurn(input: {
@@ -356,6 +407,69 @@ async function waitForClosedModelSmoothedTurn(input: {
   return verified;
 }
 
+async function waitForAsyncThreadViewProjectionAndChunking(input: {
+  store: FileThreadStore;
+  threadId: string;
+  turnId: string;
+  description: string;
+}): Promise<void> {
+  await waitForAssertion(async () => {
+    const snapshot = expectOk(await input.store.openThread(input.threadId));
+    const turn = snapshot.turns.find((candidate) => candidate.turnId === input.turnId);
+    assert.ok(turn, `Expected turn ${input.turnId} to remain in the source thread.`);
+    assert.equal(
+      turn.smooth?.lowerBandProjection?.status,
+      "ready",
+      `${input.description}: expected exact lower-band projection to be persisted for the appended turn.`,
+    );
+    assert.equal(
+      turn.smooth?.lowerBandProjection?.tokenCountMetadata?.scope,
+      "turn_lower_band_projection_materialized",
+    );
+    assert.equal(turn.smooth?.lowerBandProjection?.tokenCountMetadata?.source, "provider_input_count");
+    assert.equal(turn.smooth?.lowerBandProjection?.tokenCountMetadata?.trustClass, "exact");
+
+    const chunks = expectOk(await input.store.readChunks(input.threadId));
+    assert.ok(
+      chunks.some((chunk) => chunk.sourceTurnIds.includes(input.turnId)),
+      `${input.description}: expected chunking to consume projected turn ${input.turnId}.`,
+    );
+  }, input.description);
+}
+
+async function assertInferenceGeneratedLowerBandArtifacts(input: {
+  store: FileThreadStore;
+  threadId: string;
+  description: string;
+}): Promise<void> {
+  const chunks = expectOk(await input.store.readChunks(input.threadId));
+  const closedChunks = chunks.filter((chunk) => chunk.lifecycleStatus === "closed");
+  assert.ok(closedChunks.length > 0, `${input.description}: expected at least one closed lower-band chunk.`);
+
+  const detailed = closedChunks
+    .map((chunk) => chunk.lowerBand?.detailed as LowerBandArtifactWithProviderMetadata | undefined)
+    .find((artifact) => artifact?.status === "ready");
+  const brief = closedChunks
+    .map((chunk) => chunk.lowerBand?.brief as LowerBandArtifactWithProviderMetadata | undefined)
+    .find((artifact) => artifact?.status === "ready");
+
+  assert.ok(detailed, `${input.description}: expected inference-generated detailed lower-band text.`);
+  assert.ok(detailed.text?.trim(), `${input.description}: expected non-empty detailed lower-band text.`);
+  assert.equal(detailed.providerMetadata?.providerId, "openai-codex");
+  assert.equal(detailed.providerMetadata?.promptVersion, "lower_band_detailed_v1");
+  assert.equal(typeof detailed.providerMetadata?.modelId, "string");
+  assert.equal(typeof detailed.providerMetadata?.reasoningEffort, "string");
+  assert.equal(typeof detailed.providerMetadata?.elapsedMs, "number");
+
+  assert.ok(brief, `${input.description}: expected inference-generated brief lower-band text.`);
+  assert.ok(brief.text?.trim(), `${input.description}: expected non-empty brief lower-band text.`);
+  assert.equal(brief.providerMetadata?.providerId, "openai-codex");
+  assert.equal(brief.providerMetadata?.promptVersion, "lower_band_brief_v1");
+  assert.equal(typeof brief.providerMetadata?.modelId, "string");
+  assert.equal(typeof brief.providerMetadata?.reasoningEffort, "string");
+  assert.equal(typeof brief.providerMetadata?.elapsedMs, "number");
+}
+
 async function readGeneratedOutputMetadata(filePath: string): Promise<GeneratedOutputMetadataRow> {
   const rows = await readJsonl(filePath) as GeneratedOutputMetadataRow[];
   const metadata = rows.find(
@@ -434,7 +548,7 @@ test(
       assert.ok(appendedRowsText.includes(fileName), "Expected appended session rows to mention the unique file.");
       assert.ok(appendedRowsText.includes(uniqueToken), "Expected appended session rows to include the unique token.");
 
-      await waitForClosedModelSmoothedTurn({
+      const verified = await waitForClosedModelSmoothedTurn({
         store,
         threadId: prepared.threadId,
         baselineSourceRevision: beforeSnapshot.thread.sourceRevision,
@@ -443,6 +557,17 @@ test(
         expectedPromptText: [fileName, targetDir],
         expectedNewMessageText: [uniqueToken],
         description: "real PI execution should persist closed turn and model-smoothed user prompt",
+      });
+      await assertOpenAIInputTokenCountingObserved({
+        run: result,
+        description: "real PI execution async thread view",
+      });
+      await waitForAsyncThreadViewProjectionAndChunking({
+        store,
+        threadId: prepared.threadId,
+        turnId: verified.turn.turnId,
+        description:
+          "real PI execution async thread view should exact-count lower-band projection and advance chunking",
       });
       passed = true;
     } catch (error) {
@@ -633,7 +758,7 @@ test(
     skip: existsSync(SOURCE_THREAD_PATH) && existsSync(PI_BIN)
       ? false
       : "real audited source thread or PI binary is not present in this checkout",
-    timeout: 420_000,
+    timeout: 540_000,
   },
   async () => {
     const context = await createTempFeature3StoreContext("pi-long-thread-smart-compact-");
@@ -774,15 +899,32 @@ test(
       assert.ok(generatedText.includes(firstFileName), "Generated output should preserve first live filename.");
       assert.ok(generatedText.includes(continuationDir), "Generated output should preserve second live directory.");
       assert.ok(generatedText.includes(secondMarker), "Generated output should preserve second live marker.");
+      assert.equal(
+        generatedText.includes("Detailed semantic lower-band memory") ||
+          generatedText.includes("Brief semantic lower-band memory"),
+        true,
+      );
+      assert.equal(generatedText.includes("deterministic-placeholder"), false);
+      assert.equal(generatedText.includes("[deterministic-placeholder:detailed]"), false);
+      assert.equal(generatedText.includes("[deterministic-placeholder:brief]"), false);
+      assert.equal(generatedText.includes("[not-semantic-summary]"), false);
 
       const outputMetadata = await readGeneratedOutputMetadata(compactResult.generatedFilePath);
       assert.equal(outputMetadata.data?.threadId, prepared.threadId);
       assert.equal(outputMetadata.data?.threadViewId, compactResult.threadViewId);
       assert.equal(outputMetadata.data?.fileName, basename(compactResult.generatedFilePath));
+      assert.equal(outputMetadata.data?.placeholderExplicit, false);
       const outputEntries = outputMetadata.data?.entries ?? [];
       const generatedSources = new Set(outputEntries.map((entry) => entry.generatedSource));
       assert.ok(generatedSources.has("raw_turn_message"), "Expected upper-band raw messages in generated output.");
       assert.ok(generatedSources.has("smooth_turn"), "Expected older smooth-turn content in generated output.");
+      await assertInferenceGeneratedLowerBandArtifacts({
+        store,
+        threadId: prepared.threadId,
+        description: "smart compact lower-band catch-up",
+      });
+      assert.ok(generatedSources.has("detailed_chunk_summary"), "Expected detailed lower-band chunk summary content.");
+      assert.ok(generatedSources.has("brief_chunk_summary"), "Expected brief lower-band chunk summary content.");
       assert.ok(
         generatedSources.has("detailed_chunk_summary") || generatedSources.has("brief_chunk_summary"),
         "Expected older lower-band chunk summary content in generated output.",
@@ -806,6 +948,82 @@ test(
       });
       assert.equal(appendedTurns.length, 2, "Expected the two live turns to remain in canonical source state.");
       assert.deepEqual(appendedTurns.map((turn) => turn.lifecycleStatus), ["closed", "closed"]);
+
+      const postCompactMarker = `smart-compact-post-compact-${randomUUID()}`;
+      const postCompactPrompt = [
+        "Now continue from the post-smart-compact generated rollout with one more real shell-backed turn.",
+        `Change into this exact directory first: ${continuationDir}.`,
+        `Run pwd there and include the unique marker ${postCompactMarker} in your final answer.`,
+        "Keep the final answer short and do not create files.",
+      ].join("\n");
+      const postCompactSessionRowsBefore = await readJsonl(compactResult.generatedFilePath);
+      const postCompactResult = await runPiWithTools({
+        cwd: context.projectDir,
+        sessionDir,
+        sessionFile: compactResult.generatedFilePath,
+        prompt: postCompactPrompt,
+      });
+      assertPiCleanExit(postCompactResult, "long-thread smart compact post-compact continuation run");
+      const postCompactSessionRowsAfter = await readJsonl(compactResult.generatedFilePath);
+      assert.ok(
+        postCompactSessionRowsAfter.length > postCompactSessionRowsBefore.length,
+        "Expected post-compact PI continuation to append rows to the generated rollout session file.",
+      );
+      const postCompactAppendedRowsText = JSON.stringify(
+        postCompactSessionRowsAfter.slice(postCompactSessionRowsBefore.length),
+      );
+      assert.ok(
+        postCompactAppendedRowsText.includes(postCompactMarker),
+        "Expected post-compact appended session rows to mention the unique marker.",
+      );
+      assert.ok(
+        postCompactAppendedRowsText.includes(continuationDir),
+        "Expected post-compact appended session rows to mention the continuation directory.",
+      );
+
+      const postCompactVerified = await waitForClosedModelSmoothedTurn({
+        store,
+        threadId: prepared.threadId,
+        baselineSourceRevision: afterCompactSnapshot.thread.sourceRevision,
+        baselineMessageHighWatermark: afterCompactSnapshot.thread.messageHighWatermark,
+        promptMarker: postCompactMarker,
+        expectedPromptText: [postCompactMarker, continuationDir],
+        expectedNewMessageText: [continuationDir],
+        description: "post-smart-compact PI continuation turn should close and be model-smoothed",
+      });
+      assert.equal(postCompactVerified.snapshot.thread.threadId, prepared.threadId);
+      assert.equal(
+        postCompactVerified.snapshot.thread.target.currentGeneratedFilePath,
+        compactResult.generatedFilePath,
+      );
+      assert.equal(
+        postCompactVerified.snapshot.thread.threadViewOutputSummary.currentGeneratedFilePath,
+        compactResult.generatedFilePath,
+      );
+      assert.ok(
+        postCompactVerified.prompt.sourceOrder > secondVerified.prompt.sourceOrder,
+        "Expected post-compact prompt to append after the second live pre-compact prompt.",
+      );
+
+      const finalAppendedTurns = postCompactVerified.snapshot.turns.filter((turn) => {
+        const initiating = postCompactVerified.snapshot.messages.find(
+          (message) => message.messageId === turn.initiatingMessageId,
+        );
+        return (initiating?.sourceOrder ?? 0) > baselineSnapshot.thread.messageHighWatermark;
+      });
+      assert.equal(
+        finalAppendedTurns.length,
+        3,
+        "Expected the source thread to retain the two pre-compact turns plus one post-compact continuation turn.",
+      );
+      assert.deepEqual(
+        finalAppendedTurns.map((turn) => turn.lifecycleStatus),
+        ["closed", "closed", "closed"],
+      );
+      assert.ok(
+        finalAppendedTurns.some((turn) => turn.turnId === postCompactVerified.turn.turnId),
+        "Expected the post-compact continuation turn to persist in canonical source state.",
+      );
 
       passed = true;
     } catch (error) {

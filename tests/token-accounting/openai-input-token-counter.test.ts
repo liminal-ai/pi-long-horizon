@@ -8,7 +8,9 @@ import {
   convertGeneratedSessionToOpenAIResponsesInput,
   createPiAuthStorageOpenAIApiKeyResolver,
 } from "../../src/token-accounting/index.js";
+import { makeChunkState, makeLegacyPlaceholderChunkState } from "../../src/thread/async-thread/test/fixtures.js";
 import { makePiThreadViewFile } from "../../src/thread-view/test/fixtures.js";
+import { DEFAULT_TEST_TIMESTAMP } from "../../src/context-steward/test/fixtures.js";
 
 const CREATED_AT = "2026-05-12T12:00:00.000Z";
 
@@ -326,6 +328,141 @@ test("mocked OpenAI count response becomes an exact provider input TokenCountRec
   assert.equal(record.createdAt, CREATED_AT);
   assert.equal(record.representationHash?.startsWith("sha256:"), true);
   assert.match(record.provenance ?? "", /responses\.input_tokens/);
+});
+
+test("mocked OpenAI count response becomes an exact turn lower-band projection token count", async () => {
+  let capturedModel: string | undefined;
+  let capturedInputText: string | undefined;
+  const counter = new OpenAIInputTokenCounter({
+    async countInputTokens(request) {
+      capturedModel = request.model;
+      capturedInputText =
+        request.input[0]?.type === "message"
+          ? request.input[0].content[0]?.type === "input_text"
+            ? request.input[0].content[0].text
+            : undefined
+          : undefined;
+      return 321;
+    },
+  });
+
+  const record = await counter.countTurnLowerBandProjectionMaterialized({
+    text: "> Prompt text\n\n● Assistant text",
+    model: "gpt-5.4-mini",
+    sourceRevision: 7,
+    createdAt: CREATED_AT,
+  });
+
+  assert.equal(capturedModel, "gpt-5.4-mini");
+  assert.equal(capturedInputText, "> Prompt text\n\n● Assistant text");
+  assert.equal(record.count, 321);
+  assert.equal(record.scope, "turn_lower_band_projection_materialized");
+  assert.equal(record.source, "provider_input_count");
+  assert.equal(record.trustClass, "exact");
+  assert.equal(record.provider, "openai");
+  assert.equal(record.model, "gpt-5.4-mini");
+  assert.equal(record.sourceRevision, 7);
+  assert.match(record.provenance ?? "", /turn-lower-band-projection-content/);
+});
+
+test("mocked OpenAI semantic lower-band chunk counting reads persisted semantic artifact text", async () => {
+  const capturedTexts: string[] = [];
+  const counter = new OpenAIInputTokenCounter({
+    async countInputTokens(request) {
+      const text =
+        request.input[0]?.type === "message" &&
+        request.input[0].content[0]?.type === "input_text"
+          ? request.input[0].content[0].text
+          : undefined;
+      assert.ok(text);
+      capturedTexts.push(text);
+      return capturedTexts.length * 100;
+    },
+  });
+
+  const chunk = {
+    ...makeChunkState({
+      chunkId: "chunk-semantic-provider-count",
+      sourceRevision: 8,
+      lowerBand: {
+        detailed: {
+          band: "detailed",
+          status: "ready",
+          text: "semantic detailed provider text",
+          updatedAt: DEFAULT_TEST_TIMESTAMP,
+        },
+        brief: {
+          band: "brief",
+          status: "ready",
+          text: "semantic brief provider text",
+          updatedAt: DEFAULT_TEST_TIMESTAMP,
+        },
+      },
+    }),
+    placeholders: {
+      chunkId: "chunk-semantic-provider-count",
+      threadId: "thread-001",
+      detailed: {
+        kind: "detailed",
+        status: "ready",
+        text: "placeholder detailed provider text",
+        smoothSourceFingerprint: "sha256:placeholder-detailed",
+        smoothSourceRevision: 8,
+        smoothSourceTokenCount: 21,
+        tokenCountMetadata: undefined,
+        strategy: "deterministic_truncate_30",
+        generatedAt: DEFAULT_TEST_TIMESTAMP,
+        generatedFromComponentSmooth: true,
+      },
+      brief: {
+        kind: "brief",
+        status: "ready",
+        text: "placeholder brief provider text",
+        smoothSourceFingerprint: "sha256:placeholder-brief",
+        smoothSourceRevision: 8,
+        smoothSourceTokenCount: 10,
+        tokenCountMetadata: undefined,
+        strategy: "deterministic_truncate_5",
+        generatedAt: DEFAULT_TEST_TIMESTAMP,
+        generatedFromComponentSmooth: true,
+      },
+    },
+  } as Parameters<OpenAIInputTokenCounter["countDetailedChunkMaterialized"]>[0];
+
+  const detailed = await counter.countDetailedChunkMaterialized(chunk, { model: "gpt-5.4-mini", createdAt: CREATED_AT });
+  const brief = await counter.countBriefChunkMaterialized(chunk, { model: "gpt-5.4-mini", createdAt: CREATED_AT });
+
+  assert.deepEqual(capturedTexts, ["semantic detailed provider text", "semantic brief provider text"]);
+  assert.equal(detailed.count, 100);
+  assert.equal(brief.count, 200);
+});
+
+test("mocked OpenAI semantic lower-band chunk counting ignores placeholder-only state", async () => {
+  const capturedTexts: string[] = [];
+  const counter = new OpenAIInputTokenCounter({
+    async countInputTokens(request) {
+      const text =
+        request.input[0]?.type === "message" &&
+        request.input[0].content[0]?.type === "input_text"
+          ? request.input[0].content[0].text
+          : undefined;
+      assert.equal(typeof text, "string");
+      capturedTexts.push(text ?? "");
+      return capturedTexts.length * 100;
+    },
+  });
+
+  const chunk = makeLegacyPlaceholderChunkState({
+    chunkId: "chunk-placeholder-provider-count",
+    sourceRevision: 10,
+  });
+
+  const detailed = await counter.countDetailedChunkMaterialized(chunk, { model: "gpt-5.4-mini", createdAt: CREATED_AT });
+  const brief = await counter.countBriefChunkMaterialized(chunk, { model: "gpt-5.4-mini", createdAt: CREATED_AT });
+
+  assert.deepEqual(capturedTexts, ["", ""]);
+  assert.equal(detailed.count, 100);
+  assert.equal(brief.count, 200);
 });
 
 test("PI AuthStorage credential resolver uses stored openai key without leaking it", async () => {

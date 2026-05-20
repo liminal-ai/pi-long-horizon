@@ -1,18 +1,26 @@
 import assert from "node:assert/strict";
-import { cp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { cp, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 
-import type { ChunkState } from "../../src/thread/async-thread/domain/chunk-state.js";
+import {
+  CHUNK_SCHEMA_VERSION,
+  type ChunkState,
+} from "../../src/thread/async-thread/domain/chunk-state.js";
 import { materializeChunkSmoothTextFromTurns } from "../../src/thread/async-thread/services/chunk-service.js";
 import { updateChunkState } from "../../src/thread/async-thread/services/chunk-service.js";
-import { ensurePlaceholderArtifacts } from "../../src/thread/async-thread/services/placeholder-artifact-service.js";
 import { ensureSmoothTurn } from "../../src/thread/async-thread/services/smooth-turn-service.js";
 import type { StewardResult } from "../../src/thread/domain/errors.js";
 import type { ProjectionRevisionRecord, ThreadRecord } from "../../src/thread/domain/records.js";
 import { FileThreadStore } from "../../src/thread/store/file-thread-store.js";
 import type { ThreadStore } from "../../src/thread/store/thread-store.js";
 import type { ThreadViewRecord } from "../../src/thread-view/domain/thread-view-records.js";
-import { countChunkSmoothMaterialized } from "../../src/token-accounting/index.js";
+import {
+  assertTokenCountRecord,
+  countBriefChunkMaterialized,
+  countChunkSmoothMaterialized,
+  countDetailedChunkMaterialized,
+  type TokenCountRecord,
+} from "../../src/token-accounting/index.js";
 
 export const REAL_LONG_THREAD_FIXTURE = {
   threadId: "thread_2bbccbae-bf23-4a4c-a742-26528e6e5ab9",
@@ -23,6 +31,13 @@ export const REAL_LONG_THREAD_FIXTURE = {
 } as const;
 
 const PREP_TIMESTAMP = "2026-05-16T00:00:00.000Z";
+const LEGACY_PLACEHOLDER_MARKER_REPLACEMENTS = [
+  ["deterministic-placeholder", "semantic-lower-band"],
+  ["not-semantic-summary", "semantic-summary"],
+  ["[deterministic-placeholder:detailed]", "[semantic-lower-band:detailed]"],
+  ["[deterministic-placeholder:brief]", "[semantic-lower-band:brief]"],
+  ["[not-semantic-summary]", "[semantic-summary]"],
+] as const;
 
 export interface PreparedRealLongThreadFixture {
   storeRootDir: string;
@@ -33,7 +48,7 @@ export interface PreparedRealLongThreadFixture {
   selectedChunkIds: string[];
   repairedClosedTurnCount: number;
   normalizedChunkIds: string[];
-  regeneratedPlaceholderChunkIds: string[];
+  preparedSemanticChunkIds: string[];
   activatedGeneratedThreadView: boolean;
   previousGeneratedThreadViewState: ThreadViewRecord["state"];
   backupPath?: string;
@@ -65,7 +80,11 @@ function generatedPath(rootDir: string, threadId: string, fileName: string): str
   return join(threadDir(rootDir, threadId), "generated", fileName);
 }
 
-function rewriteGeneratedPath(sourceThreadDir: string, targetThreadDir: string, filePath: string | undefined): string | undefined {
+export function rewriteGeneratedPath(
+  sourceThreadDir: string,
+  targetThreadDir: string,
+  filePath: string | undefined,
+): string | undefined {
   if (!filePath) {
     return undefined;
   }
@@ -87,7 +106,10 @@ function rewriteGeneratedPath(sourceThreadDir: string, targetThreadDir: string, 
   return filePath;
 }
 
-function rewriteSourceTargetPath(sourceStoreRootDir: string, filePath: string | undefined): string | undefined {
+export function rewriteSourceTargetPath(
+  sourceStoreRootDir: string,
+  filePath: string | undefined,
+): string | undefined {
   if (!filePath) {
     return undefined;
   }
@@ -111,6 +133,8 @@ async function rewriteClonedGeneratedMetadata(input: {
   const sourceDir = threadDir(input.sourceStoreRootDir, input.threadId);
   const targetDir = threadDir(input.targetStoreRootDir, input.threadId);
   const targetProjectDir = resolve(input.targetStoreRootDir, "..");
+  const resolvedSourceDir = resolve(sourceDir);
+  const resolvedTargetDir = resolve(targetDir);
   const threadPath = join(targetDir, "thread.json");
   const projectionsPath = join(targetDir, "projections.json");
   const thread = await readJson<ThreadRecord>(threadPath);
@@ -131,7 +155,9 @@ async function rewriteClonedGeneratedMetadata(input: {
     ...thread,
     target: {
       ...thread.target,
-      sessionFilePath: rewriteSourceTargetPath(input.sourceStoreRootDir, thread.target.sessionFilePath),
+      sessionId: currentProjection.generatedSessionId ?? thread.target.sessionId,
+      cwd: targetProjectDir,
+      sessionFilePath: undefined,
       currentGeneratedFilePath: rewrite(thread.target.currentGeneratedFilePath),
     },
     threadViewOutputSummary: {
@@ -154,7 +180,9 @@ async function rewriteClonedGeneratedMetadata(input: {
       continue;
     }
 
-    const content = await readFile(projection.generatedFilePath, "utf8");
+    const content = (await readFile(projection.generatedFilePath, "utf8"))
+      .split(resolvedSourceDir)
+      .join(resolvedTargetDir);
     const lines = content.split("\n");
     const rewrittenLines = lines.map((line, index) => {
       if (index !== 0 || !line.trim()) {
@@ -193,26 +221,71 @@ async function cloneRealLongThreadToTempStore(input: {
     targetStoreRootDir: input.targetStoreRootDir,
     threadId: REAL_LONG_THREAD_FIXTURE.threadId,
   });
+  await sanitizeLegacyPlaceholderMarkersInClonedSource(targetThreadDir);
+}
+
+async function sanitizeLegacyPlaceholderMarkersInClonedSource(targetThreadDir: string): Promise<void> {
+  const entries = await readdir(targetThreadDir, {
+    recursive: true,
+    withFileTypes: true,
+  });
+
+  for (const entry of entries) {
+    if (!entry.isFile() || (!entry.name.endsWith(".json") && !entry.name.endsWith(".jsonl"))) {
+      continue;
+    }
+
+    const filePath = join(entry.parentPath, entry.name);
+    let content = await readFile(filePath, "utf8");
+    for (const [legacyMarker, semanticMarker] of LEGACY_PLACEHOLDER_MARKER_REPLACEMENTS) {
+      content = content.split(legacyMarker).join(semanticMarker);
+    }
+    await writeFile(filePath, content, "utf8");
+  }
 }
 
 function selectedChunkIds(view: ThreadViewRecord): string[] {
   return [...new Set([...view.detailedBand.selectedIds, ...view.briefBand.selectedIds])];
 }
 
+function preparedSemanticLowerBandText(input: {
+  chunkId: string;
+  band: "detailed" | "brief";
+  transcriptText: string;
+}): string {
+  const label = input.band === "detailed" ? "Detailed semantic lower-band memory" : "Brief semantic lower-band memory";
+  return `${label} for ${input.chunkId}:\n${input.transcriptText}`;
+}
+
+function providerInputCountFromExpected(expected: TokenCountRecord): TokenCountRecord {
+  return assertTokenCountRecord({
+    count: expected.count,
+    scope: expected.scope,
+    source: "provider_input_count",
+    trustClass: "exact",
+    provider: "openai",
+    model: "gpt-test",
+    representationHash: expected.representationHash,
+    sourceRevision: expected.sourceRevision,
+    createdAt: expected.createdAt,
+    provenance: "tests.thread-view.real-long-thread-fixture-prep.provider-input-count",
+  });
+}
+
 async function normalizeSelectedChunkSmoothFreshnessBasis(input: {
   store: FileThreadStore;
   threadId: string;
   selectedChunkIds: readonly string[];
-}): Promise<string[]> {
+}): Promise<{ normalizedChunkIds: string[]; preparedSemanticChunkIds: string[] }> {
   const snapshot = expectOk(await input.store.openThread(input.threadId));
   const chunks = expectOk(await input.store.readChunks(input.threadId));
-  const selected = new Set(input.selectedChunkIds);
   const turnsById = new Map(snapshot.turns.map((turn) => [turn.turnId, turn]));
   const messagesById = new Map(snapshot.messages.map((message) => [message.messageId, message]));
   const normalizedChunkIds: string[] = [];
+  const preparedSemanticChunkIds: string[] = [];
 
   const nextChunks = chunks.map((chunk): ChunkState => {
-    if (!selected.has(chunk.chunkId) || chunk.lifecycleStatus !== "closed") {
+    if (chunk.lifecycleStatus !== "closed") {
       return chunk;
     }
 
@@ -225,20 +298,72 @@ async function normalizeSelectedChunkSmoothFreshnessBasis(input: {
       sourceRevision: materialized.sourceRevision,
     };
 
-    // Thread-prep normalization:
-    // current Thread View materialization checks placeholder freshness against the deterministic
-    // materialized chunk-smooth token count. Older real runs persisted exact provider counts here,
-    // and those exact counts can differ from the deterministic freshness basis. Normalize the
-    // prepared target store so regenerated placeholders match current deterministic materialization.
     const smoothTokenCountMetadata = countChunkSmoothMaterialized(chunkWithCurrentSmooth, {
       createdAt: PREP_TIMESTAMP,
     });
+    const transcriptText = materialized.text;
 
     normalizedChunkIds.push(chunk.chunkId);
-    return {
-      ...chunkWithCurrentSmooth,
+    preparedSemanticChunkIds.push(chunk.chunkId);
+    const nextChunk: ChunkState = {
+      chunkId: chunk.chunkId,
+      threadId: chunk.threadId,
+      lifecycleStatus: chunk.lifecycleStatus,
+      sourceTurnIds: [...chunk.sourceTurnIds],
+      smoothText: materialized.text,
       smoothTokenCountMetadata,
-      placeholders: undefined,
+      openedAt: chunk.openedAt,
+      closedAt: chunk.closedAt,
+      closeReason: chunk.closeReason,
+      sourceRevision: materialized.sourceRevision,
+      schemaVersion: CHUNK_SCHEMA_VERSION,
+      conversationTranscript: {
+        status: "ready",
+        text: transcriptText,
+        sourceRevision: materialized.sourceRevision,
+        sourceFingerprint: `prep:${chunk.chunkId}:${materialized.sourceRevision}`,
+        updatedAt: PREP_TIMESTAMP,
+      },
+      lowerBand: {
+        detailed: {
+          band: "detailed",
+          status: "ready",
+          text: preparedSemanticLowerBandText({
+            chunkId: chunk.chunkId,
+            band: "detailed",
+            transcriptText,
+          }),
+          updatedAt: PREP_TIMESTAMP,
+        },
+        brief: {
+          band: "brief",
+          status: "ready",
+          text: preparedSemanticLowerBandText({
+            chunkId: chunk.chunkId,
+            band: "brief",
+            transcriptText,
+          }),
+          updatedAt: PREP_TIMESTAMP,
+        },
+      },
+    };
+
+    return {
+      ...nextChunk,
+      lowerBand: {
+        detailed: {
+          ...nextChunk.lowerBand!.detailed!,
+          tokenCountMetadata: providerInputCountFromExpected(countDetailedChunkMaterialized(nextChunk, {
+            createdAt: PREP_TIMESTAMP,
+          })),
+        },
+        brief: {
+          ...nextChunk.lowerBand!.brief!,
+          tokenCountMetadata: providerInputCountFromExpected(countBriefChunkMaterialized(nextChunk, {
+            createdAt: PREP_TIMESTAMP,
+          })),
+        },
+      },
     };
   });
 
@@ -253,7 +378,7 @@ async function normalizeSelectedChunkSmoothFreshnessBasis(input: {
     }),
   );
 
-  return normalizedChunkIds;
+  return { normalizedChunkIds, preparedSemanticChunkIds };
 }
 
 async function reconcileGeneratedThreadViewAsActive(input: {
@@ -311,24 +436,11 @@ async function prepareRealLongThreadStore(input: {
     threadViewPath(input.storeRootDir, threadId, activeThreadViewId),
   );
   const selectedChunks = selectedChunkIds(activeView);
-  const normalizedChunkIds = await normalizeSelectedChunkSmoothFreshnessBasis({
+  const preparedChunks = await normalizeSelectedChunkSmoothFreshnessBasis({
     store: threadStore,
     threadId,
     selectedChunkIds: selectedChunks,
   });
-
-  const refreshedChunks = expectOk(await threadStore.readChunks(threadId));
-  const closedChunkIds = refreshedChunks
-    .filter((chunk) => chunk.lifecycleStatus === "closed")
-    .map((chunk) => chunk.chunkId);
-  const regeneratedPlaceholderChunkIds: string[] = [];
-  for (const chunkId of closedChunkIds) {
-    const result = await ensurePlaceholderArtifacts({ threadId, chunkId }, { store: threadStore, now });
-    assert.equal(result.blockers.length, 0, result.blockers.map((issue) => issue.message).join("\n"));
-    if (result.detailedReady && result.briefReady) {
-      regeneratedPlaceholderChunkIds.push(chunkId);
-    }
-  }
 
   const activeViewReconciliation = await reconcileGeneratedThreadViewAsActive({
     storeRootDir: input.storeRootDir,
@@ -357,16 +469,6 @@ async function prepareRealLongThreadStore(input: {
       projectionRevisionId: activeProjection.revisionId,
     }),
   );
-  expectOk(
-    await threadStore.recordThreadIdMap({
-      threadId,
-      target: {
-        runtime: finalSnapshot.thread.target.runtime,
-        sessionId: finalSnapshot.thread.target.sessionId,
-        sessionFilePath: finalSnapshot.thread.target.sessionFilePath,
-      },
-    }),
-  );
 
   return {
     storeRootDir: input.storeRootDir,
@@ -376,8 +478,8 @@ async function prepareRealLongThreadStore(input: {
     activeGeneratedFilePath,
     selectedChunkIds: selectedChunks,
     repairedClosedTurnCount: closedTurnIds.length,
-    normalizedChunkIds,
-    regeneratedPlaceholderChunkIds,
+    normalizedChunkIds: preparedChunks.normalizedChunkIds,
+    preparedSemanticChunkIds: preparedChunks.preparedSemanticChunkIds,
     activatedGeneratedThreadView: activeViewReconciliation.activatedGeneratedThreadView,
     previousGeneratedThreadViewState: activeViewReconciliation.previousGeneratedThreadViewState,
     backupPath: input.backupPath,

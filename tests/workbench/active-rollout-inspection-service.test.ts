@@ -6,7 +6,10 @@ import test from "node:test";
 import { DEFAULT_TEST_TIMESTAMP, makePiThreadViewFile, withTempFeature3Store } from "../../src/thread-view/test/fixtures.js";
 import { serializePiThreadViewFileContent } from "../../src/thread-view/targets/pi/pi-thread-view-writer.js";
 import { inspectActiveThreadView } from "../../src/workbench/services/active-rollout-inspection-service.js";
-import { seedDeterministicRebuildThread } from "../thread-view/helpers.js";
+import {
+  seedDeterministicRebuildThread,
+  seedDeterministicRebuildThreadWithOptions,
+} from "../thread-view/helpers.js";
 
 test("inspectActiveThreadView resolves active generated rollout and reports band/live-tail/tool counts", async () => {
   await withTempFeature3Store(async (temp) => {
@@ -158,5 +161,167 @@ test("inspectActiveThreadView returns warning JSON for stale metadata and unread
     assert.ok(report.warnings.some((warning) => warning.includes("failed")));
     assert.ok(report.warnings.some((warning) => warning.includes("unreadable")));
     assert.doesNotThrow(() => JSON.parse(JSON.stringify(report)));
+  });
+});
+
+test("inspectActiveThreadView warns from semantic lower-band state instead of generated-output placeholder flags", async () => {
+  await withTempFeature3Store(async (temp) => {
+    const context = await seedDeterministicRebuildThreadWithOptions(temp.storeRootDir, {
+      canonicalClosedChunks: true,
+    });
+    const threadViewId = "thread-view-semantic-warning";
+    const generatedFilePath = temp.resolveGeneratedPath(
+      context.threadId,
+      "projection-semantic-warning-thread-view-semantic-warning.jsonl",
+    );
+    const file = makePiThreadViewFile({
+      threadId: context.threadId,
+      threadViewId,
+      cwd: temp.projectDir,
+      fileName: "semantic-warning.jsonl",
+      entries: [
+        { entryType: "message", role: "assistant", content: "semantic detailed output", generatedSource: "detailed_chunk_summary" },
+        { entryType: "message", role: "assistant", content: "semantic brief output", generatedSource: "brief_chunk_summary" },
+      ],
+      entryCount: 2,
+    });
+    const projection = await context.threadStore.writeProjectionRevision({
+      revisionId: "projection-semantic-warning",
+      threadId: context.threadId,
+      threadViewId,
+      targetRuntime: "pi",
+      generatedFilePath,
+      createdAt: DEFAULT_TEST_TIMESTAMP,
+      sourceStateReference: "1:1",
+      status: "available",
+      compactSnapshot: {
+        schemaVersion: "projection.compact-snapshot.v1",
+        sourceStateReference: "1:1",
+        bands: {
+          full_fidelity: { bandType: "full_fidelity", sourceUnitType: "turn", selectedIds: [], renderedStatus: "ready" },
+          smooth: { bandType: "smooth", sourceUnitType: "turn", selectedIds: [], renderedStatus: "ready" },
+          detailed: {
+            bandType: "detailed",
+            sourceUnitType: "chunk",
+            selectedIds: [context.chunks.oldestClosed],
+            renderedStatus: "ready",
+          },
+          brief: {
+            bandType: "brief",
+            sourceUnitType: "chunk",
+            selectedIds: [context.chunks.newerClosed],
+            renderedStatus: "ready",
+          },
+        },
+        generatedEntries: [],
+      },
+    });
+    assert.equal(projection.ok, true);
+    await mkdir(dirname(generatedFilePath), { recursive: true });
+    await writeFile(
+      generatedFilePath,
+      serializePiThreadViewFileContent({ threadId: context.threadId, threadViewId, file }, DEFAULT_TEST_TIMESTAMP),
+      "utf8",
+    );
+
+    const snapshot = await context.threadStore.openThread(context.threadId);
+    assert.equal(snapshot.ok, true);
+    const chunks = await context.threadStore.readChunks(context.threadId);
+    assert.equal(chunks.ok, true);
+    const writeChunks = await context.threadStore.writeChunks({
+      threadId: context.threadId,
+      expectedSourceRevision: snapshot.value.thread.sourceRevision,
+      expectedMessageHighWatermark: snapshot.value.thread.messageHighWatermark,
+      expectedTurnsRevision: snapshot.value.thread.turnsRevision,
+      chunks: chunks.value.map((chunk) =>
+        chunk.chunkId === context.chunks.oldestClosed
+          ? {
+              ...chunk,
+              lowerBand: {
+                ...chunk.lowerBand,
+                detailed: undefined,
+              },
+            } as typeof chunk
+          : chunk),
+    });
+    assert.equal(writeChunks.ok, true);
+
+    const refreshed = await context.threadStore.openThread(context.threadId);
+    assert.equal(refreshed.ok, true);
+    const updated = await context.threadStore.updateThreadMetadata({
+      threadId: context.threadId,
+      expectedSourceRevision: refreshed.value.thread.sourceRevision,
+      patch: {
+        threadViewOutputSummary: {
+          count: 1,
+          currentProjectionRevisionId: "projection-semantic-warning",
+          currentThreadViewId: threadViewId,
+          currentGeneratedFilePath: generatedFilePath,
+          lastRevisionStatus: "available",
+          generatedOutput: {
+            threadId: context.threadId,
+            threadViewId,
+            generatedFilePath,
+            generatedAt: DEFAULT_TEST_TIMESTAMP,
+            status: "available",
+            generatedSource: "thread_view",
+            placeholderExplicit: false,
+          },
+        },
+      },
+    });
+    assert.equal(updated.ok, true);
+
+    const report = await inspectActiveThreadView(
+      { threadId: context.threadId },
+      { threadStore: context.threadStore },
+    );
+
+    assert.ok(
+      report.warnings.some((warning) =>
+        warning.includes(`Active projection detailed chunk ${context.chunks.oldestClosed} is missing ready semantic lower-band output`)),
+    );
+  });
+});
+
+test("inspectActiveThreadView surfaces recent lower-band catch-up events from operational logs", async () => {
+  await withTempFeature3Store(async (temp) => {
+    const context = await seedDeterministicRebuildThreadWithOptions(temp.storeRootDir, {
+      canonicalClosedChunks: true,
+    });
+    const logPath = `${temp.storeRootDir}/debug/lower-band-compression.log`;
+    await mkdir(dirname(logPath), { recursive: true });
+    await writeFile(
+      logPath,
+      `${JSON.stringify({
+        at: DEFAULT_TEST_TIMESTAMP,
+        level: "debug",
+        message: "Lower-band compression completed.",
+        threadId: context.threadId,
+        chunkId: context.chunks.oldestClosed,
+        band: "detailed",
+        mode: "prepare_catch_up",
+      })}\n`,
+      "utf8",
+    );
+
+    const report = await inspectActiveThreadView(
+      { threadId: context.threadId },
+      { threadStore: context.threadStore },
+    );
+
+    assert.deepEqual(report.catchUpEvents, [
+      {
+        at: DEFAULT_TEST_TIMESTAMP,
+        chunkId: context.chunks.oldestClosed,
+        band: "detailed",
+        event: "completed",
+        message: "Lower-band compression completed.",
+      },
+    ]);
+    assert.ok(
+      report.warnings.some((warning) =>
+        warning.includes(`Recent lower-band catch-up completed for chunk ${context.chunks.oldestClosed} (detailed)`)),
+    );
   });
 });

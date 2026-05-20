@@ -2,16 +2,23 @@ import assert from "node:assert/strict";
 import { access, readFile } from "node:fs/promises";
 import test from "node:test";
 
+import { ensureLowerBandTurnProjection } from "../../src/thread/async-thread/services/lower-band-turn-projection-service.js";
 import { ensureSmoothTurn } from "../../src/thread/async-thread/services/smooth-turn-service.js";
 import { updateChunkState } from "../../src/thread/async-thread/services/chunk-service.js";
-import { ensurePlaceholderArtifacts } from "../../src/thread/async-thread/services/placeholder-artifact-service.js";
 import { estimateDeterministicTokenCount } from "../../src/thread/async-thread/domain/smooth-turn-state.js";
+import { getReadyChunkConversationTranscriptText } from "../../src/thread/async-thread/domain/chunk-state.js";
 import { estimateCompactedTextTokenCount } from "../../src/thread-view/services/pi-token-estimator.js";
 import { FileThreadStore } from "../../src/thread/store/file-thread-store.js";
 import { withTempThreadStore } from "../../src/thread/async-thread/test/temp-thread-store.js";
 import type { StewardResult } from "../../src/thread/domain/errors.js";
 import type { ChunkState } from "../../src/thread/async-thread/domain/chunk-state.js";
 import type { ActorRecord, MessageRecord, TurnRecord } from "../../src/thread/domain/records.js";
+import { makeChunkLowerBandArtifacts, makeChunkState } from "../../src/thread/async-thread/test/fixtures.js";
+import {
+  assertTokenCountRecord,
+  createMaterializedRepresentationHash,
+  type TurnLowerBandProjectionMaterializedTokenCountRecord,
+} from "../../src/token-accounting/index.js";
 import {
   DEFAULT_TEST_TIMESTAMP,
   makeActorRecord,
@@ -36,6 +43,29 @@ function toPendingMessage(overrides: Partial<MessageRecord> = {}) {
 function repeatWords(prefix: string, count: number): string {
   return Array.from({ length: count }, (_, index) => `${prefix}${index + 1}`).join(" ");
 }
+
+class FakeProjectionCounter {
+  async countTurnLowerBandProjectionMaterialized(input: {
+    text: string;
+    sourceRevision?: number;
+    model?: string;
+  }): Promise<TurnLowerBandProjectionMaterializedTokenCountRecord> {
+    return assertTokenCountRecord({
+      count: estimateDeterministicTokenCount(input.text),
+      scope: "turn_lower_band_projection_materialized",
+      source: "provider_input_count",
+      trustClass: "exact",
+      provider: "openai",
+      model: input.model ?? "gpt-test-chunk-service",
+      representationHash: createMaterializedRepresentationHash(input.text),
+      sourceRevision: input.sourceRevision,
+      createdAt: DEFAULT_TEST_TIMESTAMP,
+      provenance: "tests.thread.chunk-service.fake-projection-counter",
+    }) as TurnLowerBandProjectionMaterializedTokenCountRecord;
+  }
+}
+
+const fakeProjectionCounter = new FakeProjectionCounter();
 
 async function createThread(store: FileThreadStore, threadId: string) {
   const target = makeThreadTarget({
@@ -179,6 +209,17 @@ async function appendTurn(
         now: () => new Date(DEFAULT_TEST_TIMESTAMP),
       },
     );
+    await ensureLowerBandTurnProjection(
+      {
+        threadId: input.threadId,
+        turnId: input.turnId,
+      },
+      {
+        store,
+        openAIInputTokenCounter: fakeProjectionCounter,
+        now: () => new Date(DEFAULT_TEST_TIMESTAMP),
+      },
+    );
   }
 
   return readTurn(store, input.threadId, input.turnId);
@@ -192,6 +233,10 @@ function expectSingleOpenChunk(chunks: readonly ChunkState[]): ChunkState {
   const openChunks = chunks.filter((chunk) => chunk.lifecycleStatus === "open");
   assert.equal(openChunks.length, 1);
   return openChunks[0]!;
+}
+
+function projectionCount(turn: TurnRecord): number {
+  return turn.smooth?.lowerBandProjection?.tokenCountMetadata?.count ?? 0;
 }
 
 test("open or unsmoothed turn is not eligible", async () => {
@@ -285,10 +330,10 @@ test("exactly one open chunk exists", async () => {
       {
         store,
         settings: {
-          targetMinSmoothTokens: firstTurn.smooth?.tokenCountMetadata?.count ?? 1,
+          targetMinSmoothTokens: projectionCount(firstTurn) || 1,
           targetSoftMaxSmoothTokens:
-            (firstTurn.smooth?.tokenCountMetadata?.count ?? 0) + (secondTurn.smooth?.tokenCountMetadata?.count ?? 0) - 1,
-          hardMaxSmoothTokens: (firstTurn.smooth?.tokenCountMetadata?.count ?? 0) + (secondTurn.smooth?.tokenCountMetadata?.count ?? 0) + 5,
+            projectionCount(firstTurn) + projectionCount(secondTurn) - 1,
+          hardMaxSmoothTokens: projectionCount(firstTurn) + projectionCount(secondTurn) + 5,
         },
         now: () => new Date(DEFAULT_TEST_TIMESTAMP),
       },
@@ -329,10 +374,10 @@ test("closed chunk remains closed", async () => {
       {
         store,
         settings: {
-          targetMinSmoothTokens: firstTurn.smooth?.tokenCountMetadata?.count ?? 1,
+          targetMinSmoothTokens: projectionCount(firstTurn) || 1,
           targetSoftMaxSmoothTokens:
-            (firstTurn.smooth?.tokenCountMetadata?.count ?? 0) + (secondTurn.smooth?.tokenCountMetadata?.count ?? 0) - 1,
-          hardMaxSmoothTokens: (firstTurn.smooth?.tokenCountMetadata?.count ?? 0) + (secondTurn.smooth?.tokenCountMetadata?.count ?? 0) + 5,
+            projectionCount(firstTurn) + projectionCount(secondTurn) - 1,
+          hardMaxSmoothTokens: projectionCount(firstTurn) + projectionCount(secondTurn) + 5,
         },
         now: () => new Date(DEFAULT_TEST_TIMESTAMP),
       },
@@ -461,6 +506,211 @@ test("chunk order follows turn order", async () => {
   });
 });
 
+test("conversation-only projection counts drive chunk boundary decisions", async () => {
+  await withTempThreadStore(async ({ storeRootDir }) => {
+    const store = new FileThreadStore(storeRootDir);
+    const threadId = "thread-chunk-projection-count-authority";
+    await createThread(store, threadId);
+
+    const firstTurn = await appendTurn(store, {
+      threadId,
+      turnId: "turn-count-a",
+      lifecycleStatus: "closed",
+      userText: repeatWords("alpha", 4),
+      assistantText: repeatWords("beta", 4),
+      smooth: true,
+    });
+    const secondTurn = await appendTurn(store, {
+      threadId,
+      turnId: "turn-count-b",
+      lifecycleStatus: "closed",
+      userText: repeatWords("gamma", 4),
+      assistantText: repeatWords("delta", 4),
+      smooth: true,
+    });
+
+    const snapshot = expectOk(await store.openThread(threadId));
+    expectOk(
+      await store.writeTurns({
+        threadId,
+        expectedSourceRevision: snapshot.thread.sourceRevision,
+        expectedMessageHighWatermark: snapshot.thread.messageHighWatermark,
+        expectedTurnsRevision: snapshot.thread.turnsRevision,
+        turns: snapshot.turns.map((turn) =>
+          turn.turnId === secondTurn.turnId && turn.smooth?.tokenCountMetadata
+            ? {
+                ...turn,
+                smooth: {
+                  ...turn.smooth,
+                  tokenCountMetadata: {
+                    ...turn.smooth.tokenCountMetadata,
+                    count: turn.smooth.tokenCountMetadata.count + 500,
+                  },
+                },
+              }
+            : turn,
+        ),
+        turnState: snapshot.thread.status.turnState,
+      }),
+    );
+    await updateChunkState(
+      { threadId },
+      {
+        store,
+        settings: {
+          targetMinSmoothTokens: projectionCount(firstTurn) || 1,
+          targetSoftMaxSmoothTokens: projectionCount(firstTurn) + projectionCount(secondTurn),
+          hardMaxSmoothTokens: projectionCount(firstTurn) + projectionCount(secondTurn) + 20,
+        },
+        now: () => new Date(DEFAULT_TEST_TIMESTAMP),
+      },
+    );
+
+    const openChunk = expectSingleOpenChunk(await readChunks(store, threadId));
+    assert.deepEqual(openChunk.sourceTurnIds, ["turn-count-a", "turn-count-b"]);
+  });
+});
+
+test("chunk transcript assembles ready turn projections in order and supports user-only turns", async () => {
+  await withTempThreadStore(async ({ storeRootDir }) => {
+    const store = new FileThreadStore(storeRootDir);
+    const threadId = "thread-chunk-transcript";
+    await createThread(store, threadId);
+
+    const firstTurn = await appendTurn(store, {
+      threadId,
+      turnId: "turn-transcript-a",
+      lifecycleStatus: "closed",
+      userText: "First user request.",
+      assistantText: "First assistant response.",
+      smooth: true,
+    });
+    const secondTurn = await appendTurn(store, {
+      threadId,
+      turnId: "turn-transcript-b",
+      lifecycleStatus: "closed",
+      userText: "Second user request only.",
+      smooth: true,
+    });
+
+    await updateChunkState(
+      { threadId },
+      {
+        store,
+        settings: {
+          targetMinSmoothTokens: 100,
+          targetSoftMaxSmoothTokens: 200,
+          hardMaxSmoothTokens: 300,
+        },
+        now: () => new Date(DEFAULT_TEST_TIMESTAMP),
+      },
+    );
+
+    const openChunk = expectSingleOpenChunk(await readChunks(store, threadId));
+    const expectedTranscript = [
+      firstTurn.smooth?.lowerBandProjection?.text,
+      secondTurn.smooth?.lowerBandProjection?.text,
+    ].join("\n\n");
+
+    assert.equal(openChunk.schemaVersion, "conversation_only_chunk_v1");
+    assert.equal(openChunk.conversationTranscript?.status, "ready");
+    assert.equal(openChunk.conversationTranscript?.text, expectedTranscript);
+    assert.match(openChunk.conversationTranscript?.text ?? "", /^> First user request\./);
+    assert.match(openChunk.conversationTranscript?.text ?? "", /> Second user request only\./);
+    assert.equal(openChunk.conversationTranscript?.text?.includes("[tool]"), false);
+    assert.equal(openChunk.smoothText?.includes("[user]"), true);
+  });
+});
+
+test("closed chunks expose one conversation transcript source for detailed and brief lower-band generation", () => {
+  const transcriptText = "> Shared transcript request\n● Shared transcript answer";
+  const chunk = makeChunkState({
+    smoothText: "[user] Smooth request\n[assistant] Smooth answer",
+    conversationTranscript: {
+      status: "ready",
+      text: transcriptText,
+      sourceFingerprint: "sha256:test-shared-transcript",
+      sourceRevision: 7,
+      updatedAt: DEFAULT_TEST_TIMESTAMP,
+    },
+    lowerBand: makeChunkLowerBandArtifacts({
+      detailed: {
+        band: "detailed",
+        status: "ready",
+        text: "Detailed semantic artifact output",
+        updatedAt: DEFAULT_TEST_TIMESTAMP,
+      },
+      brief: {
+        band: "brief",
+        status: "ready",
+        text: "Brief semantic artifact output",
+        updatedAt: DEFAULT_TEST_TIMESTAMP,
+      },
+    }),
+  });
+
+  const detailedSource = getReadyChunkConversationTranscriptText(chunk);
+  const briefSource = getReadyChunkConversationTranscriptText(chunk);
+
+  assert.equal(detailedSource, transcriptText);
+  assert.equal(briefSource, transcriptText);
+  assert.notEqual(detailedSource, chunk.smoothText);
+  assert.notEqual(briefSource, chunk.smoothText);
+});
+
+test("brief lower-band generation source is chunk conversationTranscript rather than detailed artifact text", () => {
+  const transcriptText = "> Brief source transcript request\n● Brief source transcript answer";
+  const chunk = makeChunkState({
+    conversationTranscript: {
+      status: "ready",
+      text: transcriptText,
+      sourceFingerprint: "sha256:test-brief-source",
+      sourceRevision: 11,
+      updatedAt: DEFAULT_TEST_TIMESTAMP,
+    },
+    lowerBand: makeChunkLowerBandArtifacts({
+      detailed: {
+        band: "detailed",
+        status: "ready",
+        text: "Detailed artifact text must not become brief input",
+        updatedAt: DEFAULT_TEST_TIMESTAMP,
+      },
+      brief: {
+        band: "brief",
+        status: "ready",
+        text: "Brief artifact output",
+        updatedAt: DEFAULT_TEST_TIMESTAMP,
+      },
+    }),
+  });
+
+  const briefSource = getReadyChunkConversationTranscriptText(chunk);
+
+  assert.equal(briefSource, transcriptText);
+  assert.notEqual(briefSource, chunk.lowerBand?.detailed?.text);
+  assert.equal(chunk.lowerBand?.brief?.text, "Brief artifact output");
+});
+
+test("lower-band generation input stays on conversationTranscript when smooth text is also present", () => {
+  const transcriptText = "> Conversation transcript only request\n● Conversation transcript only answer";
+  const chunk = makeChunkState({
+    smoothText: "[user] Smooth representation request\n[assistant] Smooth representation answer",
+    conversationTranscript: {
+      status: "ready",
+      text: transcriptText,
+      sourceFingerprint: "sha256:test-transcript-vs-smooth",
+      sourceRevision: 13,
+      updatedAt: DEFAULT_TEST_TIMESTAMP,
+    },
+  });
+
+  const lowerBandSource = getReadyChunkConversationTranscriptText(chunk);
+
+  assert.equal(lowerBandSource, transcriptText);
+  assert.notEqual(lowerBandSource, chunk.smoothText);
+  assert.match(chunk.smoothText ?? "", /\[user\] Smooth representation request/);
+});
+
 test("chunk stays open below threshold", async () => {
   await withTempThreadStore(async ({ storeRootDir }) => {
     const store = new FileThreadStore(storeRootDir);
@@ -480,9 +730,9 @@ test("chunk stays open below threshold", async () => {
       {
         store,
         settings: {
-          targetMinSmoothTokens: (turn.smooth?.tokenCountMetadata?.count ?? 0) + 1,
-          targetSoftMaxSmoothTokens: (turn.smooth?.tokenCountMetadata?.count ?? 0) + 10,
-          hardMaxSmoothTokens: (turn.smooth?.tokenCountMetadata?.count ?? 0) + 20,
+          targetMinSmoothTokens: projectionCount(turn) + 1,
+          targetSoftMaxSmoothTokens: projectionCount(turn) + 10,
+          hardMaxSmoothTokens: projectionCount(turn) + 20,
         },
         now: () => new Date(DEFAULT_TEST_TIMESTAMP),
       },
@@ -521,10 +771,10 @@ test("chunk closes on soft threshold condition", async () => {
       {
         store,
         settings: {
-          targetMinSmoothTokens: firstTurn.smooth?.tokenCountMetadata?.count ?? 1,
+          targetMinSmoothTokens: projectionCount(firstTurn) || 1,
           targetSoftMaxSmoothTokens:
-            (firstTurn.smooth?.tokenCountMetadata?.count ?? 0) + (secondTurn.smooth?.tokenCountMetadata?.count ?? 0) - 1,
-          hardMaxSmoothTokens: (firstTurn.smooth?.tokenCountMetadata?.count ?? 0) + (secondTurn.smooth?.tokenCountMetadata?.count ?? 0) + 10,
+            projectionCount(firstTurn) + projectionCount(secondTurn) - 1,
+          hardMaxSmoothTokens: projectionCount(firstTurn) + projectionCount(secondTurn) + 10,
         },
         now: () => new Date(DEFAULT_TEST_TIMESTAMP),
       },
@@ -570,8 +820,8 @@ test("hard-cap closure is explicit", async () => {
         settings: {
           targetMinSmoothTokens: 1,
           targetSoftMaxSmoothTokens:
-            (firstTurn.smooth?.tokenCountMetadata?.count ?? 0) + (secondTurn.smooth?.tokenCountMetadata?.count ?? 0),
-          hardMaxSmoothTokens: (firstTurn.smooth?.tokenCountMetadata?.count ?? 0) + (secondTurn.smooth?.tokenCountMetadata?.count ?? 0),
+            projectionCount(firstTurn) + projectionCount(secondTurn),
+          hardMaxSmoothTokens: projectionCount(firstTurn) + projectionCount(secondTurn),
         },
         now: () => new Date(DEFAULT_TEST_TIMESTAMP),
       },
@@ -613,8 +863,8 @@ test("closed chunk reports closed state and token size", async () => {
         settings: {
           targetMinSmoothTokens: 1,
           targetSoftMaxSmoothTokens:
-            (firstTurn.smooth?.tokenCountMetadata?.count ?? 0) + (secondTurn.smooth?.tokenCountMetadata?.count ?? 0),
-          hardMaxSmoothTokens: (firstTurn.smooth?.tokenCountMetadata?.count ?? 0) + (secondTurn.smooth?.tokenCountMetadata?.count ?? 0),
+            projectionCount(firstTurn) + projectionCount(secondTurn),
+          hardMaxSmoothTokens: projectionCount(firstTurn) + projectionCount(secondTurn),
         },
         now: () => new Date(DEFAULT_TEST_TIMESTAMP),
       },
@@ -656,9 +906,9 @@ test("open chunk reports partial state", async () => {
       {
         store,
         settings: {
-          targetMinSmoothTokens: (turn.smooth?.tokenCountMetadata?.count ?? 0) + 10,
-          targetSoftMaxSmoothTokens: (turn.smooth?.tokenCountMetadata?.count ?? 0) + 20,
-          hardMaxSmoothTokens: (turn.smooth?.tokenCountMetadata?.count ?? 0) + 30,
+          targetMinSmoothTokens: projectionCount(turn) + 10,
+          targetSoftMaxSmoothTokens: projectionCount(turn) + 20,
+          hardMaxSmoothTokens: projectionCount(turn) + 30,
         },
         now: () => new Date(DEFAULT_TEST_TIMESTAMP),
       },
@@ -701,8 +951,8 @@ test("hard-max closure creates the next open chunk in the same update pass", asy
         settings: {
           targetMinSmoothTokens: 1,
           targetSoftMaxSmoothTokens:
-            (firstTurn.smooth?.tokenCountMetadata?.count ?? 0) + (secondTurn.smooth?.tokenCountMetadata?.count ?? 0),
-          hardMaxSmoothTokens: (firstTurn.smooth?.tokenCountMetadata?.count ?? 0) + (secondTurn.smooth?.tokenCountMetadata?.count ?? 0),
+            projectionCount(firstTurn) + projectionCount(secondTurn),
+          hardMaxSmoothTokens: projectionCount(firstTurn) + projectionCount(secondTurn),
         },
         now: () => new Date(DEFAULT_TEST_TIMESTAMP),
       },
@@ -717,7 +967,7 @@ test("hard-max closure creates the next open chunk in the same update pass", asy
   });
 });
 
-test("closed chunk refreshes from changed component smooth source and clears stale placeholders", async () => {
+test("closed chunk refreshes transcript and smooth text from changed component source without changing membership", async () => {
   await withTempThreadStore(async ({ storeRootDir }) => {
     const store = new FileThreadStore(storeRootDir);
     const threadId = "thread-chunk-refresh-component-source";
@@ -747,20 +997,7 @@ test("closed chunk refreshes from changed component smooth source and clears sta
 
     const closedChunk = (await readChunks(store, threadId)).find((chunk) => chunk.lifecycleStatus === "closed");
     assert.ok(closedChunk);
-    await ensurePlaceholderArtifacts(
-      {
-        threadId,
-        chunkId: closedChunk.chunkId,
-      },
-      {
-        store,
-        now: () => new Date(DEFAULT_TEST_TIMESTAMP),
-      },
-    );
-
-    const withPlaceholders = (await readChunks(store, threadId)).find((chunk) => chunk.chunkId === closedChunk.chunkId);
-    assert.ok(withPlaceholders?.placeholders?.detailed?.text);
-    assert.ok(withPlaceholders?.placeholders?.brief?.text);
+    const originalSourceTurnIds = [...closedChunk.sourceTurnIds];
 
     const snapshot = expectOk(await store.openThread(threadId));
     const nextTurns = snapshot.turns.map((candidate) =>
@@ -773,6 +1010,7 @@ test("closed chunk refreshes from changed component smooth source and clears sta
               sourceRevision: candidate.sourceRevision + 1,
               tokenCountMetadata: undefined,
               materialized: undefined,
+              lowerBandProjection: undefined,
               components: candidate.smooth.components.map((component) =>
                 component.kind === "assistant_message"
                   ? {
@@ -797,6 +1035,17 @@ test("closed chunk refreshes from changed component smooth source and clears sta
         turnState: snapshot.thread.status.turnState,
       }),
     );
+    await ensureLowerBandTurnProjection(
+      {
+        threadId,
+        turnId: turn.turnId,
+      },
+      {
+        store,
+        openAIInputTokenCounter: fakeProjectionCounter,
+        now: () => new Date(DEFAULT_TEST_TIMESTAMP),
+      },
+    );
 
     await updateChunkState(
       { threadId },
@@ -809,7 +1058,8 @@ test("closed chunk refreshes from changed component smooth source and clears sta
     const refreshed = (await readChunks(store, threadId)).find((chunk) => chunk.chunkId === closedChunk.chunkId);
     assert.ok(refreshed);
     assert.match(refreshed.smoothText ?? "", /Updated assistant component text\./);
+    assert.match(refreshed.conversationTranscript?.text ?? "", /● Updated assistant component text\./);
     assert.equal(refreshed.sourceRevision, turn.sourceRevision + 1);
-    assert.equal(refreshed.placeholders, undefined);
+    assert.deepEqual(refreshed.sourceTurnIds, originalSourceTurnIds);
   });
 });

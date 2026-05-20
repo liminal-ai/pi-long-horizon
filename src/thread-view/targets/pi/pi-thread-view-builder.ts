@@ -115,8 +115,6 @@ function buildEntryMetadata(message: ThreadViewMessageRecord): Record<string, un
     sourceReference: message.sourceReference,
     threadViewMessageId: message.threadViewMessageId,
     projectionOutput: true,
-    placeholderExplicit:
-      message.sourceKind === "detailed_chunk_summary" || message.sourceKind === "brief_chunk_summary",
   };
 
   if (
@@ -181,11 +179,7 @@ export async function buildPiThreadViewFile(
     modelId: input.modelId,
     thinkingLevel: input.thinkingLevel,
     generatedAt: input.generatedAt ?? new Date().toISOString(),
-    placeholderExplicit: entries.some(
-      (entry) =>
-        entry.generatedSource === "detailed_chunk_summary" ||
-        entry.generatedSource === "brief_chunk_summary",
-    ),
+    placeholderExplicit: false,
     fileName: input.fileName ?? `${input.threadId}-${input.threadViewId}.jsonl`,
     entries,
     entryCount: entries.length,

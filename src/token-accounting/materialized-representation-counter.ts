@@ -21,6 +21,7 @@ import {
   type RawTurnMaterializedTokenCountRecord,
   type SmoothTurnMaterializedTokenCountRecord,
   type TokenCountRecord,
+  type TurnLowerBandProjectionMaterializedTokenCountRecord,
 } from "./token-count-metadata.js";
 
 export const MATERIALIZED_REPRESENTATION_HASH_ALGORITHM = "sha256" as const;
@@ -202,6 +203,22 @@ export function countSmoothTurnMaterialized(
   });
 }
 
+export function countTurnLowerBandProjectionMaterialized(
+  input: { text: string; sourceRevision?: number } & MaterializedTokenCountOptions,
+): TurnLowerBandProjectionMaterializedTokenCountRecord {
+  const representation = input.text;
+
+  return createMaterializedRecord({
+    count: estimateSerializedRepresentationTokenCount(representation),
+    scope: "turn_lower_band_projection_materialized",
+    representation,
+    sourceRevision: input.sourceRevision,
+    createdAt: createdAt(input),
+    provenance: `${MATERIALIZED_REPRESENTATION_COUNTER_PROVENANCE}:thread-view.turn-lower-band-projection-content`,
+    note: "Temporary PI heuristic estimate over the conversation-only turn lower-band projection content.",
+  });
+}
+
 export function countChunkSmoothMaterialized(
   chunk: ChunkState,
   options: MaterializedTokenCountOptions = {},
@@ -223,7 +240,7 @@ export function countDetailedChunkMaterialized(
   chunk: ChunkState,
   options: MaterializedTokenCountOptions = {},
 ): DetailedChunkMaterializedTokenCountRecord {
-  const representation = chunk.placeholders?.detailed?.text ?? "";
+  const representation = chunk.lowerBand?.detailed?.text ?? "";
 
   return createMaterializedRecord({
     count: estimateSerializedRepresentationTokenCount(representation),
@@ -240,7 +257,7 @@ export function countBriefChunkMaterialized(
   chunk: ChunkState,
   options: MaterializedTokenCountOptions = {},
 ): BriefChunkMaterializedTokenCountRecord {
-  const representation = chunk.placeholders?.brief?.text ?? "";
+  const representation = chunk.lowerBand?.brief?.text ?? "";
 
   return createMaterializedRecord({
     count: estimateSerializedRepresentationTokenCount(representation),

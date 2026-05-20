@@ -22,7 +22,12 @@ import { FileThreadStore } from "../../src/thread/store/file-thread-store.js";
 import { FileThreadViewStore } from "../../src/thread-view/store/file-thread-view-store.js";
 import { estimateCompactedTextTokenCount } from "../../src/thread-view/services/pi-token-estimator.js";
 import { DEFAULT_TEST_TIMESTAMP, makeBandRecord, makeThreadView } from "../../src/thread-view/test/fixtures.js";
-import { makeChunkState, makePlaceholderArtifactState } from "../../src/thread/async-thread/test/fixtures.js";
+import {
+  makeChunkLowerBandArtifacts,
+  makeChunkState,
+  makeLegacyPlaceholderChunkState,
+  makePlaceholderArtifactState,
+} from "../../src/thread/async-thread/test/fixtures.js";
 import {
   makeActorRecord,
   makeMessageRecord,
@@ -51,6 +56,10 @@ export interface SeededThreadContext {
     newerClosed: string;
     openRecent: string;
   };
+}
+
+interface SeedDeterministicRebuildThreadOptions {
+  canonicalClosedChunks?: boolean;
 }
 
 function expectOk<T>(result: StewardResult<T>): T {
@@ -196,11 +205,24 @@ function withProviderInputChunkCounts(chunk: ChunkState): ChunkState {
       }
     : undefined;
 
-  const nextChunk = {
-    ...chunk,
-    smoothTokenCountMetadata,
-    placeholders: placeholdersWithProvenance,
-  };
+  const nextChunk = placeholdersWithProvenance
+    ? {
+        chunkId: chunk.chunkId,
+        threadId: chunk.threadId,
+        lifecycleStatus: chunk.lifecycleStatus,
+        sourceTurnIds: [...chunk.sourceTurnIds],
+        smoothText: chunk.smoothText,
+        smoothTokenCountMetadata,
+        openedAt: chunk.openedAt,
+        closedAt: chunk.closedAt,
+        closeReason: chunk.closeReason,
+        sourceRevision: chunk.sourceRevision,
+        placeholders: placeholdersWithProvenance,
+      }
+    : {
+        ...chunk,
+        smoothTokenCountMetadata,
+      };
   const placeholders = placeholdersWithProvenance
     ? {
         ...placeholdersWithProvenance,
@@ -219,8 +241,24 @@ function withProviderInputChunkCounts(chunk: ChunkState): ChunkState {
       }
     : undefined;
 
+  if (!placeholders) {
+    return {
+      ...chunk,
+      smoothTokenCountMetadata,
+    };
+  }
+
   return {
-    ...nextChunk,
+    chunkId: chunk.chunkId,
+    threadId: chunk.threadId,
+    lifecycleStatus: chunk.lifecycleStatus,
+    sourceTurnIds: [...chunk.sourceTurnIds],
+    smoothText: chunk.smoothText,
+    smoothTokenCountMetadata,
+    openedAt: chunk.openedAt,
+    closedAt: chunk.closedAt,
+    closeReason: chunk.closeReason,
+    sourceRevision: chunk.sourceRevision,
     placeholders,
   };
 }
@@ -302,6 +340,49 @@ async function seedTurn(input: {
 }
 
 export async function seedDeterministicRebuildThread(storeRootDir: string): Promise<SeededThreadContext> {
+  return seedDeterministicRebuildThreadWithOptions(storeRootDir);
+}
+
+function toCanonicalSemanticChunk(chunk: ChunkState): ChunkState {
+  return makeChunkState({
+    chunkId: chunk.chunkId,
+    threadId: chunk.threadId,
+    lifecycleStatus: chunk.lifecycleStatus,
+    sourceTurnIds: [...chunk.sourceTurnIds],
+    smoothText: chunk.smoothText,
+    smoothTokenCountMetadata: chunk.smoothTokenCountMetadata,
+    openedAt: chunk.openedAt,
+    closedAt: chunk.closedAt,
+    closeReason: chunk.closeReason,
+    sourceRevision: chunk.sourceRevision,
+    conversationTranscript: {
+      status: "ready",
+      text: `> transcript ${chunk.chunkId}`,
+      sourceFingerprint: `sha256:${chunk.chunkId}:conversation`,
+      sourceRevision: chunk.sourceRevision ?? 1,
+      updatedAt: DEFAULT_TEST_TIMESTAMP,
+    },
+    lowerBand: makeChunkLowerBandArtifacts({
+      detailed: {
+        band: "detailed",
+        status: "ready",
+        text: `semantic detailed ${chunk.chunkId}`,
+        updatedAt: DEFAULT_TEST_TIMESTAMP,
+      },
+      brief: {
+        band: "brief",
+        status: "ready",
+        text: `semantic brief ${chunk.chunkId}`,
+        updatedAt: DEFAULT_TEST_TIMESTAMP,
+      },
+    }),
+  });
+}
+
+export async function seedDeterministicRebuildThreadWithOptions(
+  storeRootDir: string,
+  options: SeedDeterministicRebuildThreadOptions = {},
+): Promise<SeededThreadContext> {
   const threadStore = new FileThreadStore(storeRootDir);
   const threadViewStore = new FileThreadViewStore(storeRootDir, threadStore);
   const thread = expectOk(
@@ -471,85 +552,91 @@ export async function seedDeterministicRebuildThread(storeRootDir: string): Prom
   const oldestChunkSmoothText = smoothChunkTextForTurn(oldest.turnId);
   const newerChunkSmoothText = smoothChunkTextForTurn(middleOlder.turnId);
   const openChunkSmoothText = smoothChunkTextForTurn(middleNewer.turnId);
+  const seededChunks = ([
+    makeLegacyPlaceholderChunkState({
+      chunkId: "chunk-oldest-closed",
+      threadId: thread.threadId,
+      sourceTurnIds: [oldest.turnId],
+      smoothText: oldestChunkSmoothText,
+      smoothTokenCountMetadata: testTokenCountMetadata(estimatedTokenCount(oldestChunkSmoothText), "chunk_smooth_materialized", 1),
+      placeholders: makePlaceholderArtifactState({
+        threadId: thread.threadId,
+        chunkId: "chunk-oldest-closed",
+        detailed: {
+          kind: "detailed",
+          status: "ready",
+          text: "oldest detailed placeholder [deterministic-placeholder:detailed] [not-semantic-summary]",
+          tokenCountMetadata: testTokenCountMetadata(
+            estimatedTokenCount("oldest detailed placeholder [deterministic-placeholder:detailed] [not-semantic-summary]"),
+            "detailed_chunk_materialized",
+            1,
+          ),
+          strategy: "deterministic_truncate_30",
+          generatedAt: DEFAULT_TEST_TIMESTAMP,
+        },
+        brief: {
+          kind: "brief",
+          status: "ready",
+          text: "oldest brief [deterministic-placeholder:brief] [not-semantic-summary]",
+          tokenCountMetadata: testTokenCountMetadata(estimatedTokenCount("oldest brief [deterministic-placeholder:brief] [not-semantic-summary]"), "brief_chunk_materialized", 1),
+          strategy: "deterministic_truncate_5",
+          generatedAt: DEFAULT_TEST_TIMESTAMP,
+        },
+      }),
+    }),
+    makeLegacyPlaceholderChunkState({
+      chunkId: "chunk-newer-closed",
+      threadId: thread.threadId,
+      sourceTurnIds: [middleOlder.turnId],
+      smoothText: newerChunkSmoothText,
+      smoothTokenCountMetadata: testTokenCountMetadata(estimatedTokenCount(newerChunkSmoothText), "chunk_smooth_materialized", 1),
+      placeholders: makePlaceholderArtifactState({
+        threadId: thread.threadId,
+        chunkId: "chunk-newer-closed",
+        detailed: {
+          kind: "detailed",
+          status: "ready",
+          text: "newer detailed placeholder [deterministic-placeholder:detailed] [not-semantic-summary]",
+          tokenCountMetadata: testTokenCountMetadata(
+            estimatedTokenCount("newer detailed placeholder [deterministic-placeholder:detailed] [not-semantic-summary]"),
+            "detailed_chunk_materialized",
+            1,
+          ),
+          strategy: "deterministic_truncate_30",
+          generatedAt: DEFAULT_TEST_TIMESTAMP,
+        },
+        brief: {
+          kind: "brief",
+          status: "ready",
+          text: "newer brief [deterministic-placeholder:brief] [not-semantic-summary]",
+          tokenCountMetadata: testTokenCountMetadata(estimatedTokenCount("newer brief [deterministic-placeholder:brief] [not-semantic-summary]"), "brief_chunk_materialized", 1),
+          strategy: "deterministic_truncate_5",
+          generatedAt: DEFAULT_TEST_TIMESTAMP,
+        },
+      }),
+    }),
+    makeChunkState({
+      chunkId: "chunk-open-recent",
+      threadId: thread.threadId,
+      lifecycleStatus: "open",
+      sourceTurnIds: [middleNewer.turnId],
+      smoothText: openChunkSmoothText,
+      smoothTokenCountMetadata: testTokenCountMetadata(estimatedTokenCount(openChunkSmoothText), "chunk_smooth_materialized", 1),
+      placeholders: undefined,
+    }),
+  ] as ChunkState[]).map((chunk) =>
+    options.canonicalClosedChunks && chunk.lifecycleStatus === "closed"
+      ? toCanonicalSemanticChunk(chunk)
+      : chunk,
+  );
+
   expectOk(
     await threadStore.writeChunks({
       threadId: thread.threadId,
       expectedSourceRevision: postTurnsSnapshot.thread.sourceRevision,
       expectedMessageHighWatermark: postTurnsSnapshot.thread.messageHighWatermark,
       expectedTurnsRevision: postTurnsSnapshot.thread.turnsRevision,
-      chunks: ([
-        makeChunkState({
-          chunkId: "chunk-oldest-closed",
-          threadId: thread.threadId,
-          sourceTurnIds: [oldest.turnId],
-          smoothText: oldestChunkSmoothText,
-          smoothTokenCountMetadata: testTokenCountMetadata(estimatedTokenCount(oldestChunkSmoothText), "chunk_smooth_materialized", 1),
-          placeholders: makePlaceholderArtifactState({
-            threadId: thread.threadId,
-            chunkId: "chunk-oldest-closed",
-            detailed: {
-              kind: "detailed",
-              status: "ready",
-              text: "oldest detailed placeholder [deterministic-placeholder:detailed] [not-semantic-summary]",
-              tokenCountMetadata: testTokenCountMetadata(
-                estimatedTokenCount("oldest detailed placeholder [deterministic-placeholder:detailed] [not-semantic-summary]"),
-                "detailed_chunk_materialized",
-                1,
-              ),
-              strategy: "deterministic_truncate_30",
-              generatedAt: DEFAULT_TEST_TIMESTAMP,
-            },
-            brief: {
-              kind: "brief",
-              status: "ready",
-              text: "oldest brief [deterministic-placeholder:brief] [not-semantic-summary]",
-              tokenCountMetadata: testTokenCountMetadata(estimatedTokenCount("oldest brief [deterministic-placeholder:brief] [not-semantic-summary]"), "brief_chunk_materialized", 1),
-              strategy: "deterministic_truncate_5",
-              generatedAt: DEFAULT_TEST_TIMESTAMP,
-            },
-          }),
-        }),
-        makeChunkState({
-          chunkId: "chunk-newer-closed",
-          threadId: thread.threadId,
-          sourceTurnIds: [middleOlder.turnId],
-          smoothText: newerChunkSmoothText,
-          smoothTokenCountMetadata: testTokenCountMetadata(estimatedTokenCount(newerChunkSmoothText), "chunk_smooth_materialized", 1),
-          placeholders: makePlaceholderArtifactState({
-            threadId: thread.threadId,
-            chunkId: "chunk-newer-closed",
-            detailed: {
-              kind: "detailed",
-              status: "ready",
-              text: "newer detailed placeholder [deterministic-placeholder:detailed] [not-semantic-summary]",
-              tokenCountMetadata: testTokenCountMetadata(
-                estimatedTokenCount("newer detailed placeholder [deterministic-placeholder:detailed] [not-semantic-summary]"),
-                "detailed_chunk_materialized",
-                1,
-              ),
-              strategy: "deterministic_truncate_30",
-              generatedAt: DEFAULT_TEST_TIMESTAMP,
-            },
-            brief: {
-              kind: "brief",
-              status: "ready",
-              text: "newer brief [deterministic-placeholder:brief] [not-semantic-summary]",
-              tokenCountMetadata: testTokenCountMetadata(estimatedTokenCount("newer brief [deterministic-placeholder:brief] [not-semantic-summary]"), "brief_chunk_materialized", 1),
-              strategy: "deterministic_truncate_5",
-              generatedAt: DEFAULT_TEST_TIMESTAMP,
-            },
-          }),
-        }),
-        makeChunkState({
-          chunkId: "chunk-open-recent",
-          threadId: thread.threadId,
-          lifecycleStatus: "open",
-          sourceTurnIds: [middleNewer.turnId],
-          smoothText: openChunkSmoothText,
-          smoothTokenCountMetadata: testTokenCountMetadata(estimatedTokenCount(openChunkSmoothText), "chunk_smooth_materialized", 1),
-          placeholders: undefined,
-        }),
-      ] as ChunkState[]).map(withProviderInputChunkCounts),
+      chunks: seededChunks.map(withProviderInputChunkCounts),
     }),
   );
 
@@ -597,7 +684,7 @@ export async function seedNoClosedChunkThread(storeRootDir: string) {
   return context;
 }
 
-export async function seedMissingDetailedPlaceholderThread(storeRootDir: string) {
+export async function seedMissingDetailedLowerBandArtifactThread(storeRootDir: string) {
   const context = await seedDeterministicRebuildThread(storeRootDir);
   const snapshot = expectOk(await context.threadStore.openThread(context.threadId));
   const turnsById = new Map(snapshot.turns.map((turn) => [turn.turnId, turn]));
@@ -623,14 +710,14 @@ export async function seedMissingDetailedPlaceholderThread(storeRootDir: string)
       expectedMessageHighWatermark: snapshot.thread.messageHighWatermark,
       expectedTurnsRevision: snapshot.thread.turnsRevision,
       chunks: ([
-        makeChunkState({
+        makeLegacyPlaceholderChunkState({
           chunkId: context.chunks.oldestClosed,
           threadId: context.threadId,
           sourceTurnIds: [context.turns.oldest.turnId],
           smoothText: oldestChunkSmoothText,
           smoothTokenCountMetadata: testTokenCountMetadata(estimatedTokenCount(oldestChunkSmoothText), "chunk_smooth_materialized", 1),
         }),
-        makeChunkState({
+        makeLegacyPlaceholderChunkState({
           chunkId: context.chunks.newerClosed,
           threadId: context.threadId,
           sourceTurnIds: [context.turns.middleOlder.turnId],

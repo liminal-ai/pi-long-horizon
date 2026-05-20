@@ -337,7 +337,7 @@ export async function seedLargeSession(options: SeedLargeSessionOptions): Promis
       mode: "prepare",
       requestedLowerBound: Math.max(4_000, Math.floor(options.targetTokenCount * 0.3)),
       requestedBandPercentages: { fullFidelity: 20, smooth: 30, detailed: 30, brief: 20 },
-      requiredPlaceholderBands: { detailed: true, brief: true },
+      requiredLowerBandArtifacts: { detailed: true, brief: true },
     },
     {
       store: threadStore,

@@ -1,0 +1,14 @@
+{"timestamp":"2026-05-18T10:47:11.653Z","command":"epic-fix","phase":"fix","event":"command-started","summary":"epic-fix started."}
+{"timestamp":"2026-05-18T10:47:11.667Z","command":"epic-fix","phase":"fix","event":"provider-spawned","summary":"Provider spawned with pid 52200.","metadata":{"pid":52200}}
+{"timestamp":"2026-05-18T10:47:11.756Z","command":"epic-fix","phase":"fix","event":"first-output-received","summary":"First provider stderr output received.","metadata":{"stream":"stderr"}}
+{"timestamp":"2026-05-18T10:47:41.981Z","command":"epic-fix","phase":"fix","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-18T10:48:19.969Z","command":"epic-fix","phase":"fix","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-18T10:49:13.265Z","command":"epic-fix","phase":"fix","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-18T10:50:08.042Z","command":"epic-fix","phase":"fix","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-18T10:51:43.153Z","command":"epic-fix","phase":"fix","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-18T10:52:20.721Z","command":"epic-fix","phase":"fix","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-18T10:52:53.835Z","command":"epic-fix","phase":"fix","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-18T10:53:53.111Z","command":"epic-fix","phase":"fix","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-18T10:57:22.577Z","command":"epic-fix","phase":"fix","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-18T10:57:52.608Z","command":"epic-fix","phase":"fix","event":"provider-exit","summary":"Provider exited with code 0.","metadata":{"exitCode":0,"signal":null,"elapsedMs":640942,"configuredTimeoutMs":3600000}}
+{"timestamp":"2026-05-18T10:57:52.614Z","command":"epic-fix","phase":"finalizing","event":"completed","summary":"epic-fix completed with outcome cleaned.","metadata":{"outcome":"cleaned"}}

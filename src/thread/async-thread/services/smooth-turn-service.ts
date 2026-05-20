@@ -886,7 +886,8 @@ export async function ensureSmoothTurn(
       });
     }
 
-    const current = evaluateSmoothTurn(turn, sortTurnMessages(snapshotResult.value, turn));
+    const turnMessages = sortTurnMessages(snapshotResult.value, turn);
+    const current = evaluateSmoothTurn(turn, turnMessages);
     if (turn.lifecycleStatus !== "closed") {
       return ok({
         turnId: current.turnId,
@@ -895,7 +896,12 @@ export async function ensureSmoothTurn(
       } satisfies EnsureSmoothTurnResult);
     }
 
-    if (current.smoothStatus === "ready" && current.schemaVersion === SMOOTH_TURN_SCHEMA_VERSION) {
+    if (
+      current.smoothStatus === "ready" &&
+      current.schemaVersion === SMOOTH_TURN_SCHEMA_VERSION &&
+      turn.smooth?.tokenCountMetadata &&
+      turn.smooth.materialized?.tokenCountMetadata
+    ) {
       return ok({
         turnId: current.turnId,
         smoothStatus: current.smoothStatus,
@@ -903,15 +909,35 @@ export async function ensureSmoothTurn(
       } satisfies EnsureSmoothTurnResult);
     }
 
-    const smooth = buildSmoothState(
-      {
-        threadId: input.threadId,
-        turn,
-        generatedAt: (options.now ?? (() => new Date()))().toISOString(),
-        formatOptions: options.formatOptions,
-      },
-      snapshotResult.value,
-    );
+    const generatedAt = (options.now ?? (() => new Date()))().toISOString();
+    const smooth =
+      (turn.smooth?.schemaVersion === SMOOTH_TURN_SCHEMA_VERSION || turn.smooth?.components) &&
+      turn.smooth.components &&
+      turn.smooth.components.length > 0 &&
+      (current.smoothStatus === "ready" || current.smoothStatus === "degraded")
+        ? withSmoothTokenCountMetadata(
+            {
+              turnId: turn.turnId,
+              threadId: input.threadId,
+              schemaVersion: SMOOTH_TURN_SCHEMA_VERSION,
+              status: current.smoothStatus,
+              components: turn.smooth.components,
+              generatedAt,
+              sourceRevision: turn.smooth.sourceRevision,
+              materialized: turn.smooth.materialized,
+            },
+            turn,
+            turnMessages,
+          )
+        : buildSmoothState(
+            {
+              threadId: input.threadId,
+              turn,
+              generatedAt,
+              formatOptions: options.formatOptions,
+            },
+            snapshotResult.value,
+          );
 
     const writeResult = await persistSmoothTurnStateWithRetry(
       {

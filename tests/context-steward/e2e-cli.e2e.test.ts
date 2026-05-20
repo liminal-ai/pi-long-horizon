@@ -5,6 +5,13 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { after, before, describe, test } from "node:test";
 
+import { FileThreadStore } from "../../src/context-steward/store/file-thread-store.js";
+import { makeChunkState } from "../../src/thread/async-thread/test/fixtures.js";
+import {
+  formatLowerBandInspectionJson,
+  WorkbenchQueryService,
+} from "../../src/workbench/services/workbench-query-service.js";
+
 const PROJECT_ROOT = resolve(import.meta.dirname, "../..");
 const PI_BIN = join(PROJECT_ROOT, "node_modules/.bin/pi");
 const EXTENSION_PATH = join(PROJECT_ROOT, ".pi/extensions/context-steward.ts");
@@ -631,5 +638,97 @@ describe("e2e: fixture creation command", () => {
     const turns = await readJson<TurnJson[]>(join(fixtureDir, "turns.json"));
     assert.ok(messages.length > 0, "Fixture has no messages");
     assert.ok(turns.length > 0, "Fixture has no turns");
+  });
+});
+
+describe("e2e: lower-band inspection command", () => {
+  let tmpDir: string;
+  let sessionDir: string;
+  let stewardRoot: string;
+
+  before(async () => {
+    tmpDir = await mkdtemp(join("/private/tmp/", "pi-e2e-lower-band-"));
+    sessionDir = join(tmpDir, "sessions");
+    stewardRoot = join(tmpDir, ".context-steward");
+
+    const result = await runPi({
+      cwd: tmpDir,
+      sessionDir,
+      prompt: "Reply with exactly: lower-band-setup",
+    });
+    assertPiCleanExit(result, "lower-band-status: setup prompt");
+  });
+
+  after(async () => {
+    if (tmpDir) await rm(tmpDir, { recursive: true, force: true });
+  });
+
+  test("/lh-lower-band-status reaches the real operator command surface with truthful chunk readiness output", async () => {
+    const threadDir = await findThreadDir(stewardRoot);
+    const thread = await readJson<ThreadJson>(join(threadDir, "thread.json"));
+    const sessionFile = await findSessionFile(sessionDir);
+    const turns = await readJson<TurnJson[]>(join(threadDir, "turns.json"));
+    const closedTurn = turns.find((turn) => turn.lifecycleStatus === "closed") ?? turns[0];
+    assert.ok(closedTurn, "Expected at least one captured turn before lower-band inspection");
+
+    const threadStore = new FileThreadStore(stewardRoot);
+    const snapshot = await threadStore.openThread(thread.threadId);
+    assert.equal(snapshot.ok, true);
+    const wroteChunks = await threadStore.writeChunks({
+      threadId: thread.threadId,
+      expectedSourceRevision: snapshot.value.thread.sourceRevision,
+      expectedMessageHighWatermark: snapshot.value.thread.messageHighWatermark,
+      expectedTurnsRevision: snapshot.value.thread.turnsRevision,
+      chunks: [
+        makeChunkState({
+          threadId: thread.threadId,
+          chunkId: "chunk-e2e-lower-band-status",
+          sourceTurnIds: [closedTurn.turnId],
+          lowerBand: {
+            detailed: {
+              band: "detailed",
+              status: "failed",
+              errorCode: "MODEL_UNAVAILABLE",
+              errorMessage: "provider unavailable",
+              updatedAt: "2026-05-18T00:00:00.000Z",
+            },
+            brief: {
+              band: "brief",
+              status: "pending",
+              updatedAt: "2026-05-18T00:00:00.000Z",
+            },
+          },
+        }),
+      ],
+    });
+    assert.equal(wroteChunks.ok, true);
+
+    const messagesBeforeCommand = await readJsonl<MessageJson>(join(threadDir, "messages.jsonl"));
+    const messageCountBeforeCommand = messagesBeforeCommand.length;
+
+    const commandResult = await runPi({
+      cwd: tmpDir,
+      sessionDir,
+      prompt: "/lh-lower-band-status",
+      sessionFile,
+    });
+    assertPiCleanExit(commandResult, "lower-band-status: /lh-lower-band-status command");
+
+    const messagesAfterCommand = await readJsonl<MessageJson>(join(threadDir, "messages.jsonl"));
+    assert.equal(
+      messagesAfterCommand.length,
+      messageCountBeforeCommand,
+      "Slash command should execute through the PI operator surface without appending a model prompt",
+    );
+
+    const report = await new WorkbenchQueryService(threadStore).inspectLowerBandStatus({
+      threadId: thread.threadId,
+    });
+    assert.equal(report.ok, true);
+    const rendered = formatLowerBandInspectionJson(report.value);
+
+    assert.match(rendered, /"chunkId": "chunk-e2e-lower-band-status"/);
+    assert.match(rendered, /"status": "failed"/);
+    assert.match(rendered, /"errorCode": "MODEL_UNAVAILABLE"/);
   });
 });

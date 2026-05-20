@@ -7,7 +7,7 @@ import { buildPiThreadViewFile } from "../../src/thread-view/targets/pi/pi-threa
 import { withTempFeature3Store } from "../../src/thread-view/test/fixtures.js";
 import { seedDeterministicRebuildThread } from "./helpers.js";
 
-test("placeholder lower-band outputs remain explicit in PI-target output", async () => {
+test("legacy placeholder lower-band outputs are blocked from PI-target output", async () => {
   await withTempFeature3Store(async ({ storeRootDir }) => {
     const context = await seedDeterministicRebuildThread(storeRootDir);
     const buildResult = await buildDraftThreadView(
@@ -37,22 +37,68 @@ test("placeholder lower-band outputs remain explicit in PI-target output", async
     });
 
     assert.equal(file.entryCount, file.entries.length);
-    assert.equal(file.placeholderExplicit, true);
+    assert.equal(file.placeholderExplicit, false);
     assert.equal(file.sessionId, "projection-session-001");
     assert.equal(file.parentSessionId, "source-session-001");
+    assert.equal(
+      buildResult.blockers.some(
+        (issue) =>
+          issue.code === "CHUNK_STATE_INVALID" &&
+          issue.cause === "legacy_placeholder_chunk_state",
+      ),
+      true,
+    );
 
     const detailed = file.entries.find((entry) => entry.generatedSource === "detailed_chunk_summary");
     const brief = file.entries.find((entry) => entry.generatedSource === "brief_chunk_summary");
     const smooth = file.entries.find((entry) => entry.generatedSource === "smooth_turn");
 
-    assert.equal(typeof detailed?.content, "string");
-    assert.equal((detailed?.content as string).includes("[deterministic-placeholder:detailed]"), true);
-    assert.equal(detailed?.metadata?.placeholderExplicit, true);
-    assert.equal(typeof brief?.content, "string");
-    assert.equal((brief?.content as string).includes("[deterministic-placeholder:brief]"), true);
-    assert.equal(brief?.metadata?.placeholderExplicit, true);
+    assert.equal(detailed, undefined);
+    assert.equal(brief, undefined);
     assert.equal(smooth?.metadata?.sourceKind, "smooth_turn");
   });
+});
+
+test("semantic lower-band outputs do not mark PI-target output as placeholder explicit", async () => {
+  const threadViewId = "thread-view-semantic-lower-band";
+  const file = await buildPiThreadViewFile({
+    threadId: "thread-semantic-lower-band",
+    threadViewId,
+    emittedMessages: [
+      makeThreadViewMessage({
+        threadViewId,
+        bandType: "detailed",
+        sourceKind: "detailed_chunk_summary",
+        sourceReference: "chunk-001",
+        content: "Semantic detailed summary",
+      }),
+      makeThreadViewMessage({
+        threadViewId,
+        bandType: "brief",
+        sourceKind: "brief_chunk_summary",
+        sourceReference: "chunk-001",
+        content: "Semantic brief summary",
+      }),
+    ],
+    sessionId: "projection-session-semantic-001",
+    cwd: "/tmp/project",
+    parentSessionId: "source-session-001",
+    generatedAt: "2026-01-01T00:00:00.000Z",
+  });
+
+  assert.equal(file.placeholderExplicit, false);
+  assert.equal(
+    file.entries.some((entry) => entry.generatedSource === "detailed_chunk_summary"),
+    true,
+  );
+  assert.equal(
+    file.entries.some((entry) => entry.generatedSource === "brief_chunk_summary"),
+    true,
+  );
+  assert.equal(
+    file.entries.some((entry) => entry.metadata?.placeholderExplicit === true),
+    false,
+  );
 });
 
 test("raw tool-result metadata is preserved in PI-target entries", async () => {

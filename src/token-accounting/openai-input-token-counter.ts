@@ -1,4 +1,5 @@
 import { AuthStorage } from "@earendil-works/pi-coding-agent";
+import { join } from "node:path";
 
 import { formatExternalIntegrationFailure } from "../integration-error.js";
 import type { WritePiThreadViewFileInput } from "../thread-view/domain/pi-thread-view-file.js";
@@ -15,6 +16,7 @@ import {
   type RawTurnMaterializedTokenCountRecord,
   type SmoothTurnMaterializedTokenCountRecord,
   type TokenCountRecord,
+  type TurnLowerBandProjectionMaterializedTokenCountRecord,
 } from "./token-count-metadata.js";
 import type { MaterializedOrGeneratedTokenCountScope } from "./counter-source-policy.js";
 import {
@@ -90,6 +92,14 @@ export interface PiAuthStorageOpenAIApiKeyResolverOptions {
 
 export interface CountOpenAIGeneratedSessionInput {
   input: WritePiThreadViewFileInput;
+  model?: string;
+  sourceRevision?: number;
+  createdAt?: string;
+  now?: () => Date;
+}
+
+export interface CountOpenAITurnLowerBandProjectionMaterializedInput {
+  text: string;
   model?: string;
   sourceRevision?: number;
   createdAt?: string;
@@ -183,7 +193,9 @@ export function createPiAuthStorageOpenAIApiKeyResolver(
 ): OpenAIApiKeyResolver {
   return {
     async resolveApiKey() {
-      const authStorage = options.authStorage ?? AuthStorage.create(options.authPath ?? ".pi/agent/auth.json");
+      const agentDir = process.env.PI_CODING_AGENT_DIR?.trim();
+      const defaultAuthPath = agentDir ? join(agentDir, "auth.json") : ".pi/agent/auth.json";
+      const authStorage = options.authStorage ?? AuthStorage.create(options.authPath ?? defaultAuthPath);
       const credential = authStorage.get("openai");
 
       if (!credential) {
@@ -378,6 +390,21 @@ export class OpenAIInputTokenCounter {
     }) as Promise<SmoothTurnMaterializedTokenCountRecord>;
   }
 
+  async countTurnLowerBandProjectionMaterialized(
+    input: CountOpenAITurnLowerBandProjectionMaterializedInput,
+  ): Promise<TurnLowerBandProjectionMaterializedTokenCountRecord> {
+    return this.countMaterialized({
+      scope: "turn_lower_band_projection_materialized",
+      representation: input.text,
+      sourceRevision: input.sourceRevision,
+      model: input.model,
+      createdAt: input.createdAt,
+      now: input.now,
+      provenanceSuffix: "thread-view.turn-lower-band-projection-content",
+      note: "OpenAI Responses input token count over the conversation-only turn lower-band projection content.",
+    }) as Promise<TurnLowerBandProjectionMaterializedTokenCountRecord>;
+  }
+
   async countChunkSmoothMaterialized(
     chunk: ChunkState,
     options: { model?: string; createdAt?: string; now?: () => Date } = {},
@@ -398,7 +425,7 @@ export class OpenAIInputTokenCounter {
   ): Promise<DetailedChunkMaterializedTokenCountRecord> {
     return this.countMaterialized({
       scope: "detailed_chunk_materialized",
-      representation: chunk.placeholders?.detailed?.text ?? "",
+      representation: chunk.lowerBand?.detailed?.text ?? "",
       sourceRevision: chunk.sourceRevision,
       provenanceSuffix: "thread-view.detailed-chunk-content",
       note: "OpenAI Responses input token count over the detailed chunk materialized Thread View content.",
@@ -412,7 +439,7 @@ export class OpenAIInputTokenCounter {
   ): Promise<BriefChunkMaterializedTokenCountRecord> {
     return this.countMaterialized({
       scope: "brief_chunk_materialized",
-      representation: chunk.placeholders?.brief?.text ?? "",
+      representation: chunk.lowerBand?.brief?.text ?? "",
       sourceRevision: chunk.sourceRevision,
       provenanceSuffix: "thread-view.brief-chunk-content",
       note: "OpenAI Responses input token count over the brief chunk materialized Thread View content.",

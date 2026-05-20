@@ -192,7 +192,16 @@ function withPlaceholderTokenCountMetadata(input: {
     brief: input.record.kind === "brief" ? input.record : input.chunk.placeholders?.brief,
   };
   const chunkWithPlaceholder: ChunkState = {
-    ...input.chunk,
+    chunkId: input.chunk.chunkId,
+    threadId: input.chunk.threadId,
+    lifecycleStatus: input.chunk.lifecycleStatus,
+    sourceTurnIds: [...input.chunk.sourceTurnIds],
+    smoothText: input.chunk.smoothText,
+    smoothTokenCountMetadata: input.chunk.smoothTokenCountMetadata,
+    openedAt: input.chunk.openedAt,
+    closedAt: input.chunk.closedAt,
+    closeReason: input.chunk.closeReason,
+    sourceRevision: input.chunk.sourceRevision,
     placeholders,
   };
   const tokenCountMetadata =
@@ -322,7 +331,20 @@ export async function ensurePlaceholderArtifacts(
         : brief,
     };
 
-    chunk.placeholders = nextPlaceholders;
+    const chunkIndex = nextChunks.findIndex((candidate) => candidate.chunkId === input.chunkId);
+    nextChunks[chunkIndex] = {
+      chunkId: chunk.chunkId,
+      threadId: chunk.threadId,
+      lifecycleStatus: chunk.lifecycleStatus,
+      sourceTurnIds: [...chunk.sourceTurnIds],
+      smoothText: chunk.smoothText,
+      smoothTokenCountMetadata: chunk.smoothTokenCountMetadata,
+      openedAt: chunk.openedAt,
+      closedAt: chunk.closedAt,
+      closeReason: chunk.closeReason,
+      sourceRevision: chunk.sourceRevision,
+      placeholders: nextPlaceholders,
+    };
 
     if (JSON.stringify(originalChunks) !== JSON.stringify(nextChunks)) {
       const writeResult = await options.store.writeChunks({

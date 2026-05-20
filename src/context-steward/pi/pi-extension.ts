@@ -12,7 +12,11 @@ import type {
 import { appendFile, mkdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
-import { runSmartCompact, type SmartCompactCommandDependencies } from "../../commands/smart-compact.js";
+import {
+  isOpenAIInputTokenCountProvider,
+  runSmartCompact,
+  type SmartCompactCommandDependencies,
+} from "../../commands/smart-compact.js";
 import { formatCommandResult, type CommandResult } from "../commands/command-results.js";
 import {
   StewardResultError,
@@ -55,6 +59,11 @@ import {
   formatActiveRolloutInspectionJson,
   inspectActiveThreadView,
 } from "../../workbench/services/active-rollout-inspection-service.js";
+import {
+  formatLowerBandInspectionJson,
+  WorkbenchQueryService,
+} from "../../workbench/services/workbench-query-service.js";
+import { OpenAIInputTokenCounter } from "../../token-accounting/index.js";
 import {
   formatSmoothingInspectionJson,
   inspectSmoothingStatus,
@@ -581,6 +590,28 @@ function safeContextModelId(ctx: ExtensionContext): string | undefined {
     }
     throw error;
   }
+}
+
+function safeContextModelProvider(ctx: ExtensionContext): string | undefined {
+  try {
+    return ctx.model?.provider;
+  } catch (error) {
+    if (isStalePiContextError(error)) {
+      return undefined;
+    }
+    throw error;
+  }
+}
+
+function createDefaultOpenAIInputTokenCounter(input: {
+  modelProvider?: string;
+  modelId?: string;
+}): SmartCompactCommandDependencies["openAIInputTokenCounter"] | undefined {
+  if (!isOpenAIInputTokenCountProvider(input.modelProvider) || !input.modelId) {
+    return undefined;
+  }
+
+  return new OpenAIInputTokenCounter(undefined, input.modelId);
 }
 
 async function resolveManagedThreadForCommand(
@@ -1267,6 +1298,34 @@ function parseCompactReportCommandArgs(args: string): StewardResult<{ threadView
   });
 }
 
+function parseLowerBandStatusCommandArgs(args: string): StewardResult<{ threadViewId?: string }> {
+  const tokens = args.trim().length === 0 ? [] : args.trim().split(/\s+/);
+  const values = new Map<string, string>();
+
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (token !== "--thread-view") {
+      return fail(invalidCommandArgsIssue(`Unknown lower-band status argument ${token}.`));
+    }
+
+    const value = normalizeValue(tokens[index + 1]);
+    index += 1;
+    if (!value) {
+      return fail(invalidCommandArgsIssue("Missing value for --thread-view."));
+    }
+
+    if (values.has(token)) {
+      return fail(invalidCommandArgsIssue("Duplicate lower-band status argument --thread-view."));
+    }
+
+    values.set(token, value);
+  }
+
+  return ok({
+    threadViewId: values.get("--thread-view"),
+  });
+}
+
 async function resolveMostRecentThreadViewId(input: {
   threadId: string;
   store: ThreadStore;
@@ -1438,6 +1497,76 @@ export async function executeActiveThreadViewStatusCommand(input: {
   }
 }
 
+export async function executeLowerBandStatusCommand(input: {
+  store: ThreadStore;
+  ctx: ExtensionCommandContext;
+  args: string;
+  activeThread?: ThreadRecord;
+}): Promise<StewardResult<ContextStewardCommandExecutionResult>> {
+  const thread = await resolveManagedThreadForCommand(input.store, input.ctx, input.activeThread);
+  if (!thread.ok) {
+    return thread;
+  }
+
+  if (!thread.value) {
+    return ok({
+      result: {
+        ok: false,
+        title: "Lower-band status",
+        summary: "No managed thread exists for the current PI session.",
+        issues: [],
+      },
+    });
+  }
+
+  const parsed = parseLowerBandStatusCommandArgs(input.args);
+  if (!parsed.ok) {
+    return ok({
+      thread: thread.value,
+      result: {
+        ok: false,
+        title: "Lower-band status",
+        summary: parsed.issues[0]?.message ?? "Invalid lower-band status arguments.",
+        issues: cloneIssues(parsed.issues),
+        threadId: thread.value.threadId,
+      },
+    });
+  }
+
+  try {
+    const report = await new WorkbenchQueryService(input.store).inspectLowerBandStatus({
+      threadId: thread.value.threadId,
+      threadViewId: parsed.value.threadViewId,
+    });
+    if (!report.ok) {
+      return fail(...report.issues);
+    }
+
+    return ok({
+      thread: thread.value,
+      result: {
+        ok: true,
+        title: "Lower-band status",
+        summary: formatLowerBandInspectionJson(report.value),
+        issues: cloneIssues(report.issues),
+        threadId: thread.value.threadId,
+      },
+    });
+  } catch (error) {
+    if (isStewardResultErrorLike(error)) {
+      return fail(...error.issues);
+    }
+    return fail(
+      createStewardIssue({
+        code: "STORE_UNAVAILABLE",
+        message: `Lower-band status inspection failed for thread ${thread.value.threadId}.`,
+        threadId: thread.value.threadId,
+        cause: error instanceof Error ? error.message : String(error),
+      }),
+    );
+  }
+}
+
 export async function executeSmoothingStatusCommand(input: {
   store: ThreadStore;
   ctx: ExtensionCommandContext;
@@ -1509,6 +1638,7 @@ export function registerContextStewardExtension(
   type BackgroundMaintenanceInput = {
     threadId: string;
     ctx: PiExtensionCaptureContext;
+    modelProvider?: string;
     tokenCountModel?: string;
   };
   type BackgroundMaintenanceState = {
@@ -1779,12 +1909,19 @@ export function registerContextStewardExtension(
   async function runBackgroundMaintenance(input: BackgroundMaintenanceInput): Promise<void> {
     const startedAt = Date.now();
     let result = "completed";
+    const openAIInputTokenCounter =
+      options.openAIInputTokenCounter ??
+      createDefaultOpenAIInputTokenCounter({
+        modelProvider: input.modelProvider,
+        modelId: input.tokenCountModel,
+      });
     try {
       await maintainAsyncThread(
         { threadId: input.threadId },
         {
           store: createStore(input.ctx),
-          openAIInputTokenCounter: options.openAIInputTokenCounter,
+          openAIInputTokenCounter,
+          exactTokenCountRepairEnabled: false,
           tokenCountModel: input.tokenCountModel,
         },
       );
@@ -1807,7 +1944,11 @@ export function registerContextStewardExtension(
     let state = backgroundMaintenanceByThreadId.get(input.threadId);
     if (state?.running) {
       state.pending = true;
-      state.latest = input;
+      state.latest = {
+        ...input,
+        modelProvider: input.modelProvider ?? state.latest.modelProvider,
+        tokenCountModel: input.tokenCountModel ?? state.latest.tokenCountModel,
+      };
       logTiming("backgroundMaintenanceSchedule", startedAt, {
         threadId: input.threadId,
         result: "pending",
@@ -2017,6 +2158,7 @@ export function registerContextStewardExtension(
       scheduleBackgroundMaintenance({
         threadId: thread.threadId,
         ctx: snapshotCaptureContext(resolvedContext) ?? resolvedContext,
+        modelProvider: resolvedContext === ctx ? safeContextModelProvider(ctx as ExtensionContext) : undefined,
         tokenCountModel: resolvedContext === ctx ? safeContextModelId(ctx as ExtensionContext) : undefined,
       });
       maintenanceScheduleMs = Date.now() - stepStartedAt;
@@ -2357,6 +2499,30 @@ export function registerContextStewardExtension(
           ok: false,
           title: "Active thread view",
           summary: executed.issues[0]?.message ?? "Active thread view inspection failed.",
+          issues: cloneIssues(executed.issues),
+        });
+        return;
+      }
+
+      notifyCommand(ctx, executed.value.result);
+    },
+  });
+
+  pi.registerCommand("lh-lower-band-status", {
+    description: "Inspect lower-band transcript/artifact readiness and compact blockers as machine-readable JSON.",
+    handler: async (args: string, ctx: ExtensionCommandContext) => {
+      const store = createStore(ctx);
+      const executed = await executeLowerBandStatusCommand({
+        store,
+        ctx,
+        args,
+        activeThread,
+      });
+      if (!executed.ok) {
+        notifyCommand(ctx, {
+          ok: false,
+          title: "Lower-band status",
+          summary: executed.issues[0]?.message ?? "Lower-band status inspection failed.",
           issues: cloneIssues(executed.issues),
         });
         return;

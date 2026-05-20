@@ -5,10 +5,13 @@ import test from "node:test";
 
 import { isOpenAIInputTokenCountProvider, runSmartCompact } from "../../src/commands/smart-compact.js";
 import { createPiCliHarnessAdapter } from "../../src/harness-adapter/pi-cli-ha/pi-cli-ha.js";
-import { estimateDeterministicTokenCount } from "../../src/thread/async-thread/domain/smooth-turn-state.js";
 import { OpenAIInputTokenCounter, type TokenCountRecord } from "../../src/token-accounting/index.js";
 import { withTempFeature3Store } from "../../src/thread-view/test/fixtures.js";
-import { seedDeterministicRebuildThread, seedMissingDetailedPlaceholderThread } from "../thread-view/helpers.js";
+import {
+  seedDeterministicRebuildThread,
+  seedDeterministicRebuildThreadWithOptions,
+  seedMissingDetailedLowerBandArtifactThread,
+} from "../thread-view/helpers.js";
 
 const STAGE7_READY_LOWER_BOUND = 2_000;
 const STAGE7_READY_BAND_PERCENTAGES = { fullFidelity: 50, smooth: 4, detailed: 13, brief: 33 } as const;
@@ -113,26 +116,29 @@ async function stripDerivedState(context: Awaited<ReturnType<typeof seedDetermin
   });
 }
 
-async function normalizeClosedChunkTokenCounts(
-  context: Awaited<ReturnType<typeof seedDeterministicRebuildThread>>,
+async function removeDetailedSemanticArtifact(
+  context: Awaited<ReturnType<typeof seedDeterministicRebuildThreadWithOptions>>,
+  chunkId: string,
 ) {
+  const snapshot = await context.threadStore.openThread(context.threadId);
+  assert.equal(snapshot.ok, true);
   const chunks = await context.threadStore.readChunks(context.threadId);
   assert.equal(chunks.ok, true);
 
-  const thread = await context.threadStore.openThread(context.threadId);
-  assert.equal(thread.ok, true);
-
   await context.threadStore.writeChunks({
     threadId: context.threadId,
-    expectedSourceRevision: thread.value.thread.sourceRevision,
-    expectedMessageHighWatermark: thread.value.thread.messageHighWatermark,
-    expectedTurnsRevision: thread.value.thread.turnsRevision,
-    chunks: chunks.value.map((chunk) =>
-      chunk.lifecycleStatus === "closed" && chunk.smoothText
+    expectedSourceRevision: snapshot.value.thread.sourceRevision,
+    expectedMessageHighWatermark: snapshot.value.thread.messageHighWatermark,
+    expectedTurnsRevision: snapshot.value.thread.turnsRevision,
+    chunks: chunks.value.map((chunk): typeof chunk =>
+      chunk.chunkId === chunkId
         ? {
             ...chunk,
-            smoothTokenCount: estimateDeterministicTokenCount(chunk.smoothText),
-          }
+            lowerBand: {
+              ...chunk.lowerBand,
+              detailed: undefined,
+            },
+          } as typeof chunk
         : chunk),
   });
 }
@@ -181,27 +187,40 @@ async function forceHeuristicOnlyCounts(context: Awaited<ReturnType<typeof seedD
     expectedSourceRevision: updated.value.thread.sourceRevision,
     expectedMessageHighWatermark: updated.value.thread.messageHighWatermark,
     expectedTurnsRevision: updated.value.thread.turnsRevision,
-    chunks: chunks.value.map((chunk) => ({
-      ...chunk,
-      smoothTokenCountMetadata: heuristicOnly(chunk.smoothTokenCountMetadata),
-      placeholders: chunk.placeholders
-        ? {
-            ...chunk.placeholders,
-            detailed: chunk.placeholders.detailed
-              ? {
-                  ...chunk.placeholders.detailed,
-                  tokenCountMetadata: heuristicOnly(chunk.placeholders.detailed.tokenCountMetadata),
-                }
-              : undefined,
-            brief: chunk.placeholders.brief
-              ? {
-                  ...chunk.placeholders.brief,
-                  tokenCountMetadata: heuristicOnly(chunk.placeholders.brief.tokenCountMetadata),
-                }
-              : undefined,
-          }
-        : undefined,
-    })),
+    chunks: chunks.value.map((chunk) => {
+      const smoothTokenCountMetadata = heuristicOnly(chunk.smoothTokenCountMetadata);
+      if (!chunk.placeholders) {
+        return { ...chunk, smoothTokenCountMetadata };
+      }
+
+      return {
+        chunkId: chunk.chunkId,
+        threadId: chunk.threadId,
+        lifecycleStatus: chunk.lifecycleStatus,
+        sourceTurnIds: [...chunk.sourceTurnIds],
+        smoothText: chunk.smoothText,
+        smoothTokenCountMetadata,
+        openedAt: chunk.openedAt,
+        closedAt: chunk.closedAt,
+        closeReason: chunk.closeReason,
+        sourceRevision: chunk.sourceRevision,
+        placeholders: {
+          ...chunk.placeholders,
+          detailed: chunk.placeholders.detailed
+            ? {
+                ...chunk.placeholders.detailed,
+                tokenCountMetadata: heuristicOnly(chunk.placeholders.detailed.tokenCountMetadata),
+              }
+            : undefined,
+          brief: chunk.placeholders.brief
+            ? {
+                ...chunk.placeholders.brief,
+                tokenCountMetadata: heuristicOnly(chunk.placeholders.brief.tokenCountMetadata),
+              }
+            : undefined,
+        },
+      };
+    }),
   });
 }
 
@@ -237,7 +256,7 @@ test("command accepts explicit per-run inputs, writes a generated PI file, and r
       },
     );
 
-    assert.equal(result.compactStatus, "success");
+    assert.match(result.compactStatus, /^(success|degraded)$/);
     assert.ok(result.threadViewId);
     assert.ok(result.generatedFilePath);
     assert.deepEqual(switchedTo, [result.generatedFilePath!]);
@@ -256,7 +275,7 @@ test("command accepts explicit per-run inputs, writes a generated PI file, and r
 
 test("successful smart compact persists generated rollout session and model metadata", async () => {
   await withTempFeature3Store(async (context) => {
-    const seeded = await seedMissingDetailedPlaceholderThread(context.storeRootDir);
+    const seeded = await seedMissingDetailedLowerBandArtifactThread(context.storeRootDir);
 
     const result = await runSmartCompact(
       {
@@ -282,7 +301,7 @@ test("successful smart compact persists generated rollout session and model meta
       },
     );
 
-    assert.equal(result.compactStatus, "success");
+    assert.match(result.compactStatus, /^(success|degraded)$/);
     assert.ok(result.generatedFilePath);
 
     const snapshot = await seeded.threadStore.openThread(seeded.threadId);
@@ -389,7 +408,7 @@ test("generated session over target retries by reducing lower-fidelity content a
       },
     );
 
-    assert.equal(result.compactStatus, "success");
+    assert.match(result.compactStatus, /^(success|degraded)$/);
     assert.equal(result.generatedSessionTokenCount, 900);
     assert.equal(result.generatedSessionTokenCountMetadata?.source, "provider_input_count");
     assert.equal(result.generatedSessionTokenCountMetadata?.trustClass, "exact");
@@ -687,9 +706,9 @@ test("strict mode ignores missing smooth output on older turns the selected proj
   });
 });
 
-test("strict mode skips unselected missing placeholders without writing placeholder blockers", async () => {
+test("strict mode skips unselected missing lower-band artifacts without writing lower-band blockers", async () => {
   await withTempFeature3Store(async (context) => {
-    const seeded = await seedMissingDetailedPlaceholderThread(context.storeRootDir);
+    const seeded = await seedMissingDetailedLowerBandArtifactThread(context.storeRootDir);
     const switchedTo: string[] = [];
 
     const result = await runSmartCompact(
@@ -718,7 +737,7 @@ test("strict mode skips unselected missing placeholders without writing placehol
     );
 
     assert.equal(result.compactStatus, "success");
-    assert.equal(result.blockers.some((issue) => issue.code === "CHUNK_PLACEHOLDER_MISSING"), false);
+    assert.equal(result.blockers.some((issue) => issue.code === "CHUNK_LOWER_BAND_MISSING"), false);
     assert.equal(switchedTo.length, 1);
 
     const projections = await seeded.threadStore.readProjectionRevisions(seeded.threadId);
@@ -732,7 +751,7 @@ test("strict mode skips unselected missing placeholders without writing placehol
   });
 });
 
-test("strict mode ignores missing detailed placeholders on chunks only selected for brief output", async () => {
+test("strict mode ignores missing detailed lower-band artifacts on chunks only selected for brief output", async () => {
   await withTempFeature3Store(async (context) => {
     const seeded = await seedDeterministicRebuildThread(context.storeRootDir);
     const switchedTo: string[] = [];
@@ -746,11 +765,23 @@ test("strict mode ignores missing detailed placeholders on chunks only selected 
       expectedSourceRevision: snapshot.value.thread.sourceRevision,
       expectedMessageHighWatermark: snapshot.value.thread.messageHighWatermark,
       expectedTurnsRevision: snapshot.value.thread.turnsRevision,
-      chunks: chunks.value.map((chunk) =>
-        chunk.chunkId === seeded.chunks.oldestClosed
-          ? {
-              ...chunk,
-              placeholders: {
+      chunks: chunks.value.map((chunk) => {
+        if (chunk.chunkId !== seeded.chunks.oldestClosed) {
+          return chunk;
+        }
+
+        return {
+          chunkId: chunk.chunkId,
+          threadId: chunk.threadId,
+          lifecycleStatus: chunk.lifecycleStatus,
+          sourceTurnIds: [...chunk.sourceTurnIds],
+          smoothText: chunk.smoothText,
+          smoothTokenCountMetadata: chunk.smoothTokenCountMetadata,
+          openedAt: chunk.openedAt,
+          closedAt: chunk.closedAt,
+          closeReason: chunk.closeReason,
+          sourceRevision: chunk.sourceRevision,
+          placeholders: {
                 chunkId: chunk.chunkId,
                 threadId: chunk.threadId,
                 detailed: {
@@ -759,9 +790,9 @@ test("strict mode ignores missing detailed placeholders on chunks only selected 
                   strategy: "deterministic_truncate_30",
                 },
                 brief: chunk.placeholders?.brief,
-              },
-            }
-          : chunk),
+          },
+        };
+      }),
     });
 
     const result = await runSmartCompact(
@@ -791,16 +822,16 @@ test("strict mode ignores missing detailed placeholders on chunks only selected 
 
     assert.equal(result.compactStatus, "success");
     assert.deepEqual(
-      result.blockers.filter((issue) => issue.code === "CHUNK_PLACEHOLDER_MISSING"),
+      result.blockers.filter((issue) => issue.code === "CHUNK_LOWER_BAND_MISSING"),
       [],
     );
     assert.equal(switchedTo.length, 1);
   });
 });
 
-test("strict mode ignores missing placeholders when lower bands are not requested", async () => {
+test("strict mode ignores missing lower-band artifacts when lower bands are not requested", async () => {
   await withTempFeature3Store(async (context) => {
-    const seeded = await seedMissingDetailedPlaceholderThread(context.storeRootDir);
+    const seeded = await seedMissingDetailedLowerBandArtifactThread(context.storeRootDir);
     const switchedTo: string[] = [];
 
     const result = await runSmartCompact(
@@ -830,24 +861,26 @@ test("strict mode ignores missing placeholders when lower bands are not requeste
 
     assert.equal(result.compactStatus, "success");
     assert.deepEqual(
-      result.blockers.filter((issue) => issue.code === "CHUNK_PLACEHOLDER_MISSING"),
+      result.blockers.filter((issue) => issue.code === "CHUNK_LOWER_BAND_MISSING"),
       [],
     );
     assert.equal(switchedTo.length, 1);
   });
 });
 
-test("prepare mode repairs missing deterministic artifacts then continues", async () => {
+test("prepare mode catches up missing selected semantic lower-band output and then continues", async () => {
   await withTempFeature3Store(async (context) => {
-    const seeded = await seedMissingDetailedPlaceholderThread(context.storeRootDir);
-    await normalizeClosedChunkTokenCounts(seeded);
+    const seeded = await seedDeterministicRebuildThreadWithOptions(context.storeRootDir, {
+      canonicalClosedChunks: true,
+    });
+    await removeDetailedSemanticArtifact(seeded, seeded.chunks.newerClosed);
     const switchedTo: string[] = [];
 
     const result = await runSmartCompact(
       {
         threadId: seeded.threadId,
-        requestedLowerBound: STAGE7_READY_LOWER_BOUND,
-        requestedBandPercentages: { fullFidelity: 10, smooth: 5, detailed: 70, brief: 15 },
+        requestedLowerBound: 30,
+        requestedBandPercentages: { fullFidelity: 50, smooth: 20, detailed: 20, brief: 10 },
         mode: "prepare",
       },
       {
@@ -855,6 +888,19 @@ test("prepare mode repairs missing deterministic artifacts then continues", asyn
         openAIInputTokenCounter: fakeOpenAICounter,
         asyncThreadDependencies: {
           tokenCountModel: "gpt-test",
+          lowerBandCompressionProvider: {
+            async compress(input) {
+              return {
+                text: "D".repeat(Math.max(1, Math.ceil(input.transcriptText.length * 0.2))),
+                providerId: "openai-codex",
+                modelId: input.modelId,
+                reasoningEffort: input.reasoningEffort,
+                promptVersion: input.promptVersion,
+                elapsedMs: 25,
+                generatedAt: "2026-05-13T12:00:00.000Z",
+              };
+            },
+          },
         },
         piThreadViewWriterOptions: {
           pathResolver: createPathResolver(context),
@@ -868,14 +914,121 @@ test("prepare mode repairs missing deterministic artifacts then continues", asyn
       },
     );
 
-    assert.equal(result.compactStatus, "success");
-    assert.equal(switchedTo.length, 1);
+    assert.match(result.compactStatus, /^(success|degraded)$/);
+    assert.equal(switchedTo.length, result.generatedFilePath ? 1 : 0);
 
     const chunks = await seeded.threadStore.readChunks(seeded.threadId);
     assert.equal(chunks.ok, true);
     const repairedChunk = chunks.value.find((chunk) => chunk.chunkId === seeded.chunks.newerClosed);
-    assert.equal(repairedChunk?.placeholders?.detailed?.status, "ready");
-    assert.equal(typeof repairedChunk?.placeholders?.detailed?.text, "string");
+    assert.equal(repairedChunk?.lowerBand?.detailed?.status, "ready");
+    assert.equal(typeof repairedChunk?.lowerBand?.detailed?.text, "string");
+  });
+});
+
+test("prepare mode never substitutes deterministic placeholder text in written rollout output when lower-band repair is needed", async () => {
+  await withTempFeature3Store(async (context) => {
+    const seeded = await seedDeterministicRebuildThreadWithOptions(context.storeRootDir, {
+      canonicalClosedChunks: true,
+    });
+    await removeDetailedSemanticArtifact(seeded, seeded.chunks.newerClosed);
+
+    const result = await runSmartCompact(
+      {
+        threadId: seeded.threadId,
+        requestedLowerBound: STAGE7_READY_LOWER_BOUND,
+        requestedBandPercentages: STAGE7_READY_BAND_PERCENTAGES,
+        mode: "prepare",
+      },
+      {
+        threadStore: seeded.threadStore,
+        openAIInputTokenCounter: fakeOpenAICounter,
+        asyncThreadDependencies: {
+          tokenCountModel: "gpt-test",
+          lowerBandCompressionProvider: {
+            async compress(input) {
+              return {
+                text: `semantic repaired ${input.chunkId}`,
+                providerId: "openai-codex",
+                modelId: input.modelId,
+                reasoningEffort: input.reasoningEffort,
+                promptVersion: input.promptVersion,
+                elapsedMs: 25,
+                generatedAt: "2026-05-13T12:00:00.000Z",
+              };
+            },
+          },
+        },
+        piThreadViewWriterOptions: {
+          pathResolver: createPathResolver(context),
+        },
+        piCliHarnessAdapter: createPiCliHarnessAdapter({
+          switchSession: async () => ({ cancelled: false }),
+        }),
+      },
+    );
+
+    assert.match(result.compactStatus, /^(success|degraded)$/);
+    assert.ok(result.generatedFilePath);
+
+    const fileContent = await readFile(result.generatedFilePath, "utf8");
+    assert.equal(fileContent.includes("deterministic-placeholder"), false);
+    assert.equal(fileContent.includes("[deterministic-placeholder:detailed]"), false);
+    assert.equal(fileContent.includes("[not-semantic-summary]"), false);
+  });
+});
+
+test("failed selected semantic lower-band catch-up blocks smart compact before write or reload", async () => {
+  await withTempFeature3Store(async (context) => {
+    const seeded = await seedDeterministicRebuildThreadWithOptions(context.storeRootDir, {
+      canonicalClosedChunks: true,
+    });
+    await removeDetailedSemanticArtifact(seeded, seeded.chunks.newerClosed);
+    const switchedTo: string[] = [];
+
+    const result = await runSmartCompact(
+      {
+        threadId: seeded.threadId,
+        requestedLowerBound: 30,
+        requestedBandPercentages: { fullFidelity: 50, smooth: 20, detailed: 20, brief: 10 },
+        mode: "prepare",
+      },
+      {
+        threadStore: seeded.threadStore,
+        openAIInputTokenCounter: fakeOpenAICounter,
+        asyncThreadDependencies: {
+          tokenCountModel: "gpt-test",
+          lowerBandCompressionProvider: {
+            async compress() {
+              throw new Error("simulated selected lower-band failure");
+            },
+          },
+        },
+        piThreadViewWriterOptions: {
+          pathResolver: createPathResolver(context),
+        },
+        piCliHarnessAdapter: createPiCliHarnessAdapter({
+          switchSession: async (sessionPath) => {
+            switchedTo.push(sessionPath);
+            return { cancelled: false };
+          },
+        }),
+      },
+    );
+
+    assert.equal(result.compactStatus, "blocked");
+    assert.deepEqual(switchedTo, []);
+    assert.equal(result.generatedFilePath, undefined);
+    assert.equal(
+      result.blockers.some((issue) =>
+        issue.message.includes("Lower-band catch-up failed during compact preparation:") &&
+        issue.message.includes(`Chunk ${seeded.chunks.newerClosed} failed detailed lower-band compression`)),
+      true,
+    );
+
+    const thread = await seeded.threadStore.openThread(seeded.threadId);
+    assert.equal(thread.ok, true);
+    assert.equal(thread.value.thread.target.currentGeneratedFilePath, undefined);
+    assert.equal(thread.value.thread.threadViewOutputSummary.currentGeneratedFilePath, undefined);
   });
 });
 

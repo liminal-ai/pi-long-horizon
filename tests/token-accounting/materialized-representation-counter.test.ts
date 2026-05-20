@@ -12,11 +12,12 @@ import {
   countRawMessageMaterialized,
   countRawTurnMaterialized,
   countSmoothTurnMaterialized,
+  countTurnLowerBandProjectionMaterialized,
   createMaterializedRepresentationHash,
   MATERIALIZED_REPRESENTATION_COUNTER_SOURCE,
   MATERIALIZED_REPRESENTATION_COUNTER_TRUST_CLASS,
 } from "../../src/token-accounting/index.js";
-import { makeChunkState } from "../../src/thread/async-thread/test/fixtures.js";
+import { makeChunkState, makeLegacyPlaceholderChunkState } from "../../src/thread/async-thread/test/fixtures.js";
 import {
   DEFAULT_TEST_TIMESTAMP,
   makeMessageRecord,
@@ -168,6 +169,96 @@ test("smooth turn and chunk materialized counters produce scoped records with so
   assert.equal(Boolean(chunkSmooth.representationHash), true);
   assert.equal(Boolean(detailed.representationHash), true);
   assert.equal(Boolean(brief.representationHash), true);
+});
+
+test("turn lower-band projection materialized counter hashes the conversation-only projection text", () => {
+  const record = countTurnLowerBandProjectionMaterialized({
+    text: "> Prompt text\n\n● Assistant text",
+    sourceRevision: 14,
+    createdAt: CREATED_AT,
+  });
+
+  assert.equal(record.scope, "turn_lower_band_projection_materialized");
+  assert.equal(record.sourceRevision, 14);
+  assert.equal(
+    record.representationHash,
+    createMaterializedRepresentationHash("> Prompt text\n\n● Assistant text"),
+  );
+  assert.match(record.provenance ?? "", /turn-lower-band-projection-content/);
+});
+
+test("semantic lower-band counters prefer persisted semantic artifact text over placeholder text", () => {
+  const chunk = {
+    ...makeChunkState({
+      chunkId: "chunk-semantic-preferred",
+      sourceRevision: 6,
+      lowerBand: {
+        detailed: {
+          band: "detailed",
+          status: "ready",
+          text: "semantic detailed artifact",
+          updatedAt: DEFAULT_TEST_TIMESTAMP,
+        },
+        brief: {
+          band: "brief",
+          status: "ready",
+          text: "semantic brief artifact",
+          updatedAt: DEFAULT_TEST_TIMESTAMP,
+        },
+      },
+    }),
+    placeholders: {
+      chunkId: "chunk-semantic-preferred",
+      threadId: "thread-001",
+      detailed: {
+        kind: "detailed",
+        status: "ready",
+        text: "placeholder detailed artifact",
+        smoothSourceFingerprint: "sha256:placeholder-detailed",
+        smoothSourceRevision: 6,
+        smoothSourceTokenCount: 22,
+        tokenCountMetadata: undefined,
+        strategy: "deterministic_truncate_30",
+        generatedAt: DEFAULT_TEST_TIMESTAMP,
+        generatedFromComponentSmooth: true,
+      },
+      brief: {
+        kind: "brief",
+        status: "ready",
+        text: "placeholder brief artifact",
+        smoothSourceFingerprint: "sha256:placeholder-brief",
+        smoothSourceRevision: 6,
+        smoothSourceTokenCount: 11,
+        tokenCountMetadata: undefined,
+        strategy: "deterministic_truncate_5",
+        generatedAt: DEFAULT_TEST_TIMESTAMP,
+        generatedFromComponentSmooth: true,
+      },
+    },
+  } as Parameters<typeof countDetailedChunkMaterialized>[0];
+
+  const detailed = countDetailedChunkMaterialized(chunk, { createdAt: CREATED_AT });
+  const brief = countBriefChunkMaterialized(chunk, { createdAt: CREATED_AT });
+
+  assert.equal(detailed.representationHash, createMaterializedRepresentationHash("semantic detailed artifact"));
+  assert.equal(brief.representationHash, createMaterializedRepresentationHash("semantic brief artifact"));
+  assert.notEqual(detailed.representationHash, createMaterializedRepresentationHash("placeholder detailed artifact"));
+  assert.notEqual(brief.representationHash, createMaterializedRepresentationHash("placeholder brief artifact"));
+});
+
+test("semantic lower-band counters do not count placeholder-only lower-band state", () => {
+  const chunk = makeLegacyPlaceholderChunkState({
+    chunkId: "chunk-placeholder-only-counter",
+    sourceRevision: 9,
+  });
+
+  const detailed = countDetailedChunkMaterialized(chunk, { createdAt: CREATED_AT });
+  const brief = countBriefChunkMaterialized(chunk, { createdAt: CREATED_AT });
+
+  assert.equal(detailed.representationHash, createMaterializedRepresentationHash(""));
+  assert.equal(brief.representationHash, createMaterializedRepresentationHash(""));
+  assert.notEqual(detailed.representationHash, createMaterializedRepresentationHash("placeholder-only detailed artifact"));
+  assert.notEqual(brief.representationHash, createMaterializedRepresentationHash("placeholder-only brief artifact"));
 });
 
 test("band materialized count hashes the ordered emitted Thread View message array", () => {

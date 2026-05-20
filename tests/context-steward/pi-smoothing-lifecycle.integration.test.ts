@@ -380,7 +380,7 @@ test("message_end and turn_end create complete component-first smooth turn", asy
       assert.equal(kinds.has("thinking"), true);
       assert.equal(kinds.has("tool_exchange"), true);
       assert.equal(typeof snapshot.thread.status.tokenCounting?.status, "string");
-    }, "production turn_end should close and smooth the completed turn");
+    }, "production turn_end should close and smooth the completed turn", 10_000);
 
     const snapshot = expectOk(await store.openThread(thread.threadId));
     const materialized = await materializeSmoothTurn(

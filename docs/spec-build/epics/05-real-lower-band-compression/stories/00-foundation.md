@@ -123,7 +123,7 @@ Risk Reminders:
 | Token-count scope and policy wiring | `src/token-accounting/token-count-metadata.ts`, `src/token-accounting/counter-source-policy.ts` |
 | Verification command truth | `scripts/run-node-tests.mjs`, `package.json` |
 | Fixture builders and lifecycle-valid defaults | `src/thread/async-thread/test/fixtures.ts`, `tests/thread/foundation.test.ts` |
-| Long-thread prep tier cleanup | `tests/thread-view/real-long-thread-fixture-prep.NEEDS-REFACTOR.ts`, `tests/thread-view/real-long-thread-fixture-prep.ts`, `tests/context-steward/long-thread-real-pi-execution.e2e.test.ts` |
+| Long-thread prep tier cleanup | `tests/thread-view/real-long-thread-fixture-prep.test.ts`, `tests/thread-view/real-long-thread-fixture-prep.ts`, `tests/context-steward/long-thread-real-pi-execution.e2e.test.ts` |
 
 #### Design References
 
@@ -155,8 +155,8 @@ Story-local acceptance evidence:
 
 - `tests/thread/foundation.test.ts`: fixture lifecycle validity for default new-schema Turn and Chunk builders
 - command-truth checks around `package.json` and `scripts/run-node-tests.mjs`: no separate integration runner layer is reintroduced
-- long-thread prep decomposition notes and any extracted focused assertions from
-  `real-long-thread-fixture-prep.NEEDS-REFACTOR.ts`
+- long-thread prep decomposition notes and focused service-tier assertions in
+  `real-long-thread-fixture-prep.test.ts`
 
 #### Technical Notes
 

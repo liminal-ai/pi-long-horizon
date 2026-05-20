@@ -4,6 +4,7 @@ import {
   type StewardIssue,
 } from "../../thread/domain/errors.js";
 import type { ThreadStore } from "../../thread/store/thread-store.js";
+import type { ChunkSemanticArtifactRecord } from "../../thread/async-thread/domain/lower-band-artifact-state.js";
 import {
   BAND_ORDER,
   type BandRecord,
@@ -11,7 +12,7 @@ import {
   type BandType,
 } from "../../thread-view/domain/thread-view-records.js";
 import {
-  resolveChunkPlaceholderTokenAccounting,
+  resolveChunkSemanticArtifactAccounting,
   resolveRawTurnTokenAccounting,
   resolveSmoothTurnTokenAccounting,
   type SelectedTokenAccounting,
@@ -58,10 +59,7 @@ export interface LowerBandFreshnessEntry {
   bandType: "detailed" | "brief";
   status: "fresh" | "regenerated_during_prepare" | "blocked_or_stale" | "not_applicable";
   artifactStatus?: string;
-  generatedFromComponentSmooth?: boolean;
-  artifactSmoothSourceRevision?: number;
   currentSmoothSourceRevision?: number;
-  artifactSmoothSourceTokenCount?: number;
   currentSmoothSourceTokenCount?: number;
 }
 
@@ -139,37 +137,27 @@ function throwReportIssue(input: { code: StewardIssue["code"]; message: string; 
 function inspectLowerBandFreshness(input: {
   chunkId: string;
   bandType: "detailed" | "brief";
-  artifact: { status?: string; generatedFromComponentSmooth?: boolean; smoothSourceRevision?: number; smoothSourceTokenCount?: number } | undefined;
+  artifact: ChunkSemanticArtifactRecord | undefined;
   currentSmoothSourceRevision?: number;
   currentSmoothSourceTokenCount?: number;
 }): LowerBandFreshnessEntry {
-  if (!input.artifact) {
+  if (!input.artifact || input.artifact.status !== "ready" || !input.artifact.text) {
     return {
       chunkId: input.chunkId,
       bandType: input.bandType,
       status: "blocked_or_stale",
+      artifactStatus: input.artifact?.status,
       currentSmoothSourceRevision: input.currentSmoothSourceRevision,
       currentSmoothSourceTokenCount: input.currentSmoothSourceTokenCount,
     };
   }
 
-  const fresh =
-    input.artifact.status === "ready" &&
-    input.artifact.generatedFromComponentSmooth === true &&
-    input.currentSmoothSourceRevision !== undefined &&
-    input.artifact.smoothSourceRevision === input.currentSmoothSourceRevision &&
-    (input.currentSmoothSourceTokenCount === undefined ||
-      input.artifact.smoothSourceTokenCount === input.currentSmoothSourceTokenCount);
-
   return {
     chunkId: input.chunkId,
     bandType: input.bandType,
-    status: fresh ? "fresh" : "blocked_or_stale",
+    status: "fresh",
     artifactStatus: input.artifact.status,
-    generatedFromComponentSmooth: input.artifact.generatedFromComponentSmooth,
-    artifactSmoothSourceRevision: input.artifact.smoothSourceRevision,
     currentSmoothSourceRevision: input.currentSmoothSourceRevision,
-    artifactSmoothSourceTokenCount: input.artifact.smoothSourceTokenCount,
     currentSmoothSourceTokenCount: input.currentSmoothSourceTokenCount,
   };
 }
@@ -286,11 +274,11 @@ export async function buildCompactionAuditReport(
             sourceRevision: currentSmoothSource.sourceRevision,
           }).count
         : undefined;
-      const detailedAccounting = resolveChunkPlaceholderTokenAccounting({
+      const detailedAccounting = resolveChunkSemanticArtifactAccounting({
         chunk,
         bandType: "detailed",
       });
-      const briefAccounting = resolveChunkPlaceholderTokenAccounting({
+      const briefAccounting = resolveChunkSemanticArtifactAccounting({
         chunk,
         bandType: "brief",
       });
@@ -301,7 +289,7 @@ export async function buildCompactionAuditReport(
       const freshness = inspectLowerBandFreshness({
         chunkId,
         bandType,
-        artifact: chunk.placeholders?.[bandType],
+        artifact: chunk.lowerBand?.[bandType],
         currentSmoothSourceRevision: currentSmoothSource?.sourceRevision,
         currentSmoothSourceTokenCount: currentSmoothTokenCount,
       });

@@ -11,7 +11,11 @@ import {
   type TokenCountRecord,
   type TokenCountSourceDecision,
 } from "../../token-accounting/index.js";
-import type { ChunkState } from "../../thread/async-thread/domain/chunk-state.js";
+import {
+  getReadyChunkLowerBandArtifact,
+  isLegacyPlaceholderChunkState,
+  type ChunkState,
+} from "../../thread/async-thread/domain/chunk-state.js";
 import { materializeSmoothTurnFromState } from "../../thread/async-thread/services/smooth-turn-service.js";
 import type {
   MessageRecord,
@@ -301,27 +305,25 @@ export function resolveChunkSmoothTokenAccounting(input: {
   });
 }
 
-export function resolveChunkPlaceholderTokenAccounting(input: {
+export function resolveChunkSemanticArtifactAccounting(input: {
   chunk: ChunkState;
   bandType: "detailed" | "brief";
   policyMode?: CounterSourcePolicyMode;
   now?: () => Date;
 }): SelectedTokenAccounting | undefined {
   const policyMode = input.policyMode ?? "prepare";
-  const placeholder = input.bandType === "detailed"
-    ? input.chunk.placeholders?.detailed
-    : input.chunk.placeholders?.brief;
-
-  if (placeholder?.status !== "ready" || !placeholder.text) {
+  const artifact = getReadyChunkLowerBandArtifact(input.chunk, input.bandType);
+  if (!artifact) {
     return undefined;
   }
 
-  const persistedRecord = isFreshTokenCountRecord(placeholder.tokenCountMetadata, input.chunk.sourceRevision)
-    ? placeholder.tokenCountMetadata
+  const scope = input.bandType === "detailed" ? "detailed_chunk_materialized" : "brief_chunk_materialized";
+  const persistedRecord = isFreshTokenCountRecord(artifact.tokenCountMetadata, input.chunk.sourceRevision)
+    ? artifact.tokenCountMetadata
     : undefined;
   const selectedPersisted = selectAccounting({
     records: persistedRecord ? [persistedRecord] : [],
-    requestedScope: input.bandType === "detailed" ? "detailed_chunk_materialized" : "brief_chunk_materialized",
+    requestedScope: scope,
     policyMode,
   });
 
@@ -335,7 +337,7 @@ export function resolveChunkPlaceholderTokenAccounting(input: {
 
   return selectAccounting({
     records: [computedRecord],
-    requestedScope: input.bandType === "detailed" ? "detailed_chunk_materialized" : "brief_chunk_materialized",
+    requestedScope: scope,
     policyMode,
   });
 }
@@ -466,6 +468,18 @@ function buildOrderedChunkCandidates(
       continue;
     }
 
+    if (isLegacyPlaceholderChunkState(chunk)) {
+      blockers.push(
+        createStewardIssue({
+          code: "CHUNK_STATE_INVALID",
+          message: `Chunk ${chunk.chunkId} is legacy placeholder-era lower-band state and cannot be selected for lower-band output.`,
+          threadId: chunk.threadId,
+          cause: "legacy_placeholder_chunk_state",
+        }),
+      );
+      continue;
+    }
+
     candidates.push({
       chunk,
       newestTurnOrder,
@@ -488,8 +502,6 @@ function selectLowerBandChunkIds(
   budget: number,
   bandType: "detailed" | "brief",
   policyMode: CounterSourcePolicyMode,
-  turnsById: ReadonlyMap<string, TurnRecord>,
-  messagesById: ReadonlyMap<string, MessageRecord>,
   now?: () => Date,
 ): LowerBandSelectionResult {
   if (budget <= 0 || candidates.length === 0) {
@@ -509,7 +521,7 @@ function selectLowerBandChunkIds(
   let consumedCandidateCount = 0;
 
   for (const candidate of candidates) {
-    const accounting = resolveChunkPlaceholderTokenAccounting({
+    const accounting = resolveChunkSemanticArtifactAccounting({
       chunk: candidate.chunk,
       bandType,
       policyMode,
@@ -834,18 +846,19 @@ export async function buildThreadViewProjection(
   const lowerBandBoundaryTurnOrder = selectedUpperTurnOrders.length > 0
     ? Math.min(...selectedUpperTurnOrders)
     : Number.MAX_SAFE_INTEGER;
-  const orderedChunkCandidates = buildOrderedChunkCandidates(
-    chunkState,
-    turnsById,
-    lowerBandBoundaryTurnOrder,
-  );
+  const orderedChunkCandidates =
+    budgets.detailed > 0 || budgets.brief > 0
+      ? buildOrderedChunkCandidates(
+        chunkState,
+        turnsById,
+        lowerBandBoundaryTurnOrder,
+      )
+      : { candidates: [] as OrderedChunkCandidate[], blockers: [] as StewardIssue[] };
   const detailedSelection = selectLowerBandChunkIds(
     orderedChunkCandidates.candidates,
     budgets.detailed,
     "detailed",
     accountingPolicyMode,
-    turnsById,
-    messagesById,
     dependencies.now,
   );
   const briefSelection = detailedSelection.blockers.length > 0
@@ -857,14 +870,12 @@ export async function buildThreadViewProjection(
         selectedAccounting: new Map<string, SelectedTokenAccounting>(),
       }
     : selectLowerBandChunkIds(
-        detailedSelection.remainingCandidates,
-        budgets.brief,
-        "brief",
-        accountingPolicyMode,
-        turnsById,
-        messagesById,
-        dependencies.now,
-      );
+      detailedSelection.remainingCandidates,
+      budgets.brief,
+      "brief",
+      accountingPolicyMode,
+      dependencies.now,
+    );
   const selectedDetailedChunkIds = orderSelectedChunks(
     detailedSelection.selectedChunkIds,
     orderedChunkCandidates.candidates,
@@ -1119,18 +1130,19 @@ export async function buildDraftThreadView(
   const lowerBandBoundaryTurnOrder = selectedUpperTurnOrders.length > 0
     ? Math.min(...selectedUpperTurnOrders)
     : Number.MAX_SAFE_INTEGER;
-  const orderedChunkCandidates = buildOrderedChunkCandidates(
-    chunkState,
-    turnsById,
-    lowerBandBoundaryTurnOrder,
-  );
+  const orderedChunkCandidates =
+    budgets.detailed > 0 || budgets.brief > 0
+      ? buildOrderedChunkCandidates(
+        chunkState,
+        turnsById,
+        lowerBandBoundaryTurnOrder,
+      )
+      : { candidates: [] as OrderedChunkCandidate[], blockers: [] as StewardIssue[] };
   const detailedSelection = selectLowerBandChunkIds(
     orderedChunkCandidates.candidates,
     budgets.detailed,
     "detailed",
     accountingPolicyMode,
-    turnsById,
-    messagesById,
     dependencies.now,
   );
   const briefSelection = detailedSelection.blockers.length > 0
@@ -1142,14 +1154,12 @@ export async function buildDraftThreadView(
         selectedAccounting: new Map<string, SelectedTokenAccounting>(),
       }
     : selectLowerBandChunkIds(
-        detailedSelection.remainingCandidates,
-        budgets.brief,
-        "brief",
-        accountingPolicyMode,
-        turnsById,
-        messagesById,
-        dependencies.now,
-      );
+      detailedSelection.remainingCandidates,
+      budgets.brief,
+      "brief",
+      accountingPolicyMode,
+      dependencies.now,
+    );
   const selectedDetailedChunkIds = orderSelectedChunks(
     detailedSelection.selectedChunkIds,
     orderedChunkCandidates.candidates,

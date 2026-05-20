@@ -8,7 +8,11 @@ import type {
   TurnRecord,
 } from "../../thread/domain/records.js";
 import type { ThreadSnapshot, ThreadStore } from "../../thread/store/thread-store.js";
-import type { ChunkState } from "../../thread/async-thread/domain/chunk-state.js";
+import {
+  getReadyChunkLowerBandArtifact,
+  isLegacyPlaceholderChunkState,
+  type ChunkState,
+} from "../../thread/async-thread/domain/chunk-state.js";
 import { prepareAsyncThread } from "../../thread/async-thread/services/async-thread-run-service.js";
 import {
   cloneGeneratedOutputMetadata,
@@ -104,6 +108,51 @@ export interface LowerBandReadinessResult {
   briefBand: LowerBandReadinessEntry[];
 }
 
+export const LOWER_BAND_INSPECTION_STATUSES = [
+  "ready",
+  "pending",
+  "failed",
+  "invalid",
+  "blocked_legacy_placeholder",
+  "not_applicable_open_chunk",
+] as const;
+
+export type LowerBandInspectionStatus = (typeof LOWER_BAND_INSPECTION_STATUSES)[number];
+
+export interface LowerBandInspectionEntry {
+  status: LowerBandInspectionStatus;
+  present: boolean;
+  errorCode?: string;
+  errorMessage?: string;
+}
+
+export interface LowerBandChunkInspection {
+  chunkId: string;
+  lifecycleStatus: ChunkState["lifecycleStatus"];
+  sourceTurnIds: string[];
+  selectedBands: Array<"detailed" | "brief">;
+  legacyPlaceholderBlocked: boolean;
+  transcript: LowerBandInspectionEntry;
+  detailed: LowerBandInspectionEntry;
+  brief: LowerBandInspectionEntry;
+}
+
+export interface LowerBandCompactBlocker {
+  code: string;
+  message: string;
+  chunkId?: string;
+  bandLabel?: string;
+}
+
+export interface InspectLowerBandStatusResult {
+  threadId: string;
+  threadViewId?: string;
+  currentThreadViewId?: string;
+  currentProjectionRevisionId?: string;
+  chunks: LowerBandChunkInspection[];
+  compactBlockers: LowerBandCompactBlocker[];
+}
+
 export interface WorkbenchChunkReader {
   listChunks(threadId: string): Promise<WorkbenchResult<WorkbenchChunkRead[]>>;
 }
@@ -127,14 +176,14 @@ const DEGRADED_BLOCKER_CODES = new Set([
   "PI_RELOAD_FAILED",
 ]);
 
-function summarizeMissingPlaceholderBands(chunk: ChunkState): string[] {
+function summarizeMissingLowerBandArtifacts(chunk: ChunkState): string[] {
   const missingBands: string[] = [];
 
-  if (chunk.placeholders?.detailed?.status !== "ready" || !chunk.placeholders?.detailed?.text) {
+  if (chunk.lowerBand?.detailed?.status !== "ready" || !chunk.lowerBand?.detailed?.text) {
     missingBands.push("detailed");
   }
 
-  if (chunk.placeholders?.brief?.status !== "ready" || !chunk.placeholders?.brief?.text) {
+  if (chunk.lowerBand?.brief?.status !== "ready" || !chunk.lowerBand?.brief?.text) {
     missingBands.push("brief");
   }
 
@@ -178,15 +227,26 @@ function buildChunkIssues(
   }
 
   if (chunk.lifecycleStatus === "closed") {
-    const missingPlaceholderBands = summarizeMissingPlaceholderBands(chunk);
-    if (missingPlaceholderBands.length > 0) {
+    if (isLegacyPlaceholderChunkState(chunk)) {
       issues.push(
         createStewardIssue({
-          code: "CHUNK_PLACEHOLDER_MISSING",
-          message: `Chunk ${chunk.chunkId} is missing deterministic ${missingPlaceholderBands.join("/")} placeholder output required for lower-band inspection.`,
+          code: "CHUNK_STATE_INVALID",
+          message: `Chunk ${chunk.chunkId} is legacy placeholder-era lower-band state and cannot be treated as ready semantic output.`,
           threadId: chunk.threadId,
+          cause: "legacy_placeholder_chunk_state",
         }),
       );
+    } else {
+      const missingLowerBandArtifacts = summarizeMissingLowerBandArtifacts(chunk);
+      if (missingLowerBandArtifacts.length > 0) {
+        issues.push(
+          createStewardIssue({
+            code: "CHUNK_LOWER_BAND_MISSING",
+            message: `Chunk ${chunk.chunkId} is missing ready ${missingLowerBandArtifacts.join("/")} lower-band output required for lower-band inspection.`,
+            threadId: chunk.threadId,
+          }),
+        );
+      }
     }
   }
 
@@ -197,9 +257,8 @@ function toWorkbenchChunkRead(
   chunk: ChunkState,
   knownTurnIds: ReadonlySet<string> | undefined,
 ): WorkbenchChunkRead {
-  const detailed = chunk.placeholders?.detailed;
-  const brief = chunk.placeholders?.brief;
-  const hasReadyPlaceholder = detailed?.status === "ready" || brief?.status === "ready";
+  const detailed = getReadyChunkLowerBandArtifact(chunk, "detailed");
+  const brief = getReadyChunkLowerBandArtifact(chunk, "brief");
 
   return {
     chunkId: chunk.chunkId,
@@ -207,14 +266,8 @@ function toWorkbenchChunkRead(
     sourceTurnIds: [...chunk.sourceTurnIds],
     smoothText: chunk.smoothText,
     smoothTokenCount: chunk.smoothTokenCountMetadata?.count,
-    detailedSummary: detailed?.status === "ready" ? detailed.text : undefined,
-    detailedSummaryTokenCount: detailed?.status === "ready" ? detailed.tokenCountMetadata?.count : undefined,
-    detailedSummaryStrategy: detailed?.status === "ready" ? detailed.strategy : undefined,
-    briefSummary: brief?.status === "ready" ? brief.text : undefined,
-    briefSummaryTokenCount: brief?.status === "ready" ? brief.tokenCountMetadata?.count : undefined,
-    briefSummaryStrategy: brief?.status === "ready" ? brief.strategy : undefined,
-    placeholderExplicit: hasReadyPlaceholder ? true : undefined,
-    summaryQuality: hasReadyPlaceholder ? "deterministic_placeholder_not_semantic" : undefined,
+    detailedSummary: detailed?.text,
+    briefSummary: brief?.text,
     issues: buildChunkIssues(chunk, knownTurnIds),
   };
 }
@@ -462,6 +515,10 @@ function getBand(view: ThreadViewRecord, bandType: BandType) {
 }
 
 function hasSummaryArtifact(chunk: WorkbenchChunkRead, bandType: "detailed" | "brief"): boolean {
+  if (chunk.placeholderExplicit || chunk.summaryQuality === "deterministic_placeholder_not_semantic") {
+    return false;
+  }
+
   const summary = bandType === "detailed" ? chunk.detailedSummary : chunk.briefSummary;
   return typeof summary === "string" && summary.trim().length > 0;
 }
@@ -483,6 +540,105 @@ function buildReadinessEntry(
     chunkId,
     status: hasSummaryArtifact(chunk, bandType) ? "eligible" : "missing_artifacts",
   };
+}
+
+function selectedLowerBandsForChunk(input: {
+  chunkId: string;
+  detailedChunkIds: ReadonlySet<string>;
+  briefChunkIds: ReadonlySet<string>;
+}): Array<"detailed" | "brief"> {
+  const selectedBands: Array<"detailed" | "brief"> = [];
+  if (input.detailedChunkIds.has(input.chunkId)) {
+    selectedBands.push("detailed");
+  }
+  if (input.briefChunkIds.has(input.chunkId)) {
+    selectedBands.push("brief");
+  }
+  return selectedBands;
+}
+
+function buildTranscriptInspection(chunk: ChunkState): LowerBandInspectionEntry {
+  if (chunk.lifecycleStatus === "open") {
+    return {
+      status: "not_applicable_open_chunk",
+      present: false,
+    };
+  }
+
+  if (isLegacyPlaceholderChunkState(chunk)) {
+    return {
+      status: "blocked_legacy_placeholder",
+      present: false,
+    };
+  }
+
+  const transcript = chunk.conversationTranscript;
+  return {
+    status: transcript?.status ?? "pending",
+    present: typeof transcript?.text === "string" && transcript.text.trim().length > 0,
+    errorCode: transcript?.errorCode,
+    errorMessage: transcript?.errorMessage,
+  };
+}
+
+function buildLowerBandArtifactInspection(
+  chunk: ChunkState,
+  bandType: "detailed" | "brief",
+): LowerBandInspectionEntry {
+  if (chunk.lifecycleStatus === "open") {
+    return {
+      status: "not_applicable_open_chunk",
+      present: false,
+    };
+  }
+
+  if (isLegacyPlaceholderChunkState(chunk)) {
+    return {
+      status: "blocked_legacy_placeholder",
+      present: false,
+    };
+  }
+
+  const artifact = chunk.lowerBand?.[bandType];
+  return {
+    status: artifact?.status ?? "pending",
+    present: typeof artifact?.text === "string" && artifact.text.trim().length > 0,
+    errorCode: artifact?.errorCode,
+    errorMessage: artifact?.errorMessage,
+  };
+}
+
+function extractChunkIdFromBlocker(message: string): string | undefined {
+  const match = message.match(/\bChunk (\S+)/i);
+  return match?.[1];
+}
+
+function extractBandLabelFromBlocker(message: string): string | undefined {
+  const parenthesized = message.match(/\((detailed|brief)\)/i);
+  if (parenthesized?.[1]) {
+    return parenthesized[1].toLowerCase();
+  }
+
+  const missing = message.match(/\b(detailed\/brief|detailed|brief) lower-band\b/i);
+  if (missing?.[1]) {
+    return missing[1].toLowerCase();
+  }
+
+  const failed = message.match(/\bfailed (detailed|brief) lower-band\b/i);
+  return failed?.[1]?.toLowerCase();
+}
+
+function formatCompactBlocker(issue: StewardIssue): LowerBandCompactBlocker {
+  return {
+    code: issue.code,
+    message: issue.message,
+    chunkId: extractChunkIdFromBlocker(issue.message),
+    bandLabel: extractBandLabelFromBlocker(issue.message),
+  };
+}
+
+export function formatLowerBandInspectionJson(report: InspectLowerBandStatusResult): string {
+  return JSON.stringify(report, null, 2);
 }
 
 export class WorkbenchQueryService {
@@ -755,6 +911,70 @@ export class WorkbenchQueryService {
         ),
       },
       issues,
+    );
+  }
+
+  async inspectLowerBandStatus(
+    input: InspectLowerBandReadinessInput,
+  ): Promise<WorkbenchResult<InspectLowerBandStatusResult>> {
+    const scope = await this.loadThreadScope(input.threadId);
+    if (!scope.ok) {
+      return failWorkbenchResult(...scope.issues);
+    }
+
+    const chunksResult = await this.threadStore.readChunks(input.threadId);
+    if (!chunksResult.ok) {
+      return failWorkbenchResult(...chunksResult.issues);
+    }
+
+    let detailedChunkIds = new Set<string>();
+    let briefChunkIds = new Set<string>();
+    const issues = mergeWorkbenchIssues(scope.issues, chunksResult.issues);
+
+    if (input.threadViewId) {
+      const openedView = await scopeProjectionForThreadViewId(this.threadStore, input.threadId, input.threadViewId);
+      if (!openedView.ok) {
+        return failWorkbenchResult(...openedView.issues);
+      }
+
+      detailedChunkIds = new Set(getBand(openedView.value.view, "detailed").selectedIds);
+      briefChunkIds = new Set(getBand(openedView.value.view, "brief").selectedIds);
+      issues.push(...mergeWorkbenchIssues(openedView.issues));
+    }
+
+    const blockers = await this.loadAsyncThreadBlockers({
+      threadId: input.threadId,
+      snapshot: scope.value.snapshot,
+    });
+    const closedChunks = chunksResult.value
+      .filter((chunk) => chunk.lifecycleStatus === "closed")
+      .map((chunk) => ({
+        chunkId: chunk.chunkId,
+        lifecycleStatus: chunk.lifecycleStatus,
+        sourceTurnIds: [...chunk.sourceTurnIds],
+        selectedBands: selectedLowerBandsForChunk({
+          chunkId: chunk.chunkId,
+          detailedChunkIds,
+          briefChunkIds,
+        }),
+        legacyPlaceholderBlocked: isLegacyPlaceholderChunkState(chunk),
+        transcript: buildTranscriptInspection(chunk),
+        detailed: buildLowerBandArtifactInspection(chunk, "detailed"),
+        brief: buildLowerBandArtifactInspection(chunk, "brief"),
+      }));
+
+    return okWorkbenchResult(
+      {
+        threadId: input.threadId,
+        threadViewId: input.threadViewId,
+        currentThreadViewId: scope.value.snapshot.thread.threadViewOutputSummary.currentThreadViewId,
+        currentProjectionRevisionId: scope.value.snapshot.thread.threadViewOutputSummary.currentProjectionRevisionId,
+        chunks: closedChunks,
+        compactBlockers: blockers
+          .filter((issue) => issue.code === "CHUNK_STATE_INVALID" || issue.code === "CHUNK_LOWER_BAND_MISSING")
+          .map(formatCompactBlocker),
+      },
+      mergeWorkbenchIssues(issues, blockers),
     );
   }
 }

@@ -10,6 +10,7 @@ export const MATERIALIZED_OR_GENERATED_TOKEN_COUNT_SCOPES = [
   "raw_message_materialized",
   "raw_turn_materialized",
   "smooth_turn_materialized",
+  "turn_lower_band_projection_materialized",
   "chunk_smooth_materialized",
   "detailed_chunk_materialized",
   "brief_chunk_materialized",

@@ -1,5 +1,8 @@
 import type { StewardIssue } from "../../thread/domain/errors.js";
-import type { ChunkState } from "../../thread/async-thread/domain/chunk-state.js";
+import {
+  getReadyChunkLowerBandArtifact,
+  type ChunkState,
+} from "../../thread/async-thread/domain/chunk-state.js";
 import { materializeSmoothTurnFromState } from "../../thread/async-thread/services/smooth-turn-service.js";
 import type { MessageRecord, ThreadRecord, TurnRecord } from "../../thread/domain/records.js";
 import type { ThreadStore } from "../../thread/store/thread-store.js";
@@ -410,13 +413,13 @@ function buildSmoothTurnMessage(
   };
 }
 
-function buildPlaceholderMessage(
+function buildLowerBandMessage(
   threadViewId: string,
   bandType: "detailed" | "brief",
   chunk: ChunkState,
   messageOrder: number,
 ): ThreadViewMessageRecord {
-  const placeholder = bandType === "detailed" ? chunk.placeholders?.detailed : chunk.placeholders?.brief;
+  const artifact = getReadyChunkLowerBandArtifact(chunk, bandType);
 
   return {
     threadViewMessageId: createThreadViewMessageId({
@@ -430,7 +433,7 @@ function buildPlaceholderMessage(
     sourceKind: bandType === "detailed" ? "detailed_chunk_summary" : "brief_chunk_summary",
     sourceReference: chunk.chunkId,
     messageOrder,
-    content: placeholder?.text ?? "",
+    content: artifact?.text ?? "",
   };
 }
 
@@ -483,6 +486,7 @@ function validateLowerBandSelections(
   const chunksById = new Map(orderedChunks.map((chunk) => [chunk.chunkId, chunk]));
   const issues: StewardIssue[] = [];
   const selectedIds = [...new Set([...band.selectedIds, ...(band.exclusions ?? [])])];
+  const lowerBandType = band.bandType as "detailed" | "brief";
 
   for (const chunkId of selectedIds) {
     const chunk = chunksById.get(chunkId);
@@ -508,15 +512,12 @@ function validateLowerBandSelections(
       continue;
     }
 
-    const placeholder = band.bandType === "detailed" ? chunk.placeholders?.detailed : chunk.placeholders?.brief;
-    if (
-      placeholder?.status !== "ready" ||
-      !placeholder.text
-    ) {
+    const artifact = getReadyChunkLowerBandArtifact(chunk, lowerBandType);
+    if (!artifact) {
       issues.push(
         createWorkbenchIssue({
           code: "WORKBENCH_ARTIFACT_MISSING",
-          message: `Chunk ${chunkId} is missing a ready ${band.bandType} placeholder artifact required for materialization.`,
+          message: `Chunk ${chunkId} is missing a ready ${lowerBandType} lower-band artifact required for materialization.`,
           threadId,
         }),
       );
@@ -656,7 +657,7 @@ function buildLowerBandMessages(input: {
 } {
   const chunksById = new Map(input.chunks.map((chunk) => [chunk.chunkId, chunk]));
   const detailedMessages = input.detailedBand.selectedIds.map((chunkId, index) =>
-    buildPlaceholderMessage(
+    buildLowerBandMessage(
       input.view.threadViewId,
       "detailed",
       chunksById.get(chunkId) as ChunkState,
@@ -664,7 +665,7 @@ function buildLowerBandMessages(input: {
     ),
   );
   const briefMessages = input.briefBand.selectedIds.map((chunkId, index) =>
-    buildPlaceholderMessage(
+    buildLowerBandMessage(
       input.view.threadViewId,
       "brief",
       chunksById.get(chunkId) as ChunkState,

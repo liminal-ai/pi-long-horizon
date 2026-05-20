@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
 
-import type { TurnSmoothComponentRecord, TurnSmoothRecord } from "../../domain/records.js";
+import type {
+  TurnLowerBandProjectionRecord,
+  TurnSmoothComponentRecord,
+  TurnSmoothRecord,
+} from "../../domain/records.js";
 import type { TokenCountRecord } from "../../../token-accounting/token-count-metadata.js";
 
 export const SMOOTH_TURN_SCHEMA_VERSION = "component_smooth_turn_v1" as const;
@@ -24,6 +28,7 @@ export interface SmoothTurnState {
   sourceRevision?: number;
   components?: SmoothTurnComponentState[];
   materialized?: SmoothTurnMaterializedState;
+  lowerBandProjection?: TurnLowerBandProjectionState;
 }
 
 export type SmoothTurnComponentState = TurnSmoothComponentRecord;
@@ -32,6 +37,8 @@ export interface SmoothTurnMaterializedState {
   sourceFingerprint?: string;
   tokenCountMetadata?: TokenCountRecord;
 }
+
+export type TurnLowerBandProjectionState = TurnLowerBandProjectionRecord;
 
 export interface MaterializeSmoothTurnResult {
   turnId: string;
@@ -101,6 +108,14 @@ export function cloneSmoothTurnState(record: SmoothTurnState): SmoothTurnState {
             : undefined,
         }
       : undefined,
+    lowerBandProjection: record.lowerBandProjection
+      ? {
+          ...record.lowerBandProjection,
+          tokenCountMetadata: record.lowerBandProjection.tokenCountMetadata
+            ? { ...record.lowerBandProjection.tokenCountMetadata }
+            : undefined,
+        }
+      : undefined,
   };
 }
 
@@ -129,6 +144,14 @@ export function toTurnSmoothRecord(record: SmoothTurnState): TurnSmoothRecord {
           sourceFingerprint: record.materialized.sourceFingerprint,
           tokenCountMetadata: record.materialized.tokenCountMetadata
             ? { ...record.materialized.tokenCountMetadata }
+            : undefined,
+        }
+      : undefined,
+    lowerBandProjection: record.lowerBandProjection
+      ? {
+          ...record.lowerBandProjection,
+          tokenCountMetadata: record.lowerBandProjection.tokenCountMetadata
+            ? { ...record.lowerBandProjection.tokenCountMetadata }
             : undefined,
         }
       : undefined,

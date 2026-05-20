@@ -4,7 +4,7 @@ import test from "node:test";
 import { WorkbenchQueryService } from "../../src/workbench/services/workbench-query-service.js";
 import { withTempFeature3Store } from "../../src/thread-view/test/fixtures.js";
 import { buildThreadViewProjection } from "../../src/thread-view/services/thread-view-builder.js";
-import { seedDeterministicRebuildThread } from "../thread-view/helpers.js";
+import { seedDeterministicRebuildThreadWithOptions } from "../thread-view/helpers.js";
 
 const STAGE7_READY_LOWER_BOUND = 180;
 const STAGE7_READY_BAND_PERCENTAGES = { fullFidelity: 50, smooth: 4, detailed: 13, brief: 33 } as const;
@@ -14,22 +14,22 @@ function expectOk<T>(result: { ok: true; value: T } | { ok: false; issues: unkno
   return result.value;
 }
 
-test("workbench lower-band inspection reads real persisted chunk-backed readiness", async () => {
+test("workbench lower-band inspection reads canonical chunk readiness without inventing legacy eligibility", async () => {
   await withTempFeature3Store(async ({ storeRootDir }) => {
-    const context = await seedDeterministicRebuildThread(storeRootDir);
+    const context = await seedDeterministicRebuildThreadWithOptions(storeRootDir, { canonicalClosedChunks: true });
 
     const buildResult = await buildThreadViewProjection(
       {
         threadId: context.threadId,
         requestedLowerBound: STAGE7_READY_LOWER_BOUND,
         requestedBandPercentages: STAGE7_READY_BAND_PERCENTAGES,
-        mode: "strict",
+        mode: "prepare",
       },
       {
         threadStore: context.threadStore,
       },
     );
-    assert.equal(buildResult.status, "ready");
+    assert.equal(buildResult.status, "degraded");
     const projectionRevisionId = `projection_${buildResult.threadViewId}`;
     expectOk(
       await context.threadStore.writeProjectionRevision({
@@ -61,20 +61,16 @@ test("workbench lower-band inspection reads real persisted chunk-backed readines
 
     assert.deepEqual(
       readiness.detailedBand.map((entry) => [entry.chunkId, entry.status]),
-      [[context.chunks.newerClosed, "eligible"]],
+      [
+        [context.chunks.oldestClosed, "eligible"],
+        [context.chunks.newerClosed, "eligible"],
+      ],
     );
-    assert.deepEqual(
-      readiness.briefBand.map((entry) => [entry.chunkId, entry.status]),
-      [[context.chunks.oldestClosed, "eligible"]],
-    );
+    assert.deepEqual(readiness.briefBand, []);
     assert.equal(openChunk.chunk.lifecycleStatus, "open");
     assert.equal(openChunk.chunk.placeholderExplicit, undefined);
     assert.equal(
       readiness.detailedBand.some((entry) => entry.chunkId === context.chunks.openRecent),
-      false,
-    );
-    assert.equal(
-      readiness.briefBand.some((entry) => entry.chunkId === context.chunks.openRecent),
       false,
     );
   });

@@ -72,7 +72,7 @@ export function formatCompactionAuditReport(report: CompactionAuditReport): stri
     lines.push(
       ...report.smoothingQuality.lowerBandFreshness.map(
         (entry) =>
-          `- ${entry.chunkId} [${entry.bandType}]: ${entry.status} (artifact=${entry.artifactSmoothSourceRevision ?? "n/a"}, current=${entry.currentSmoothSourceRevision ?? "n/a"})`,
+          `- ${entry.chunkId} [${entry.bandType}]: ${entry.status} (artifact=${entry.artifactStatus ?? "n/a"}, current=${entry.currentSmoothSourceRevision ?? "n/a"})`,
       ),
     );
   }

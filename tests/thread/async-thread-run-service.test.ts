@@ -1,14 +1,27 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { setTimeout as sleep } from "node:timers/promises";
 
 import {
   maintainAsyncThread,
   prepareAsyncThread,
 } from "../../src/thread/async-thread/services/async-thread-run-service.js";
-import { makeChunkState, withTempFeature3Store } from "../../src/thread-view/test/fixtures.js";
+import {
+  LOWER_BAND_BRIEF_PROMPT_VERSION,
+  LOWER_BAND_DETAIL_PROMPT_VERSION,
+  type LowerBandCompressionProvider,
+  type LowerBandCompressionProviderInput,
+} from "../../src/thread/async-thread/services/lower-band-compression-service.js";
+import {
+  DEFAULT_TEST_TIMESTAMP,
+  makeChunkLowerBandArtifacts,
+  makeChunkState,
+  withTempFeature3Store,
+} from "../../src/thread-view/test/fixtures.js";
 import {
   seedDeterministicRebuildThread,
-  seedMissingDetailedPlaceholderThread,
+  seedDeterministicRebuildThreadWithOptions,
+  seedMissingDetailedLowerBandArtifactThread,
 } from "../thread-view/helpers.js";
 import {
   assertTokenCountRecord,
@@ -17,15 +30,43 @@ import {
   countDetailedChunkMaterialized,
   countRawTurnMaterialized,
   countSmoothTurnMaterialized,
+  countTurnLowerBandProjectionMaterialized,
   type BriefChunkMaterializedTokenCountRecord,
   type ChunkSmoothMaterializedTokenCountRecord,
   type DetailedChunkMaterializedTokenCountRecord,
   type RawTurnMaterializedTokenCountRecord,
   type SmoothTurnMaterializedTokenCountRecord,
   type TokenCountRecord,
+  type TurnLowerBandProjectionMaterializedTokenCountRecord,
 } from "../../src/token-accounting/index.js";
 import type { MessageRecord, TurnRecord } from "../../src/thread/domain/records.js";
 import type { ChunkState } from "../../src/thread/async-thread/domain/chunk-state.js";
+
+async function waitForAssertion(
+  assertion: () => Promise<void> | void,
+  description: string,
+  timeoutMs = 5_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  let lastError: unknown;
+
+  while (Date.now() < deadline) {
+    try {
+      await assertion();
+      return;
+    } catch (error) {
+      lastError = error;
+      await sleep(10);
+    }
+  }
+
+  if (lastError instanceof Error) {
+    lastError.message = `${description}: ${lastError.message}`;
+    throw lastError;
+  }
+
+  throw new Error(description);
+}
 
 function exactFromExpected<TRecord extends TokenCountRecord>(
   expected: TRecord,
@@ -48,6 +89,7 @@ function exactFromExpected<TRecord extends TokenCountRecord>(
 
 class FakeOpenAIInputTokenCounter {
   readonly calls: string[] = [];
+  failProjectionCount = false;
 
   async countRawTurnMaterialized(input: { turn: TurnRecord; messages: readonly MessageRecord[]; model?: string }) {
     this.calls.push(`raw:${input.turn.turnId}`);
@@ -93,6 +135,62 @@ class FakeOpenAIInputTokenCounter {
       options.model,
     ) as BriefChunkMaterializedTokenCountRecord;
   }
+
+  async countTurnLowerBandProjectionMaterialized(input: {
+    text: string;
+    sourceRevision?: number;
+    model?: string;
+  }) {
+    this.calls.push(`projection:${input.sourceRevision ?? "unknown"}`);
+    if (this.failProjectionCount) {
+      throw new Error("simulated projection count outage");
+    }
+
+    return exactFromExpected(
+      countTurnLowerBandProjectionMaterialized({
+        text: input.text,
+        sourceRevision: input.sourceRevision,
+      }),
+      6_000 + this.calls.length,
+      input.model,
+    ) as TurnLowerBandProjectionMaterializedTokenCountRecord;
+  }
+}
+
+function toCanonicalSemanticChunk(chunk: ChunkState): ChunkState {
+  return makeChunkState({
+    chunkId: chunk.chunkId,
+    threadId: chunk.threadId,
+    lifecycleStatus: chunk.lifecycleStatus,
+    sourceTurnIds: [...chunk.sourceTurnIds],
+    smoothText: chunk.smoothText,
+    smoothTokenCountMetadata: chunk.smoothTokenCountMetadata,
+    openedAt: chunk.openedAt,
+    closedAt: chunk.closedAt,
+    closeReason: chunk.closeReason,
+    sourceRevision: chunk.sourceRevision,
+    conversationTranscript: {
+      status: "ready",
+      text: `> transcript ${chunk.chunkId}`,
+      sourceFingerprint: `sha256:${chunk.chunkId}:conversation`,
+      sourceRevision: chunk.sourceRevision ?? 1,
+      updatedAt: DEFAULT_TEST_TIMESTAMP,
+    },
+    lowerBand: makeChunkLowerBandArtifacts({
+      detailed: {
+        band: "detailed",
+        status: "ready",
+        text: `semantic detailed ${chunk.chunkId}`,
+        updatedAt: DEFAULT_TEST_TIMESTAMP,
+      },
+      brief: {
+        band: "brief",
+        status: "ready",
+        text: `semantic brief ${chunk.chunkId}`,
+        updatedAt: DEFAULT_TEST_TIMESTAMP,
+      },
+    }),
+  });
 }
 
 test("missing smooth output blocks dependent work explicitly", async () => {
@@ -179,9 +277,9 @@ test("incomplete component smooth state blocks dependent async work", async () =
   });
 });
 
-test("missing placeholder output blocks lower-band use explicitly", async () => {
+test("missing lower-band output blocks lower-band use explicitly", async () => {
   await withTempFeature3Store(async ({ storeRootDir }) => {
-    const context = await seedMissingDetailedPlaceholderThread(storeRootDir);
+    const context = await seedMissingDetailedLowerBandArtifactThread(storeRootDir);
 
     const result = await prepareAsyncThread(
       {
@@ -195,8 +293,8 @@ test("missing placeholder output blocks lower-band use explicitly", async () => 
       },
     );
 
-    assert.equal(result.placeholdersReady, true);
-    assert.equal(result.blockers.some((issue) => issue.code === "CHUNK_PLACEHOLDER_MISSING"), false);
+    assert.equal(result.lowerBandReady, true);
+    assert.equal(result.blockers.some((issue) => issue.code === "CHUNK_LOWER_BAND_MISSING"), false);
   });
 });
 
@@ -425,10 +523,6 @@ test("normal async maintenance writes exact counts for new deterministic artifac
     assert.equal(maintainedChunks.ok, true);
     const maintainedChunk = maintainedChunks.value.find((chunk) => chunk.chunkId === context.chunks.newerClosed);
     assert.equal(maintainedChunk?.smoothTokenCountMetadata?.source, "provider_input_count");
-    assert.equal(maintainedChunk?.placeholders?.detailed?.tokenCountMetadata?.source, "provider_input_count");
-    assert.equal(maintainedChunk?.placeholders?.brief?.tokenCountMetadata?.source, "provider_input_count");
-    assert.equal(typeof maintainedChunk?.placeholders?.detailed?.text, "string");
-    assert.equal(typeof maintainedChunk?.placeholders?.brief?.text, "string");
 
     const callCountAfterFirstRun = counter.calls.length;
     const secondResult = await maintainAsyncThread(
@@ -441,7 +535,313 @@ test("normal async maintenance writes exact counts for new deterministic artifac
     );
 
     assert.equal(secondResult.tokenCountsReady, true);
-    assert.equal(counter.calls.length, callCountAfterFirstRun);
+    const secondRunCalls = counter.calls.slice(callCountAfterFirstRun);
+    assert.equal(
+      secondRunCalls.length === 0 ||
+        JSON.stringify(secondRunCalls) ===
+          JSON.stringify([`chunk:${context.chunks.openRecent}`]),
+      true,
+    );
+  });
+});
+
+test("normal async maintenance schedules semantic lower-band compression on chunk close without waiting on model latency", async () => {
+  await withTempFeature3Store(async ({ storeRootDir }) => {
+    const context = await seedDeterministicRebuildThreadWithOptions(storeRootDir, {
+      canonicalClosedChunks: true,
+    });
+    const counter = new FakeOpenAIInputTokenCounter();
+    const providerCalls: LowerBandCompressionProviderInput[] = [];
+    let providerReleased = false;
+    let compressedChunkId: string | undefined;
+    let releaseProvider!: () => void;
+    const providerRelease = new Promise<void>((resolve) => {
+      releaseProvider = () => {
+        providerReleased = true;
+        resolve();
+      };
+    });
+    const provider: LowerBandCompressionProvider = {
+      async compress(input) {
+        providerCalls.push(input);
+        await providerRelease;
+        const outputText = input.band === "detailed"
+          ? "D".repeat(Math.max(1, Math.ceil(input.transcriptText.length * 0.2)))
+          : "B".repeat(Math.max(1, Math.ceil(input.transcriptText.length * 0.05)));
+        return {
+          text: outputText,
+          providerId: "openai-codex",
+          modelId: input.modelId,
+          reasoningEffort: input.reasoningEffort,
+          promptVersion: input.promptVersion,
+          elapsedMs: 75,
+          generatedAt: DEFAULT_TEST_TIMESTAMP,
+        };
+      },
+    };
+
+    const maintenance = maintainAsyncThread(
+      { threadId: context.threadId },
+      {
+        store: context.threadStore,
+        openAIInputTokenCounter: counter,
+        tokenCountModel: "gpt-test-maintenance",
+        lowerBandCompressionProvider: provider,
+      },
+    );
+
+    await waitForAssertion(() => {
+      assert.equal(providerCalls.length, 1);
+      assert.equal(providerCalls[0]?.band, "detailed");
+      assert.equal(providerCalls[0]?.promptVersion, LOWER_BAND_DETAIL_PROMPT_VERSION);
+    }, "async maintenance should schedule detailed lower-band generation");
+
+    const race = await Promise.race([
+      maintenance.then((result) => ({ completed: true as const, result })),
+      sleep(2_000).then(() => ({ completed: false as const })),
+    ]);
+    assert.equal(race.completed, true);
+    assert.equal(providerReleased, false);
+    if (race.completed) {
+      assert.equal(race.result.artifactsReady, true);
+    }
+
+    releaseProvider();
+
+    await waitForAssertion(() => {
+      assert.equal(providerCalls.length, 2);
+    }, "async maintenance should call detailed and brief lower-band providers");
+
+    await waitForAssertion(async () => {
+      const chunks = await context.threadStore.readChunks(context.threadId);
+      assert.equal(chunks.ok, true);
+      const targetChunkId = providerCalls[0]?.chunkId;
+      const compressedChunk = chunks.value.find((chunk) => chunk.chunkId === targetChunkId);
+      compressedChunkId = compressedChunk?.chunkId;
+      assert.equal(compressedChunk?.lowerBand?.detailed?.status, "ready");
+      assert.equal(compressedChunk?.lowerBand?.brief?.status, "ready");
+      assert.ok((compressedChunk?.lowerBand?.detailed?.text ?? "").length > 0);
+      assert.ok((compressedChunk?.lowerBand?.brief?.text ?? "").length > 0);
+      assert.equal(compressedChunk?.lowerBand?.detailed?.tokenCountMetadata?.source, "provider_input_count");
+      assert.equal(compressedChunk?.lowerBand?.detailed?.tokenCountMetadata?.trustClass, "exact");
+      assert.equal(compressedChunk?.lowerBand?.brief?.tokenCountMetadata?.source, "provider_input_count");
+      assert.equal(compressedChunk?.lowerBand?.brief?.tokenCountMetadata?.trustClass, "exact");
+    }, "async maintenance should persist detailed and brief lower-band artifacts");
+
+    assert.deepEqual(
+      providerCalls.map((call) => [call.band, call.promptVersion]),
+      [
+        ["detailed", LOWER_BAND_DETAIL_PROMPT_VERSION],
+        ["brief", LOWER_BAND_BRIEF_PROMPT_VERSION],
+      ],
+    );
+    assert.equal(providerCalls[0]?.transcriptText, providerCalls[1]?.transcriptText);
+    assert.equal(typeof compressedChunkId, "string");
+    assert.equal(counter.calls.some((call) => call === `detailed:${compressedChunkId}`), true);
+    assert.equal(counter.calls.some((call) => call === `brief:${compressedChunkId}`), true);
+  });
+});
+
+test("prepare mode materializes conversation-only turn projections through production readiness", async () => {
+  await withTempFeature3Store(async ({ storeRootDir }) => {
+    const context = await seedDeterministicRebuildThread(storeRootDir);
+    const initialSnapshot = await context.threadStore.openThread(context.threadId);
+    assert.equal(initialSnapshot.ok, true);
+    assert.equal(
+      initialSnapshot.value.turns.some((turn) => turn.smooth?.lowerBandProjection),
+      false,
+    );
+
+    const counter = new FakeOpenAIInputTokenCounter();
+    const result = await prepareAsyncThread(
+      {
+        threadId: context.threadId,
+        mode: "prepare",
+        requestedLowerBound: 30,
+        requestedBandPercentages: { fullFidelity: 50, smooth: 20, detailed: 20, brief: 10 },
+      },
+      {
+        store: context.threadStore,
+        openAIInputTokenCounter: counter,
+        tokenCountModel: "gpt-test-maintenance",
+      },
+    );
+
+    assert.equal(result.blockers.some((issue) => issue.message.includes("lower-band projection")), false);
+    assert.equal(counter.calls.some((call) => call.startsWith("projection:")), true);
+
+    const preparedSnapshot = await context.threadStore.openThread(context.threadId);
+    assert.equal(preparedSnapshot.ok, true);
+    const projectedTurns = preparedSnapshot.value.turns.filter((turn) => turn.lifecycleStatus === "closed");
+    assert.equal(projectedTurns.length > 0, true);
+    assert.equal(
+      projectedTurns.every(
+        (turn) =>
+          turn.smooth?.lowerBandProjection?.status === "ready" &&
+          turn.smooth.lowerBandProjection.tokenCountMetadata?.scope === "turn_lower_band_projection_materialized" &&
+          turn.smooth.lowerBandProjection.tokenCountMetadata.source === "provider_input_count",
+      ),
+      true,
+    );
+  });
+});
+
+test("prepare readiness blocks lower-band eligibility when projection exact token count fails", async () => {
+  await withTempFeature3Store(async ({ storeRootDir }) => {
+    const context = await seedDeterministicRebuildThread(storeRootDir);
+    const counter = new FakeOpenAIInputTokenCounter();
+    counter.failProjectionCount = true;
+
+    const result = await prepareAsyncThread(
+      {
+        threadId: context.threadId,
+        mode: "prepare",
+        requestedLowerBound: 30,
+        requestedBandPercentages: { fullFidelity: 50, smooth: 20, detailed: 20, brief: 10 },
+      },
+      {
+        store: context.threadStore,
+        openAIInputTokenCounter: counter,
+        tokenCountModel: "gpt-test-maintenance",
+      },
+    );
+
+    assert.equal(counter.calls.some((call) => call.startsWith("projection:")), true);
+    assert.equal(
+      result.blockers.some(
+        (issue) =>
+          issue.code === "TOKEN_COUNT_BLOCKED" &&
+          issue.message.includes("conversation-only lower-band projection token count"),
+      ),
+      true,
+    );
+
+    const preparedSnapshot = await context.threadStore.openThread(context.threadId);
+    assert.equal(preparedSnapshot.ok, true);
+    assert.equal(
+      preparedSnapshot.value.turns.some(
+        (turn) =>
+          turn.smooth?.lowerBandProjection?.status === "failed" &&
+          turn.smooth.lowerBandProjection.errorCode === "LOWER_BAND_PROJECTION_TOKEN_COUNT_FAILED",
+      ),
+      true,
+    );
+  });
+});
+
+test("prepare readiness blocks legacy placeholder chunks unconditionally", async () => {
+  await withTempFeature3Store(async ({ storeRootDir }) => {
+    const context = await seedDeterministicRebuildThread(storeRootDir);
+
+    const result = await prepareAsyncThread(
+      {
+        threadId: context.threadId,
+        mode: "prepare",
+        requestedLowerBound: 30,
+        requestedBandPercentages: { fullFidelity: 50, smooth: 20, detailed: 20, brief: 10 },
+      },
+      {
+        store: context.threadStore,
+        openAIInputTokenCounter: new FakeOpenAIInputTokenCounter(),
+        tokenCountModel: "gpt-test-maintenance",
+      },
+    );
+
+    assert.equal(
+      result.blockers.some(
+        (issue) =>
+          issue.code === "CHUNK_STATE_INVALID" &&
+          issue.cause === "legacy_placeholder_chunk_state" &&
+          issue.message.includes("legacy placeholder-era"),
+      ),
+      true,
+    );
+  });
+});
+
+test("prepare-mode readiness accepts canonical semantic chunk artifacts without placeholder token metadata", async () => {
+  await withTempFeature3Store(async ({ storeRootDir }) => {
+    const context = await seedDeterministicRebuildThread(storeRootDir);
+    const snapshot = await context.threadStore.openThread(context.threadId);
+    assert.equal(snapshot.ok, true);
+    const chunks = await context.threadStore.readChunks(context.threadId);
+    assert.equal(chunks.ok, true);
+
+    const writeResult = await context.threadStore.writeChunks({
+      threadId: context.threadId,
+      expectedSourceRevision: snapshot.value.thread.sourceRevision,
+      expectedMessageHighWatermark: snapshot.value.thread.messageHighWatermark,
+      expectedTurnsRevision: snapshot.value.thread.turnsRevision,
+      chunks: chunks.value.map((chunk) =>
+        chunk.lifecycleStatus === "closed" ? toCanonicalSemanticChunk(chunk) : chunk,
+      ),
+    });
+    assert.equal(writeResult.ok, true);
+
+    const result = await prepareAsyncThread(
+      {
+        threadId: context.threadId,
+        mode: "prepare",
+        requestedLowerBound: 30,
+        requestedBandPercentages: { fullFidelity: 50, smooth: 20, detailed: 20, brief: 10 },
+      },
+      {
+        store: context.threadStore,
+        openAIInputTokenCounter: new FakeOpenAIInputTokenCounter(),
+        tokenCountModel: "gpt-test-maintenance",
+      },
+    );
+
+    assert.equal(result.lowerBandReady, true);
+    assert.equal(result.blockers.some((issue) => issue.code === "CHUNK_LOWER_BAND_MISSING"), false);
+    assert.equal(result.blockers.some((issue) => issue.code === "TOKEN_COUNT_BLOCKED"), false);
+  });
+});
+
+test("strict readiness blocks canonical semantic chunks whose ready text lacks usable strict lower-band accounting", async () => {
+  await withTempFeature3Store(async ({ storeRootDir }) => {
+    const context = await seedDeterministicRebuildThreadWithOptions(storeRootDir, {
+      canonicalClosedChunks: true,
+    });
+    const snapshot = await context.threadStore.openThread(context.threadId);
+    assert.equal(snapshot.ok, true);
+    const chunks = await context.threadStore.readChunks(context.threadId);
+    assert.equal(chunks.ok, true);
+
+    const writeResult = await context.threadStore.writeChunks({
+      threadId: context.threadId,
+      expectedSourceRevision: snapshot.value.thread.sourceRevision,
+      expectedMessageHighWatermark: snapshot.value.thread.messageHighWatermark,
+      expectedTurnsRevision: snapshot.value.thread.turnsRevision,
+      chunks: chunks.value.map((chunk) =>
+        chunk.lifecycleStatus === "closed" ? toCanonicalSemanticChunk(chunk) : chunk,
+      ),
+    });
+    assert.equal(writeResult.ok, true);
+
+    const result = await prepareAsyncThread(
+      {
+        threadId: context.threadId,
+        mode: "strict",
+        requestedLowerBound: 1,
+        requestedBandPercentages: { fullFidelity: 0, smooth: 0, detailed: 100, brief: 0 },
+      },
+      {
+        store: context.threadStore,
+        openAIInputTokenCounter: new FakeOpenAIInputTokenCounter(),
+        tokenCountModel: "gpt-test-maintenance",
+      },
+    );
+
+    assert.equal(result.lowerBandReady, false);
+    assert.equal(
+      result.blockers.some((issue) =>
+        issue.code === "TOKEN_COUNT_BLOCKED" &&
+        issue.message.includes(`Chunk ${context.chunks.newerClosed} has ready detailed lower-band output`) &&
+        issue.message.includes("strict smart compact cannot derive usable token accounting"),
+      ),
+      true,
+    );
   });
 });
 
@@ -488,6 +888,9 @@ test("normal async maintenance leaves repair-needed token metadata when exact co
           async countBriefChunkMaterialized() {
             throw new Error("simulated count outage");
           },
+          async countTurnLowerBandProjectionMaterialized() {
+            throw new Error("simulated count outage");
+          },
         },
         tokenCountModel: "gpt-test-maintenance",
       },
@@ -510,5 +913,405 @@ test("normal async maintenance leaves repair-needed token metadata when exact co
     assert.notEqual(maintainedTurn?.rawTokenCountMetadata?.trustClass, "exact");
     assert.equal(maintainedTurn?.smooth?.tokenCountMetadata?.source, "pi_heuristic");
     assert.notEqual(maintainedTurn?.smooth?.tokenCountMetadata?.trustClass, "exact");
+  });
+});
+
+test("prepare-mode smooth catch-up writes visible stderr warnings", async () => {
+  await withTempFeature3Store(async ({ storeRootDir }) => {
+    const context = await seedDeterministicRebuildThread(storeRootDir);
+    const snapshot = await context.threadStore.openThread(context.threadId);
+    assert.equal(snapshot.ok, true);
+
+    await context.threadStore.writeTurns({
+      threadId: context.threadId,
+      expectedSourceRevision: snapshot.value.thread.sourceRevision,
+      expectedMessageHighWatermark: snapshot.value.thread.messageHighWatermark,
+      expectedTurnsRevision: snapshot.value.thread.turnsRevision,
+      turns: snapshot.value.turns.map((turn) =>
+        turn.turnId === context.turns.middleNewer.turnId
+          ? {
+              ...turn,
+              smooth: undefined,
+            }
+          : turn),
+      turnState: snapshot.value.thread.status.turnState,
+    });
+
+    const counter = new FakeOpenAIInputTokenCounter();
+    const warnings: string[] = [];
+    const originalWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      warnings.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write;
+
+    try {
+      await prepareAsyncThread(
+        {
+          threadId: context.threadId,
+          mode: "prepare",
+          requestedLowerBound: 30,
+          requestedBandPercentages: { fullFidelity: 50, smooth: 20, detailed: 20, brief: 10 },
+        },
+        {
+          store: context.threadStore,
+          openAIInputTokenCounter: counter,
+          tokenCountModel: "gpt-test-maintenance",
+        },
+      );
+    } finally {
+      process.stderr.write = originalWrite;
+    }
+
+    assert.equal(
+      warnings.some((warning) =>
+        warning.includes(`Smooth catch-up required for turn ${context.turns.middleNewer.turnId}`)),
+      true,
+    );
+  });
+});
+
+test("prepare-mode lower-band catch-up regenerates selected semantic output with a visible chunk-and-band warning", async () => {
+  await withTempFeature3Store(async ({ storeRootDir }) => {
+    const context = await seedDeterministicRebuildThreadWithOptions(storeRootDir, {
+      canonicalClosedChunks: true,
+    });
+    const snapshot = await context.threadStore.openThread(context.threadId);
+    assert.equal(snapshot.ok, true);
+    const chunks = await context.threadStore.readChunks(context.threadId);
+    assert.equal(chunks.ok, true);
+
+    await context.threadStore.writeChunks({
+      threadId: context.threadId,
+      expectedSourceRevision: snapshot.value.thread.sourceRevision,
+      expectedMessageHighWatermark: snapshot.value.thread.messageHighWatermark,
+      expectedTurnsRevision: snapshot.value.thread.turnsRevision,
+      chunks: chunks.value.map((chunk): typeof chunk =>
+        chunk.chunkId === context.chunks.newerClosed
+          ? {
+              ...chunk,
+              lowerBand: {
+                ...chunk.lowerBand,
+                detailed: undefined,
+              },
+            } as typeof chunk
+          : chunk),
+    });
+
+    const providerCalls: LowerBandCompressionProviderInput[] = [];
+    const provider: LowerBandCompressionProvider = {
+      async compress(input) {
+        providerCalls.push(input);
+        return {
+          text: "D".repeat(Math.max(1, Math.ceil(input.transcriptText.length * 0.2))),
+          providerId: "openai-codex",
+          modelId: input.modelId,
+          reasoningEffort: input.reasoningEffort,
+          promptVersion: input.promptVersion,
+          elapsedMs: 25,
+          generatedAt: DEFAULT_TEST_TIMESTAMP,
+        };
+      },
+    };
+    const warnings: string[] = [];
+    const originalWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      warnings.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write;
+
+    try {
+      const result = await prepareAsyncThread(
+        {
+          threadId: context.threadId,
+          mode: "prepare",
+          requestedLowerBound: 30,
+          requestedBandPercentages: { fullFidelity: 50, smooth: 20, detailed: 20, brief: 10 },
+        },
+        {
+          store: context.threadStore,
+          openAIInputTokenCounter: new FakeOpenAIInputTokenCounter(),
+          tokenCountModel: "gpt-test-maintenance",
+          lowerBandCompressionProvider: provider,
+        },
+      );
+
+      assert.equal(result.blockers.some((issue) => issue.code === "CHUNK_LOWER_BAND_MISSING"), false);
+    } finally {
+      process.stderr.write = originalWrite;
+    }
+
+    assert.equal(
+      providerCalls.some(
+        (call) => call.chunkId === context.chunks.newerClosed && call.band === "detailed",
+      ),
+      true,
+    );
+    assert.equal(
+      warnings.some((warning) =>
+        warning.includes(`Lower-band catch-up required for chunk ${context.chunks.newerClosed} (detailed)`)),
+      true,
+    );
+
+    const repairedChunks = await context.threadStore.readChunks(context.threadId);
+    assert.equal(repairedChunks.ok, true);
+    const repairedChunk = repairedChunks.value.find((chunk) => chunk.chunkId === context.chunks.newerClosed);
+    assert.equal(repairedChunk?.lowerBand?.detailed?.status, "ready");
+    assert.equal(typeof repairedChunk?.lowerBand?.detailed?.text, "string");
+  });
+});
+
+test("prepare-mode lower-band catch-up regenerates selected brief semantic output with a visible chunk-and-band warning", async () => {
+  await withTempFeature3Store(async ({ storeRootDir }) => {
+    const context = await seedDeterministicRebuildThreadWithOptions(storeRootDir, {
+      canonicalClosedChunks: true,
+    });
+    const snapshot = await context.threadStore.openThread(context.threadId);
+    assert.equal(snapshot.ok, true);
+    const chunks = await context.threadStore.readChunks(context.threadId);
+    assert.equal(chunks.ok, true);
+
+    await context.threadStore.writeChunks({
+      threadId: context.threadId,
+      expectedSourceRevision: snapshot.value.thread.sourceRevision,
+      expectedMessageHighWatermark: snapshot.value.thread.messageHighWatermark,
+      expectedTurnsRevision: snapshot.value.thread.turnsRevision,
+      chunks: chunks.value.map((chunk): typeof chunk =>
+        chunk.chunkId === context.chunks.newerClosed
+          ? {
+              ...chunk,
+              lowerBand: {
+                ...chunk.lowerBand,
+                brief: undefined,
+              },
+            } as typeof chunk
+          : chunk),
+    });
+
+    const providerCalls: LowerBandCompressionProviderInput[] = [];
+    const provider: LowerBandCompressionProvider = {
+      async compress(input) {
+        providerCalls.push(input);
+        return {
+          text: "B".repeat(Math.max(1, Math.ceil(input.transcriptText.length * 0.1))),
+          providerId: "openai-codex",
+          modelId: input.modelId,
+          reasoningEffort: input.reasoningEffort,
+          promptVersion: input.promptVersion,
+          elapsedMs: 25,
+          generatedAt: DEFAULT_TEST_TIMESTAMP,
+        };
+      },
+    };
+    const warnings: string[] = [];
+    const originalWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      warnings.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write;
+
+    try {
+      const result = await prepareAsyncThread(
+        {
+          threadId: context.threadId,
+          mode: "prepare",
+          requestedLowerBound: 30,
+          requestedBandPercentages: { fullFidelity: 50, smooth: 20, detailed: 0, brief: 30 },
+        },
+        {
+          store: context.threadStore,
+          openAIInputTokenCounter: new FakeOpenAIInputTokenCounter(),
+          tokenCountModel: "gpt-test-maintenance",
+          lowerBandCompressionProvider: provider,
+        },
+      );
+
+      assert.equal(result.blockers.some((issue) => issue.code === "CHUNK_LOWER_BAND_MISSING"), false);
+    } finally {
+      process.stderr.write = originalWrite;
+    }
+
+    assert.equal(
+      providerCalls.some(
+        (call) => call.chunkId === context.chunks.newerClosed && call.band === "brief",
+      ),
+      true,
+    );
+    assert.equal(
+      warnings.some((warning) =>
+        warning.includes(`Lower-band catch-up required for chunk ${context.chunks.newerClosed} (brief)`)),
+      true,
+    );
+
+    const repairedChunks = await context.threadStore.readChunks(context.threadId);
+    assert.equal(repairedChunks.ok, true);
+    const repairedChunk = repairedChunks.value.find((chunk) => chunk.chunkId === context.chunks.newerClosed);
+    assert.equal(repairedChunk?.lowerBand?.brief?.status, "ready");
+    assert.equal(typeof repairedChunk?.lowerBand?.brief?.text, "string");
+  });
+});
+
+test("prepare-mode reports a specific compact failure when smooth catch-up cannot repair a turn", async () => {
+  await withTempFeature3Store(async ({ storeRootDir }) => {
+    const context = await seedDeterministicRebuildThread(storeRootDir);
+    const snapshot = await context.threadStore.openThread(context.threadId);
+    assert.equal(snapshot.ok, true);
+    const target = context.turns.middleNewer;
+    const assistantOnlyMessage = target.messages[1]!;
+
+    await context.threadStore.writeTurns({
+      threadId: context.threadId,
+      expectedSourceRevision: snapshot.value.thread.sourceRevision,
+      expectedMessageHighWatermark: snapshot.value.thread.messageHighWatermark,
+      expectedTurnsRevision: snapshot.value.thread.turnsRevision,
+      turns: snapshot.value.turns.map((turn) =>
+        turn.turnId === target.turnId
+          ? {
+              ...turn,
+              messageIds: ["message-missing-prompt-for-catch-up", assistantOnlyMessage.messageId],
+              initiatingMessageId: "message-missing-prompt-for-catch-up",
+              sourceRange: {
+                fromSourceOrder: assistantOnlyMessage.sourceOrder,
+                toSourceOrder: assistantOnlyMessage.sourceOrder,
+              },
+              smooth: undefined,
+            }
+          : turn),
+      turnState: snapshot.value.thread.status.turnState,
+    });
+
+    const result = await prepareAsyncThread(
+      {
+        threadId: context.threadId,
+        mode: "prepare",
+        requestedLowerBound: 30,
+        requestedBandPercentages: { fullFidelity: 50, smooth: 20, detailed: 20, brief: 10 },
+      },
+      {
+        store: context.threadStore,
+        openAIInputTokenCounter: new FakeOpenAIInputTokenCounter(),
+        tokenCountModel: "gpt-test-maintenance",
+      },
+    );
+
+    assert.equal(result.smoothReady, false);
+    assert.equal(
+      result.blockers.some((issue) =>
+        issue.code === "SMOOTH_MISSING" &&
+        issue.message.includes("Smooth catch-up failed during compact preparation:")),
+      true,
+    );
+  });
+});
+
+test("prepare-mode lower-band catch-up failure blocks compact with a specific chunk-and-band error", async () => {
+  await withTempFeature3Store(async ({ storeRootDir }) => {
+    const context = await seedDeterministicRebuildThreadWithOptions(storeRootDir, {
+      canonicalClosedChunks: true,
+    });
+    const snapshot = await context.threadStore.openThread(context.threadId);
+    assert.equal(snapshot.ok, true);
+    const chunks = await context.threadStore.readChunks(context.threadId);
+    assert.equal(chunks.ok, true);
+
+    await context.threadStore.writeChunks({
+      threadId: context.threadId,
+      expectedSourceRevision: snapshot.value.thread.sourceRevision,
+      expectedMessageHighWatermark: snapshot.value.thread.messageHighWatermark,
+      expectedTurnsRevision: snapshot.value.thread.turnsRevision,
+      chunks: chunks.value.map((chunk): typeof chunk =>
+        chunk.chunkId === context.chunks.newerClosed
+          ? {
+              ...chunk,
+              lowerBand: {
+                ...chunk.lowerBand,
+                detailed: undefined,
+              },
+            } as typeof chunk
+          : chunk),
+    });
+
+    const result = await prepareAsyncThread(
+      {
+        threadId: context.threadId,
+        mode: "prepare",
+        requestedLowerBound: 30,
+        requestedBandPercentages: { fullFidelity: 50, smooth: 20, detailed: 20, brief: 10 },
+      },
+      {
+        store: context.threadStore,
+        openAIInputTokenCounter: new FakeOpenAIInputTokenCounter(),
+        tokenCountModel: "gpt-test-maintenance",
+        lowerBandCompressionProvider: {
+          async compress() {
+            throw new Error("simulated selected-band catch-up outage");
+          },
+        },
+      },
+    );
+
+    assert.equal(result.lowerBandReady, false);
+    assert.equal(
+      result.blockers.some((issue) =>
+        issue.message.includes("Lower-band catch-up failed during compact preparation:") &&
+        issue.message.includes(`Chunk ${context.chunks.newerClosed} failed detailed lower-band compression`)),
+      true,
+    );
+  });
+});
+
+test("prepare-mode brief lower-band catch-up failure blocks compact with a specific chunk-and-band error", async () => {
+  await withTempFeature3Store(async ({ storeRootDir }) => {
+    const context = await seedDeterministicRebuildThreadWithOptions(storeRootDir, {
+      canonicalClosedChunks: true,
+    });
+    const snapshot = await context.threadStore.openThread(context.threadId);
+    assert.equal(snapshot.ok, true);
+    const chunks = await context.threadStore.readChunks(context.threadId);
+    assert.equal(chunks.ok, true);
+
+    await context.threadStore.writeChunks({
+      threadId: context.threadId,
+      expectedSourceRevision: snapshot.value.thread.sourceRevision,
+      expectedMessageHighWatermark: snapshot.value.thread.messageHighWatermark,
+      expectedTurnsRevision: snapshot.value.thread.turnsRevision,
+      chunks: chunks.value.map((chunk): typeof chunk =>
+        chunk.chunkId === context.chunks.newerClosed
+          ? {
+              ...chunk,
+              lowerBand: {
+                ...chunk.lowerBand,
+                brief: undefined,
+              },
+            } as typeof chunk
+          : chunk),
+    });
+
+    const result = await prepareAsyncThread(
+      {
+        threadId: context.threadId,
+        mode: "prepare",
+        requestedLowerBound: 30,
+        requestedBandPercentages: { fullFidelity: 50, smooth: 20, detailed: 0, brief: 30 },
+      },
+      {
+        store: context.threadStore,
+        openAIInputTokenCounter: new FakeOpenAIInputTokenCounter(),
+        tokenCountModel: "gpt-test-maintenance",
+        lowerBandCompressionProvider: {
+          async compress() {
+            throw new Error("simulated selected brief-band catch-up outage");
+          },
+        },
+      },
+    );
+
+    assert.equal(result.lowerBandReady, false);
+    assert.equal(
+      result.blockers.some((issue) =>
+        issue.message.includes("Lower-band catch-up failed during compact preparation:") &&
+        issue.message.includes(`Chunk ${context.chunks.newerClosed} failed brief lower-band compression`)),
+      true,
+    );
   });
 });

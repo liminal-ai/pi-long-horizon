@@ -33,7 +33,7 @@ import {
 } from "../../src/thread-view/test/fixtures.js";
 import {
   seedDeterministicRebuildThread,
-  seedMissingDetailedPlaceholderThread,
+  seedMissingDetailedLowerBandArtifactThread,
 } from "../thread-view/helpers.js";
 
 const fakeOpenAICounter = new OpenAIInputTokenCounter({
@@ -911,7 +911,7 @@ test("/lh-repair-turns renders repair success and stale-source failure", async (
 
 test("/lh-smart-compact accepts explicit inputs through the production command surface and reloads PI", async () => {
   await withTempFeature3Store(async ({ projectDir }) => {
-    const seeded = await seedMissingDetailedPlaceholderThread(`${projectDir}/.context-steward`);
+    const seeded = await seedMissingDetailedLowerBandArtifactThread(`${projectDir}/.context-steward`);
     const target = makeThreadTarget({
       sessionId: "session-thread-view-builder",
       cwd: projectDir,
@@ -965,7 +965,7 @@ test("/lh-smart-compact accepts explicit inputs through the production command s
 
 test("/lh-smart-compact surfaces final generated-session count source and trust when output is degraded", async () => {
   await withTempFeature3Store(async ({ projectDir }) => {
-    const seeded = await seedMissingDetailedPlaceholderThread(`${projectDir}/.context-steward`);
+    const seeded = await seedMissingDetailedLowerBandArtifactThread(`${projectDir}/.context-steward`);
     const target = makeThreadTarget({
       sessionId: "session-thread-view-builder",
       cwd: projectDir,
@@ -1000,7 +1000,7 @@ test("/lh-smart-compact surfaces final generated-session count source and trust 
 
 test("/lh-smart-compact surfaces final generated-session count source and trust when output is blocked", async () => {
   await withTempFeature3Store(async ({ projectDir }) => {
-    const seeded = await seedMissingDetailedPlaceholderThread(`${projectDir}/.context-steward`);
+    const seeded = await seedMissingDetailedLowerBandArtifactThread(`${projectDir}/.context-steward`);
     const target = makeThreadTarget({
       sessionId: "session-thread-view-builder",
       cwd: projectDir,
@@ -1087,7 +1087,7 @@ test("pi-extension smart compact failed summaries include generated-session coun
 
 test("/lh-smart-compact rejects unknown arguments and invalid mode explicitly on the production command surface", async () => {
   await withTempFeature3Store(async ({ projectDir }) => {
-    const seeded = await seedMissingDetailedPlaceholderThread(`${projectDir}/.context-steward`);
+    const seeded = await seedMissingDetailedLowerBandArtifactThread(`${projectDir}/.context-steward`);
     const target = makeThreadTarget({
       sessionId: "session-thread-view-builder",
       cwd: projectDir,
@@ -1135,7 +1135,7 @@ test("/lh-smart-compact rejects unknown arguments and invalid mode explicitly on
 
 test("/lh-smart-compact reloads through the session-switch path even when PI already has the generated file loaded", async () => {
   await withTempFeature3Store(async ({ projectDir }) => {
-    const seeded = await seedMissingDetailedPlaceholderThread(`${projectDir}/.context-steward`);
+    const seeded = await seedMissingDetailedLowerBandArtifactThread(`${projectDir}/.context-steward`);
     const target = makeThreadTarget({
       sessionId: "session-thread-view-builder",
       cwd: projectDir,
@@ -1437,5 +1437,85 @@ test("/lh-active-thread-view-status and /lh-smoothing-status report machine-read
     assert.equal(smoothingReport.threadId, thread.threadId);
     assert.equal(typeof smoothingReport.messageEndUserSmoothing.pending, "number");
     assert.equal(typeof smoothingReport.completeSmoothReadiness.completeUnavailableCount, "number");
+  });
+});
+
+test("/lh-lower-band-status reports machine-readable lower-band readiness and blocker details", async () => {
+  await withTempFeature3Store(async ({ projectDir }) => {
+    const seeded = await seedMissingDetailedLowerBandArtifactThread(`${projectDir}/.context-steward`);
+    const seededThread = await seeded.threadStore.openThread(seeded.threadId);
+    assert.equal(seededThread.ok, true);
+    const target = makeThreadTarget({
+      sessionId: seededThread.value.thread.target.sessionId ?? "session-lower-band-status-command",
+      sessionFilePath: `${projectDir}/pi/session-lower-band-status.jsonl`,
+      cwd: projectDir,
+    });
+    await ensureTargetSessionFile(target);
+
+    const chunksResult = await seeded.threadStore.readChunks(seeded.threadId);
+    assert.equal(chunksResult.ok, true);
+    const snapshot = await seeded.threadStore.openThread(seeded.threadId);
+    assert.equal(snapshot.ok, true);
+    const updatedChunks = chunksResult.value.map((chunk) =>
+      chunk.chunkId === seeded.chunks.newerClosed
+        ? {
+            ...chunk,
+            lowerBand: {
+              ...chunk.lowerBand,
+              detailed: {
+                band: "detailed" as const,
+                status: "failed" as const,
+                errorCode: "MODEL_UNAVAILABLE",
+                errorMessage: "provider unavailable",
+                updatedAt: DEFAULT_TEST_TIMESTAMP,
+              },
+              brief: {
+                band: "brief" as const,
+                status: "pending" as const,
+                updatedAt: DEFAULT_TEST_TIMESTAMP,
+              },
+            },
+          } as typeof chunk
+        : chunk,
+    );
+    const writeChunks = await seeded.threadStore.writeChunks({
+      threadId: seeded.threadId,
+      expectedSourceRevision: snapshot.value.thread.sourceRevision,
+      expectedMessageHighWatermark: snapshot.value.thread.messageHighWatermark,
+      expectedTurnsRevision: snapshot.value.thread.turnsRevision,
+      chunks: updatedChunks,
+    });
+    assert.equal(writeChunks.ok, true);
+
+    const { api, commands } = createMockPiApi();
+    registerContextStewardExtension(api, {
+      createStore: () => seeded.threadStore,
+      createThreadViewStore: () => seeded.threadViewStore,
+    });
+    const lowerBandCommand = commands.get("lh-lower-band-status");
+    assert.ok(lowerBandCommand);
+
+    const { ctx, notifications } = createCommandContext(target);
+    await lowerBandCommand!.handler("", ctx);
+
+    assert.equal(notifications.length, 1);
+    const rendered = notifications[0]!.message;
+    const jsonStart = rendered.indexOf("{");
+    const jsonEnd = rendered.lastIndexOf("}");
+    assert.ok(jsonStart >= 0 && jsonEnd > jsonStart, rendered);
+    const report = JSON.parse(rendered.slice(jsonStart, jsonEnd + 1));
+    assert.equal(report.threadId, seeded.threadId);
+    assert.ok(Array.isArray(report.chunks));
+    assert.ok(
+      report.chunks.some((chunk: { chunkId: string; legacyPlaceholderBlocked: boolean; detailed: { status: string } }) =>
+        chunk.chunkId === seeded.chunks.newerClosed &&
+        chunk.legacyPlaceholderBlocked === true &&
+        chunk.detailed.status === "blocked_legacy_placeholder"),
+    );
+    assert.ok(
+      report.compactBlockers.some((blocker: { chunkId?: string; bandLabel?: string }) =>
+        blocker.chunkId === seeded.chunks.newerClosed &&
+        blocker.bandLabel === "detailed/brief"),
+    );
   });
 });

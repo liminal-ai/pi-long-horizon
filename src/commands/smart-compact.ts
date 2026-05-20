@@ -163,11 +163,7 @@ function removeReducibleEntry(piFile: PiThreadViewFile): { piFile: PiThreadViewF
         ...piFile,
         entries: nextEntries,
         entryCount: nextEntries.length,
-        placeholderExplicit: nextEntries.some(
-          (entry) =>
-            entry.generatedSource === "detailed_chunk_summary" ||
-            entry.generatedSource === "brief_chunk_summary",
-        ),
+        placeholderExplicit: false,
       },
       reduction,
     };
@@ -366,12 +362,13 @@ export async function runSmartCompact(
         mode: input.mode,
         requestedLowerBound: input.requestedLowerBound,
         requestedBandPercentages: input.requestedBandPercentages,
-        requiredPlaceholderBands: {
+        requiredLowerBandArtifacts: {
           detailed: input.requestedBandPercentages.detailed > 0,
           brief: input.requestedBandPercentages.brief > 0,
         },
       },
       {
+        ...dependencies.asyncThreadDependencies,
         store: dependencies.threadStore,
         openAIInputTokenCounter: openAIInputTokenCounterForReadiness,
         tokenCountModel,
@@ -408,8 +405,7 @@ export async function runSmartCompact(
             threadViewId: buildResult.threadViewId,
             generatedAt: (dependencies.now ?? (() => new Date()))().toISOString(),
             status: "degraded",
-            placeholderExplicit:
-              input.requestedBandPercentages.detailed > 0 || input.requestedBandPercentages.brief > 0,
+            placeholderExplicit: false,
             requestedLowerBound: input.requestedLowerBound,
             issues: buildResult.blockers,
           }),
@@ -450,7 +446,6 @@ export async function runSmartCompact(
       emittedMessages: buildResult.emittedMessages,
       sessionId: `sc-${input.threadId.replace("thread_", "").slice(0, 8)}-${projectionRevisionId.replace("projection_", "").slice(0, 8)}-${Date.now().toString(36)}`,
       cwd: threadSnapshot.value.thread.target.cwd ?? process.cwd(),
-      parentSessionId: threadSnapshot.value.thread.target.sessionId,
       modelProvider: input.modelProvider,
       modelId: input.modelId,
       thinkingLevel: input.thinkingLevel,

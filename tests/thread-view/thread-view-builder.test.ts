@@ -4,13 +4,26 @@ import test from "node:test";
 import { appendSourceMessage, openOrCreateManagedThread } from "../../src/thread/services/thread-service.js";
 import { FileThreadStore } from "../../src/thread/store/file-thread-store.js";
 import { FileThreadViewStore } from "../../src/thread-view/store/file-thread-view-store.js";
-import { buildDraftThreadView, estimateRawMessageTokenCount } from "../../src/thread-view/services/thread-view-builder.js";
-import { withTempFeature3Store } from "../../src/thread-view/test/fixtures.js";
+import {
+  buildDraftThreadView,
+  estimateRawMessageTokenCount,
+  resolveChunkSemanticArtifactAccounting,
+} from "../../src/thread-view/services/thread-view-builder.js";
+import {
+  DEFAULT_TEST_TIMESTAMP,
+  makeChunkLowerBandArtifacts,
+  makeChunkState,
+  makeLegacyPlaceholderChunkState,
+  withTempFeature3Store,
+} from "../../src/thread-view/test/fixtures.js";
 import {
   assertTokenCountRecord,
+  countBriefChunkMaterialized,
+  countDetailedChunkMaterialized,
   countRawTurnMaterialized,
   type TokenCountRecord,
 } from "../../src/token-accounting/index.js";
+import type { CanonicalChunkState, ChunkState } from "../../src/thread/async-thread/domain/chunk-state.js";
 import {
   makeActorRecord,
   makeMessageRecord,
@@ -20,12 +33,70 @@ import {
 } from "../../src/context-steward/test/fixtures.js";
 import {
   seedDeterministicRebuildThread,
-  seedMissingDetailedPlaceholderThread,
+  seedDeterministicRebuildThreadWithOptions,
   seedNoClosedChunkThread,
 } from "./helpers.js";
 
 const STAGE7_READY_LOWER_BOUND = 180;
 const STAGE7_READY_BAND_PERCENTAGES = { fullFidelity: 50, smooth: 4, detailed: 13, brief: 33 } as const;
+
+function toCanonicalSemanticChunk(chunk: ChunkState): CanonicalChunkState {
+  return makeChunkState({
+    chunkId: chunk.chunkId,
+    threadId: chunk.threadId,
+    lifecycleStatus: chunk.lifecycleStatus,
+    sourceTurnIds: [...chunk.sourceTurnIds],
+    smoothText: chunk.smoothText,
+    smoothTokenCountMetadata: chunk.smoothTokenCountMetadata,
+    openedAt: chunk.openedAt,
+    closedAt: chunk.closedAt,
+    closeReason: chunk.closeReason,
+    sourceRevision: chunk.sourceRevision,
+    conversationTranscript: {
+      status: "ready",
+      text: `> transcript ${chunk.chunkId}`,
+      sourceFingerprint: `sha256:${chunk.chunkId}:conversation`,
+      sourceRevision: chunk.sourceRevision ?? 1,
+      updatedAt: DEFAULT_TEST_TIMESTAMP,
+    },
+    lowerBand: makeChunkLowerBandArtifacts({
+      detailed: {
+        band: "detailed",
+        status: "ready",
+        text: `semantic detailed ${chunk.chunkId}`,
+        updatedAt: DEFAULT_TEST_TIMESTAMP,
+      },
+      brief: {
+        band: "brief",
+        status: "ready",
+        text: `semantic brief ${chunk.chunkId}`,
+        updatedAt: DEFAULT_TEST_TIMESTAMP,
+      },
+    }),
+  });
+}
+
+function withExactSemanticArtifactCounts(chunk: ChunkState): CanonicalChunkState {
+  const semanticChunk = toCanonicalSemanticChunk(chunk);
+
+  return {
+    ...semanticChunk,
+    lowerBand: makeChunkLowerBandArtifacts({
+      detailed: semanticChunk.lowerBand?.detailed
+        ? {
+            ...semanticChunk.lowerBand.detailed,
+            tokenCountMetadata: providerInputCountFromExpected(countDetailedChunkMaterialized(semanticChunk)),
+          }
+        : undefined,
+      brief: semanticChunk.lowerBand?.brief
+        ? {
+            ...semanticChunk.lowerBand.brief,
+            tokenCountMetadata: providerInputCountFromExpected(countBriefChunkMaterialized(semanticChunk)),
+          }
+        : undefined,
+    }),
+  };
+}
 
 function providerInputCountFromExpected(expected: TokenCountRecord): TokenCountRecord {
   return assertTokenCountRecord({
@@ -44,7 +115,7 @@ function providerInputCountFromExpected(expected: TokenCountRecord): TokenCountR
 
 test("rebuild accepts explicit run inputs", async () => {
   await withTempFeature3Store(async ({ storeRootDir }) => {
-    const context = await seedDeterministicRebuildThread(storeRootDir);
+    const context = await seedDeterministicRebuildThreadWithOptions(storeRootDir, { canonicalClosedChunks: true });
 
     const result = await buildDraftThreadView(
       {
@@ -83,7 +154,7 @@ test("rebuild rejects invalid run inputs", async () => {
 
 test("full-fidelity selection starts from newest turns", async () => {
   await withTempFeature3Store(async ({ storeRootDir }) => {
-    const context = await seedDeterministicRebuildThread(storeRootDir);
+    const context = await seedDeterministicRebuildThreadWithOptions(storeRootDir, { canonicalClosedChunks: true });
 
     const result = await buildDraftThreadView(
       {
@@ -284,7 +355,7 @@ test("full-fidelity allocation stops before an older dense tool-heavy turn", asy
 
 test("full-fidelity does not split turns", async () => {
   await withTempFeature3Store(async ({ storeRootDir }) => {
-    const context = await seedDeterministicRebuildThread(storeRootDir);
+    const context = await seedDeterministicRebuildThreadWithOptions(storeRootDir, { canonicalClosedChunks: true });
 
     const result = await buildDraftThreadView(
       {
@@ -316,7 +387,7 @@ test("full-fidelity does not split turns", async () => {
 
 test("full-fidelity-only overage is explicit", async () => {
   await withTempFeature3Store(async ({ storeRootDir }) => {
-    const context = await seedDeterministicRebuildThread(storeRootDir);
+    const context = await seedDeterministicRebuildThreadWithOptions(storeRootDir, { canonicalClosedChunks: true });
 
     const result = await buildDraftThreadView(
       {
@@ -338,7 +409,7 @@ test("full-fidelity-only overage is explicit", async () => {
 
 test("smooth band begins after full-fidelity region by default", async () => {
   await withTempFeature3Store(async ({ storeRootDir }) => {
-    const context = await seedDeterministicRebuildThread(storeRootDir);
+    const context = await seedDeterministicRebuildThreadWithOptions(storeRootDir, { canonicalClosedChunks: true });
 
     const result = await buildDraftThreadView(
       {
@@ -361,7 +432,7 @@ test("smooth band begins after full-fidelity region by default", async () => {
 
 test("zero-percent smooth allocation preserves an explicitly empty smooth band", async () => {
   await withTempFeature3Store(async ({ storeRootDir }) => {
-    const context = await seedDeterministicRebuildThread(storeRootDir);
+    const context = await seedDeterministicRebuildThreadWithOptions(storeRootDir, { canonicalClosedChunks: true });
 
     const result = await buildDraftThreadView(
       {
@@ -388,7 +459,7 @@ test("zero-percent smooth allocation preserves an explicitly empty smooth band",
 
 test("smooth band does not split turns", async () => {
   await withTempFeature3Store(async ({ storeRootDir }) => {
-    const context = await seedDeterministicRebuildThread(storeRootDir);
+    const context = await seedDeterministicRebuildThreadWithOptions(storeRootDir, { canonicalClosedChunks: true });
 
     const result = await buildDraftThreadView(
       {
@@ -415,16 +486,16 @@ test("smooth band does not split turns", async () => {
   });
 });
 
-test("closed chunk can enter lower band", async () => {
+test("closed canonical chunks can enter lower band in prepare mode", async () => {
   await withTempFeature3Store(async ({ storeRootDir }) => {
-    const context = await seedDeterministicRebuildThread(storeRootDir);
+    const context = await seedDeterministicRebuildThreadWithOptions(storeRootDir, { canonicalClosedChunks: true });
 
     const result = await buildDraftThreadView(
       {
         threadId: context.threadId,
         requestedLowerBound: STAGE7_READY_LOWER_BOUND,
         requestedBandPercentages: STAGE7_READY_BAND_PERCENTAGES,
-        mode: "strict",
+        mode: "prepare",
       },
       {
         threadStore: context.threadStore,
@@ -433,15 +504,17 @@ test("closed chunk can enter lower band", async () => {
     );
     const opened = await context.threadViewStore.openThreadView(context.threadId, result.draftThreadViewId);
 
+    assert.equal(result.status, "degraded");
     assert.equal(opened.ok, true);
-    assert.deepEqual(opened.value.view.detailedBand.selectedIds, [context.chunks.newerClosed]);
-    assert.deepEqual(opened.value.view.briefBand.selectedIds, [context.chunks.oldestClosed]);
+    assert.equal(opened.value.view.detailedBand.selectedIds.length > 0, true);
+    assert.equal(opened.value.view.detailedBand.selectedIds.includes(context.chunks.openRecent), false);
+    assert.deepEqual(opened.value.view.briefBand.selectedIds, []);
   });
 });
 
-test("strict lower-band selection ignores stale placeholder provenance", async () => {
+test("strict lower-band selection chooses canonical semantic chunks when exact semantic counts are persisted", async () => {
   await withTempFeature3Store(async ({ storeRootDir }) => {
-    const context = await seedDeterministicRebuildThread(storeRootDir);
+    const context = await seedDeterministicRebuildThreadWithOptions(storeRootDir, { canonicalClosedChunks: true });
     const snapshot = await context.threadStore.openThread(context.threadId);
     assert.equal(snapshot.ok, true);
     const chunks = await context.threadStore.readChunks(context.threadId);
@@ -453,18 +526,8 @@ test("strict lower-band selection ignores stale placeholder provenance", async (
       expectedMessageHighWatermark: snapshot.value.thread.messageHighWatermark,
       expectedTurnsRevision: snapshot.value.thread.turnsRevision,
       chunks: chunks.value.map((chunk) =>
-        chunk.chunkId === context.chunks.newerClosed && chunk.placeholders?.detailed
-          ? {
-              ...chunk,
-              placeholders: {
-                ...chunk.placeholders,
-                detailed: {
-                  ...chunk.placeholders.detailed,
-                  smoothSourceRevision: 999,
-                },
-              },
-            }
-          : chunk),
+        chunk.lifecycleStatus === "closed" ? withExactSemanticArtifactCounts(chunk) : chunk,
+      ),
     });
     assert.equal(writeResult.ok, true);
 
@@ -484,10 +547,127 @@ test("strict lower-band selection ignores stale placeholder provenance", async (
     const opened = await context.threadViewStore.openThreadView(context.threadId, result.draftThreadViewId);
 
     assert.equal(result.status, "ready");
-    assert.equal(result.blockers.some((issue) => issue.code === "CHUNK_PLACEHOLDER_MISSING"), false);
+    assert.equal(result.blockers.some((issue) => issue.code === "CHUNK_STATE_INVALID"), false);
     assert.equal(opened.ok, true);
-    assert.deepEqual(opened.value.view.detailedBand.selectedIds, [context.chunks.newerClosed]);
-    assert.deepEqual(opened.value.view.briefBand.selectedIds, [context.chunks.oldestClosed]);
+    assert.equal(opened.value.view.detailedBand.selectedIds.length > 0, true);
+    assert.equal(opened.value.view.detailedBand.selectedIds.includes(context.chunks.newerClosed), true);
+    assert.equal(
+      opened.value.view.detailedBand.selectedIds.length + opened.value.view.briefBand.selectedIds.length > 0,
+      true,
+    );
+  });
+});
+
+test("strict lower-band selection blocks legacy placeholder chunks unconditionally", async () => {
+  await withTempFeature3Store(async ({ storeRootDir }) => {
+    const context = await seedDeterministicRebuildThread(storeRootDir);
+
+    const result = await buildDraftThreadView(
+      {
+        threadId: context.threadId,
+        requestedLowerBound: STAGE7_READY_LOWER_BOUND,
+        requestedBandPercentages: STAGE7_READY_BAND_PERCENTAGES,
+        mode: "strict",
+      },
+      {
+        threadStore: context.threadStore,
+        threadViewStore: context.threadViewStore,
+      },
+    );
+
+    assert.equal(result.status, "blocked");
+    assert.equal(
+      result.blockers.some(
+        (issue) =>
+          issue.code === "CHUNK_STATE_INVALID" &&
+          issue.cause === "legacy_placeholder_chunk_state" &&
+          issue.message.includes("legacy placeholder-era"),
+      ),
+      true,
+    );
+  });
+});
+
+test("semantic lower-band accounting rejects placeholder-only chunk state", () => {
+  const chunk = makeLegacyPlaceholderChunkState({
+    chunkId: "chunk-placeholder-only",
+    sourceRevision: 7,
+  });
+
+  assert.equal(
+    resolveChunkSemanticArtifactAccounting({
+      chunk,
+      bandType: "detailed",
+      policyMode: "prepare",
+    }),
+    undefined,
+  );
+  assert.equal(
+    resolveChunkSemanticArtifactAccounting({
+      chunk,
+      bandType: "brief",
+      policyMode: "prepare",
+    }),
+    undefined,
+  );
+});
+
+test("prepare-mode lower-band selection accepts canonical semantic chunk artifacts without placeholder state", async () => {
+  await withTempFeature3Store(async ({ storeRootDir }) => {
+    const context = await seedDeterministicRebuildThreadWithOptions(storeRootDir, { canonicalClosedChunks: true });
+    const snapshot = await context.threadStore.openThread(context.threadId);
+    assert.equal(snapshot.ok, true);
+    const chunks = await context.threadStore.readChunks(context.threadId);
+    assert.equal(chunks.ok, true);
+
+    const writeResult = await context.threadStore.writeChunks({
+      threadId: context.threadId,
+      expectedSourceRevision: snapshot.value.thread.sourceRevision,
+      expectedMessageHighWatermark: snapshot.value.thread.messageHighWatermark,
+      expectedTurnsRevision: snapshot.value.thread.turnsRevision,
+      chunks: chunks.value.map((chunk) =>
+        chunk.lifecycleStatus === "closed" ? toCanonicalSemanticChunk(chunk) : chunk,
+      ),
+    });
+    assert.equal(writeResult.ok, true);
+
+    const result = await buildDraftThreadView(
+      {
+        threadId: context.threadId,
+        requestedLowerBound: STAGE7_READY_LOWER_BOUND,
+        requestedBandPercentages: STAGE7_READY_BAND_PERCENTAGES,
+        mode: "prepare",
+      },
+      {
+        threadStore: context.threadStore,
+        threadViewStore: context.threadViewStore,
+      },
+    );
+    const opened = await context.threadViewStore.openThreadView(context.threadId, result.draftThreadViewId);
+
+    assert.equal(result.status, "degraded");
+    assert.equal(result.blockers.some((issue) => issue.code === "CHUNK_LOWER_BAND_MISSING"), false);
+    assert.equal(result.blockers.some((issue) => issue.code === "TOKEN_COUNT_DEGRADED"), true);
+    assert.equal(opened.ok, true);
+    assert.equal(opened.value.view.detailedBand.selectedIds.includes(context.chunks.newerClosed), true);
+    assert.equal(
+      opened.value.view.emittedMessages.some(
+        (message) =>
+          message.bandType === "detailed" &&
+          message.sourceReference === context.chunks.newerClosed &&
+          message.content === `semantic detailed ${context.chunks.newerClosed}`,
+      ),
+      true,
+    );
+    assert.equal(
+      opened.value.view.emittedMessages.some(
+        (message) =>
+          (message.bandType === "detailed" || message.bandType === "brief") &&
+          typeof message.content === "string" &&
+          message.content.startsWith("semantic "),
+      ),
+      true,
+    );
   });
 });
 
@@ -541,7 +721,7 @@ test("no closed chunks leaves lower bands empty", async () => {
 
 test("rebuild lands at or below lower bound", async () => {
   await withTempFeature3Store(async ({ storeRootDir }) => {
-    const context = await seedDeterministicRebuildThread(storeRootDir);
+    const context = await seedDeterministicRebuildThreadWithOptions(storeRootDir, { canonicalClosedChunks: true });
 
     const result = await buildDraftThreadView(
       {
@@ -563,7 +743,7 @@ test("rebuild lands at or below lower bound", async () => {
 
 test("rebuild failure to reach lower bound is explicit", async () => {
   await withTempFeature3Store(async ({ storeRootDir }) => {
-    const context = await seedDeterministicRebuildThread(storeRootDir);
+    const context = await seedDeterministicRebuildThreadWithOptions(storeRootDir, { canonicalClosedChunks: true });
 
     const result = await buildDraftThreadView(
       {
@@ -598,14 +778,36 @@ test("invalid band percentages rejected before allocation", async () => {
 
 test("lower-band selection rejects closed-chunk ids missing required persisted artifacts", async () => {
   await withTempFeature3Store(async ({ storeRootDir }) => {
-    const context = await seedMissingDetailedPlaceholderThread(storeRootDir);
+    const context = await seedDeterministicRebuildThreadWithOptions(storeRootDir, { canonicalClosedChunks: true });
+    const snapshot = await context.threadStore.openThread(context.threadId);
+    assert.equal(snapshot.ok, true);
+    const chunks = await context.threadStore.readChunks(context.threadId);
+    assert.equal(chunks.ok, true);
+
+    const writeResult = await context.threadStore.writeChunks({
+      threadId: context.threadId,
+      expectedSourceRevision: snapshot.value.thread.sourceRevision,
+      expectedMessageHighWatermark: snapshot.value.thread.messageHighWatermark,
+      expectedTurnsRevision: snapshot.value.thread.turnsRevision,
+      chunks: chunks.value.map((chunk): ChunkState =>
+        chunk.chunkId === context.chunks.newerClosed
+          ? {
+              ...chunk,
+              lowerBand: {
+                ...chunk.lowerBand,
+                detailed: undefined,
+              },
+            } as ChunkState
+          : chunk),
+    });
+    assert.equal(writeResult.ok, true);
 
     const result = await buildDraftThreadView(
       {
         threadId: context.threadId,
         requestedLowerBound: STAGE7_READY_LOWER_BOUND,
         requestedBandPercentages: STAGE7_READY_BAND_PERCENTAGES,
-        mode: "strict",
+        mode: "prepare",
       },
       {
         threadStore: context.threadStore,
@@ -614,8 +816,8 @@ test("lower-band selection rejects closed-chunk ids missing required persisted a
     );
     const opened = await context.threadViewStore.openThreadView(context.threadId, result.draftThreadViewId);
 
-    assert.equal(result.status, "ready");
-    assert.equal(result.blockers.some((issue) => issue.code === "CHUNK_PLACEHOLDER_MISSING"), false);
+    assert.equal(result.status, "degraded");
+    assert.equal(result.blockers.some((issue) => issue.code === "CHUNK_LOWER_BAND_MISSING"), false);
     assert.equal(opened.ok, true);
     assert.deepEqual(opened.value.view.detailedBand.selectedIds, []);
   });

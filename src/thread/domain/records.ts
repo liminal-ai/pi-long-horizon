@@ -20,6 +20,7 @@ export const PART_TYPES = [
 ] as const;
 export const TURN_LIFECYCLE_STATUSES = ["open", "closed"] as const;
 export const TURN_REPAIR_STATUSES = ["ready", "repair_needed", "repair_failed", "unknown"] as const;
+export const TURN_LOWER_BAND_PROJECTION_STATUSES = ["ready", "pending", "failed", "invalid"] as const;
 export const TOKEN_COUNTING_MAINTENANCE_STATUSES = ["ready", "repair_needed", "unknown"] as const;
 export const IMPORT_STATUSES = ["complete", "partial", "failed"] as const;
 export const PROJECTION_STATUSES = ["available", "stale", "failed", "unknown"] as const;
@@ -33,6 +34,7 @@ export type MessageKind = (typeof MESSAGE_KINDS)[number];
 export type PartType = (typeof PART_TYPES)[number];
 export type TurnLifecycleStatus = (typeof TURN_LIFECYCLE_STATUSES)[number];
 export type TurnRepairStatus = (typeof TURN_REPAIR_STATUSES)[number];
+export type TurnLowerBandProjectionStatus = (typeof TURN_LOWER_BAND_PROJECTION_STATUSES)[number];
 export type TokenCountingMaintenanceStatus = (typeof TOKEN_COUNTING_MAINTENANCE_STATUSES)[number];
 export type ImportStatus = (typeof IMPORT_STATUSES)[number];
 export type ProjectionStatus = (typeof PROJECTION_STATUSES)[number];
@@ -158,6 +160,18 @@ export interface TurnSmoothRecord {
   sourceRevision?: number;
   components?: TurnSmoothComponentRecord[];
   materialized?: TurnSmoothMaterializedRecord;
+  lowerBandProjection?: TurnLowerBandProjectionRecord;
+}
+
+export interface TurnLowerBandProjectionRecord {
+  status: TurnLowerBandProjectionStatus;
+  text?: string;
+  tokenCountMetadata?: TokenCountRecord;
+  sourceFingerprint?: string;
+  sourceRevision?: number;
+  generatedAt?: string;
+  errorCode?: string;
+  errorMessage?: string;
 }
 
 export interface TurnSmoothComponentRecord {

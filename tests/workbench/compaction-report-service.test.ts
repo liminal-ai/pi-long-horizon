@@ -4,10 +4,10 @@ import test from "node:test";
 import { createStewardIssue } from "../../src/thread/domain/errors.js";
 import { makeBandRecord, makeThreadView, makeThreadViewMessage, withTempFeature3Store } from "../../src/thread-view/test/fixtures.js";
 import { buildCompactionAuditReport } from "../../src/workbench/services/compaction-report-service.js";
-import { seedDeterministicRebuildThread } from "../thread-view/helpers.js";
+import { seedDeterministicRebuildThread, seedDeterministicRebuildThreadWithOptions } from "../thread-view/helpers.js";
 
 async function seedReportView(storeRootDir: string) {
-  const context = await seedDeterministicRebuildThread(storeRootDir);
+  const context = await seedDeterministicRebuildThreadWithOptions(storeRootDir, { canonicalClosedChunks: true });
   const threadViewId = "thread-view-report";
   const view = makeThreadView({
     threadId: context.threadId,
@@ -138,7 +138,7 @@ async function seedReportView(storeRootDir: string) {
           generatedAt: "2026-05-11T00:00:00.000Z",
           status: "reload_failed",
           generatedSource: "thread_view",
-          placeholderExplicit: true,
+          placeholderExplicit: false,
           requestedLowerBound: 500,
           generatedSessionTokenCount: 612,
           generatedSessionTokenCountMetadata: {
@@ -209,10 +209,10 @@ test("buildCompactionAuditReport returns broad happy-path metadata, accounting, 
     assert.equal(report.reloadResult, "reload_failed");
     assert.equal(report.bands.full_fidelity.actualTokenCount, 127);
     assert.equal(report.bands.smooth.actualTokenCount, 6);
-    assert.equal(report.bands.detailed.actualTokenCount, 22);
-    assert.equal(report.bands.brief.actualTokenCount, 17);
+    assert.equal(report.bands.detailed.actualTokenCount, 10);
+    assert.equal(report.bands.brief.actualTokenCount, 9);
     assert.equal(report.bands.full_fidelity.countPolicyStatus, "usable");
-    assert.equal(report.resultingTokenCount, 172);
+    assert.equal(report.resultingTokenCount, 152);
     assert.deepEqual(report.selectedTurns, [
       {
         turnId: context.turns.oldest.turnId,
@@ -238,19 +238,16 @@ test("buildCompactionAuditReport returns broad happy-path metadata, accounting, 
         chunkId: context.chunks.oldestClosed,
         bandType: "detailed",
         smoothTokenCount: 6,
-        detailedTokenCount: 22,
-        briefTokenCount: 18,
-        detailedCountPolicyStatus: "usable",
-        briefCountPolicyStatus: "usable",
+        detailedTokenCount: 10,
+        briefTokenCount: 9,
+        detailedCountPolicyStatus: "degraded",
+        briefCountPolicyStatus: "degraded",
         lowerBandFreshness: {
           chunkId: context.chunks.oldestClosed,
           bandType: "detailed",
           status: "fresh",
           artifactStatus: "ready",
-          generatedFromComponentSmooth: true,
-          artifactSmoothSourceRevision: 1,
           currentSmoothSourceRevision: 1,
-          artifactSmoothSourceTokenCount: 6,
           currentSmoothSourceTokenCount: 6,
         },
       },
@@ -258,19 +255,16 @@ test("buildCompactionAuditReport returns broad happy-path metadata, accounting, 
         chunkId: context.chunks.newerClosed,
         bandType: "brief",
         smoothTokenCount: 6,
-        detailedTokenCount: 22,
-        briefTokenCount: 17,
-        detailedCountPolicyStatus: "usable",
-        briefCountPolicyStatus: "usable",
+        detailedTokenCount: 9,
+        briefTokenCount: 9,
+        detailedCountPolicyStatus: "degraded",
+        briefCountPolicyStatus: "degraded",
         lowerBandFreshness: {
           chunkId: context.chunks.newerClosed,
           bandType: "brief",
           status: "fresh",
           artifactStatus: "ready",
-          generatedFromComponentSmooth: true,
-          artifactSmoothSourceRevision: 1,
           currentSmoothSourceRevision: 1,
-          artifactSmoothSourceTokenCount: 6,
           currentSmoothSourceTokenCount: 6,
         },
       },
@@ -284,27 +278,54 @@ test("buildCompactionAuditReport returns broad happy-path metadata, accounting, 
   });
 });
 
-test("buildCompactionAuditReport marks mismatched lower-band provenance blocked_or_stale", async () => {
+test("buildCompactionAuditReport marks missing semantic lower-band artifact blocked_or_stale", async () => {
   await withTempFeature3Store(async (temp) => {
     const context = await seedReportView(temp.storeRootDir);
     const chunksResult = await context.threadStore.readChunks(context.threadId);
     assert.equal(chunksResult.ok, true);
     const snapshot = await context.threadStore.openThread(context.threadId);
     assert.equal(snapshot.ok, true);
-    const chunks = chunksResult.value.map((chunk) =>
-      chunk.chunkId === context.chunks.oldestClosed && chunk.placeholders?.detailed
-        ? {
-            ...chunk,
-            placeholders: {
-              ...chunk.placeholders,
-              detailed: {
-                ...chunk.placeholders.detailed,
-                smoothSourceRevision: 999,
-              },
-            },
-          }
-        : chunk,
-    );
+    const chunks = chunksResult.value.map((chunk) => {
+      if (chunk.chunkId !== context.chunks.oldestClosed) {
+        return chunk;
+      }
+
+      return {
+        chunkId: chunk.chunkId,
+        threadId: chunk.threadId,
+        lifecycleStatus: chunk.lifecycleStatus,
+        sourceTurnIds: [...chunk.sourceTurnIds],
+        smoothText: chunk.smoothText,
+        smoothTokenCountMetadata: chunk.smoothTokenCountMetadata,
+        openedAt: chunk.openedAt,
+        closedAt: chunk.closedAt,
+        closeReason: chunk.closeReason,
+        sourceRevision: chunk.sourceRevision,
+        schemaVersion: chunk.schemaVersion,
+        conversationTranscript: chunk.conversationTranscript,
+        lowerBand: {
+          ...chunk.lowerBand,
+          detailed: {
+            band: "detailed" as const,
+            status: "failed" as const,
+            errorCode: "test_missing_semantic_artifact",
+            errorMessage: "simulated missing semantic lower-band output",
+            updatedAt: "2026-05-11T00:00:00.000Z",
+          },
+        },
+        placeholders: {
+          chunkId: chunk.chunkId,
+          threadId: chunk.threadId,
+          detailed: {
+            kind: "detailed",
+            status: "ready",
+            text: "legacy detailed placeholder [deterministic-placeholder:detailed]",
+            strategy: "deterministic_truncate_30",
+            generatedAt: "2026-05-11T00:00:00.000Z",
+          },
+        },
+      } as unknown as typeof chunk;
+    });
     const written = await context.threadStore.writeChunks({
       threadId: context.threadId,
       expectedSourceRevision: snapshot.value.thread.sourceRevision,
@@ -322,7 +343,13 @@ test("buildCompactionAuditReport marks mismatched lower-band provenance blocked_
     const freshness = report.smoothingQuality.lowerBandFreshness.find(
       (entry) => entry.chunkId === context.chunks.oldestClosed && entry.bandType === "detailed",
     );
+    const selectedChunk = report.selectedChunks.find(
+      (entry) => entry.chunkId === context.chunks.oldestClosed && entry.bandType === "detailed",
+    );
+
     assert.equal(freshness?.status, "blocked_or_stale");
+    assert.equal(selectedChunk?.detailedTokenCount, undefined);
+    assert.equal(report.bands.detailed.actualTokenCount, 0);
   });
 });
 

@@ -1,0 +1,16 @@
+{"timestamp":"2026-05-18T01:52:45.156Z","command":"story-verify","phase":"verifier-initial","event":"command-started","summary":"story-verify started."}
+{"timestamp":"2026-05-18T01:52:45.164Z","command":"story-verify","phase":"verifier-initial","event":"verifier-started","summary":"Story verifier started for 02-chunk-assembly-from-turn-projections."}
+{"timestamp":"2026-05-18T01:52:45.175Z","command":"story-verify","phase":"verifier-initial","event":"provider-spawned","summary":"Provider spawned with pid 65009.","metadata":{"pid":65009}}
+{"timestamp":"2026-05-18T01:52:45.265Z","command":"story-verify","phase":"verifier-initial","event":"first-output-received","summary":"First provider stderr output received.","metadata":{"stream":"stderr"}}
+{"timestamp":"2026-05-18T01:53:16.515Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-18T01:53:48.790Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-18T01:54:19.242Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-18T01:55:01.225Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-18T01:55:57.111Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-18T01:56:29.688Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-18T01:57:01.139Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-18T01:59:08.320Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stderr output continues.","metadata":{"stream":"stderr"}}
+{"timestamp":"2026-05-18T02:00:14.470Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-18T02:00:14.560Z","command":"story-verify","phase":"verifier-initial","event":"provider-exit","summary":"Provider exited with code 0.","metadata":{"exitCode":0,"signal":null,"elapsedMs":449386,"configuredTimeoutMs":3600000}}
+{"timestamp":"2026-05-18T02:00:14.564Z","command":"story-verify","phase":"verifier-initial","event":"verifier-completed","summary":"Story verifier completed for 02-chunk-assembly-from-turn-projections.","metadata":{"outcome":"revise"}}
+{"timestamp":"2026-05-18T02:00:14.581Z","command":"story-verify","phase":"finalizing","event":"completed","summary":"story-verify completed for 02-chunk-assembly-from-turn-projections with outcome revise.","metadata":{"outcome":"revise","verifiersCompleted":1}}

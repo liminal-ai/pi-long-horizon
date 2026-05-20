@@ -1,8 +1,13 @@
 import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 
 import { StewardResultError } from "../../thread/domain/errors.js";
 import type { ProjectionRevisionRecord } from "../../thread/domain/records.js";
 import type { ThreadStore } from "../../thread/store/thread-store.js";
+import {
+  getReadyChunkLowerBandArtifact,
+  type ChunkState,
+} from "../../thread/async-thread/domain/chunk-state.js";
 import type { BandType } from "../../thread-view/domain/thread-view-records.js";
 import { BAND_ORDER } from "../../thread-view/domain/thread-view-records.js";
 
@@ -40,6 +45,7 @@ export interface ActiveRolloutInspectionReport {
   liveTail: ActiveRolloutLiveTailInspection;
   toolResults: ActiveRolloutToolResultInspection;
   estimatedVisibleTokens: number;
+  catchUpEvents: ActiveRolloutCatchUpEvent[];
   warnings: string[];
 }
 
@@ -49,6 +55,20 @@ export interface InspectActiveRolloutInput {
 
 export interface InspectActiveRolloutDependencies {
   threadStore: ThreadStore;
+}
+
+export interface ActiveRolloutCatchUpEvent {
+  at?: string;
+  chunkId: string;
+  band: "detailed" | "brief";
+  event:
+    | "completed"
+    | "retry"
+    | "failed"
+    | "escalated"
+    | "truncated"
+    | "other";
+  message: string;
 }
 
 interface PiSessionEntry {
@@ -146,6 +166,108 @@ function sourceCountsForBand(band: ActiveRolloutBandInspection, source: string):
   band.sourceCounts[source] = (band.sourceCounts[source] ?? 0) + 1;
 }
 
+function collectSelectedLowerBandWarnings(input: {
+  projection: ProjectionRevisionRecord | undefined;
+  chunks: readonly ChunkState[];
+}): string[] {
+  const snapshot = input.projection?.compactSnapshot;
+  if (!snapshot) {
+    return [];
+  }
+
+  const chunkById = new Map(input.chunks.map((chunk) => [chunk.chunkId, chunk] as const));
+  const warnings: string[] = [];
+
+  for (const bandType of ["detailed", "brief"] as const) {
+    for (const chunkId of snapshot.bands[bandType].selectedIds) {
+      const chunk = chunkById.get(chunkId);
+      if (!chunk) {
+        warnings.push(`Active projection ${bandType} chunk ${chunkId} is missing from current chunk state.`);
+        continue;
+      }
+
+      if (!getReadyChunkLowerBandArtifact(chunk, bandType)) {
+        warnings.push(
+          `Active projection ${bandType} chunk ${chunkId} is missing ready semantic lower-band output in current chunk state.`,
+        );
+      }
+    }
+  }
+
+  return warnings;
+}
+
+function debugLogPath(threadStore: ThreadStore): string | undefined {
+  const rootDir = (threadStore as { rootDir?: unknown }).rootDir;
+  return typeof rootDir === "string" ? join(rootDir, "debug", "lower-band-compression.log") : undefined;
+}
+
+function classifyCatchUpEvent(message: string): ActiveRolloutCatchUpEvent["event"] {
+  if (message.includes("completed")) {
+    return "completed";
+  }
+  if (message.includes("will retry")) {
+    return "retry";
+  }
+  if (message.includes("exhausted")) {
+    return "failed";
+  }
+  if (message.includes("escalating")) {
+    return "escalated";
+  }
+  if (message.includes("truncated")) {
+    return "truncated";
+  }
+  return "other";
+}
+
+async function readCatchUpEvents(input: {
+  threadId: string;
+  threadStore: ThreadStore;
+}): Promise<ActiveRolloutCatchUpEvent[]> {
+  const logPath = debugLogPath(input.threadStore);
+  if (!logPath) {
+    return [];
+  }
+
+  let content: string;
+  try {
+    content = await readFile(logPath, "utf8");
+  } catch {
+    return [];
+  }
+
+  const parsed = content
+    .split(/\r?\n/)
+    .filter((line) => line.trim().length > 0)
+    .flatMap((line) => {
+      try {
+        return [JSON.parse(line) as Record<string, unknown>];
+      } catch {
+        return [];
+      }
+    })
+    .filter(
+      (entry) =>
+        entry.threadId === input.threadId &&
+        entry.mode === "prepare_catch_up" &&
+        (entry.band === "detailed" || entry.band === "brief") &&
+        typeof entry.chunkId === "string" &&
+        typeof entry.message === "string",
+    )
+    .map((entry) => ({
+      at: typeof entry.at === "string" ? entry.at : undefined,
+      chunkId: entry.chunkId as string,
+      band: entry.band as "detailed" | "brief",
+      event: classifyCatchUpEvent(entry.message as string),
+      message: entry.message as string,
+    }))
+    .sort((left, right) => (left.at ?? "").localeCompare(right.at ?? ""))
+    .slice(-10);
+
+  return parsed;
+}
+
 export async function inspectActiveThreadView(
   input: InspectActiveRolloutInput,
   dependencies: InspectActiveRolloutDependencies,
@@ -156,6 +278,10 @@ export async function inspectActiveThreadView(
   }
 
   const snapshot = snapshotResult.value;
+  const chunksResult = await dependencies.threadStore.readChunks(input.threadId);
+  if (!chunksResult.ok) {
+    throw new StewardResultError(chunksResult.issues);
+  }
   const projection =
     (snapshot.thread.threadViewOutputSummary.currentProjectionRevisionId
       ? snapshot.projections.find(
@@ -169,6 +295,16 @@ export async function inspectActiveThreadView(
     snapshot.thread.target.currentGeneratedFilePath;
 
   const warnings: string[] = [];
+  const catchUpEvents = await readCatchUpEvents({
+    threadId: input.threadId,
+    threadStore: dependencies.threadStore,
+  });
+  warnings.push(
+    ...catchUpEvents.map(
+      (event) =>
+        `Recent lower-band catch-up ${event.event} for chunk ${event.chunkId} (${event.band}) at ${event.at ?? "unknown time"}.`,
+    ),
+  );
   if (snapshot.thread.threadViewOutputSummary.currentProjectionRevisionId && projection?.status !== "available") {
     warnings.push(
       `Current projection ${snapshot.thread.threadViewOutputSummary.currentProjectionRevisionId} is ${projection?.status ?? "unavailable"}.`,
@@ -183,6 +319,12 @@ export async function inspectActiveThreadView(
   ) {
     warnings.push(`Generated output status is ${snapshot.thread.threadViewOutputSummary.generatedOutput.status}.`);
   }
+  warnings.push(
+    ...collectSelectedLowerBandWarnings({
+      projection,
+      chunks: chunksResult.value,
+    }),
+  );
   if (!generatedFilePath) {
     warnings.push("No active generated rollout file is recorded for this thread.");
     return {
@@ -194,6 +336,7 @@ export async function inspectActiveThreadView(
       liveTail: { entryCount: 0, messageCount: 0, roleCounts: {} },
       toolResults: { totalCount: 0, truncatedCount: 0, nonTruncatedCount: 0, largestNonTruncated: [] },
       estimatedVisibleTokens: 0,
+      catchUpEvents,
       warnings,
     };
   }
@@ -214,6 +357,7 @@ export async function inspectActiveThreadView(
       liveTail: { entryCount: 0, messageCount: 0, roleCounts: {} },
       toolResults: { totalCount: 0, truncatedCount: 0, nonTruncatedCount: 0, largestNonTruncated: [] },
       estimatedVisibleTokens: 0,
+      catchUpEvents,
       warnings,
     };
   }
@@ -286,6 +430,7 @@ export async function inspectActiveThreadView(
       largestNonTruncated: largestNonTruncated.slice(0, 5),
     },
     estimatedVisibleTokens,
+    catchUpEvents,
     warnings,
   };
 }

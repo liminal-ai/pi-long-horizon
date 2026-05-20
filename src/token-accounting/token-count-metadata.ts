@@ -2,6 +2,7 @@ export const TOKEN_COUNT_SCOPES = [
   "raw_message_materialized",
   "raw_turn_materialized",
   "smooth_turn_materialized",
+  "turn_lower_band_projection_materialized",
   "chunk_smooth_materialized",
   "detailed_chunk_materialized",
   "brief_chunk_materialized",
@@ -60,6 +61,8 @@ export type TokenCountRecordForScope<TScope extends TokenCountScope> = TokenCoun
 export type RawMessageMaterializedTokenCountRecord = TokenCountRecordForScope<"raw_message_materialized">;
 export type RawTurnMaterializedTokenCountRecord = TokenCountRecordForScope<"raw_turn_materialized">;
 export type SmoothTurnMaterializedTokenCountRecord = TokenCountRecordForScope<"smooth_turn_materialized">;
+export type TurnLowerBandProjectionMaterializedTokenCountRecord =
+  TokenCountRecordForScope<"turn_lower_band_projection_materialized">;
 export type ChunkSmoothMaterializedTokenCountRecord = TokenCountRecordForScope<"chunk_smooth_materialized">;
 export type DetailedChunkMaterializedTokenCountRecord = TokenCountRecordForScope<"detailed_chunk_materialized">;
 export type BriefChunkMaterializedTokenCountRecord = TokenCountRecordForScope<"brief_chunk_materialized">;
@@ -71,6 +74,7 @@ export type CanonicalTokenCountRecord =
   | RawMessageMaterializedTokenCountRecord
   | RawTurnMaterializedTokenCountRecord
   | SmoothTurnMaterializedTokenCountRecord
+  | TurnLowerBandProjectionMaterializedTokenCountRecord
   | ChunkSmoothMaterializedTokenCountRecord
   | DetailedChunkMaterializedTokenCountRecord
   | BriefChunkMaterializedTokenCountRecord
@@ -120,6 +124,7 @@ const MATERIALIZED_TOKEN_COUNT_SCOPES = new Set<TokenCountScope>([
   "raw_message_materialized",
   "raw_turn_materialized",
   "smooth_turn_materialized",
+  "turn_lower_band_projection_materialized",
   "chunk_smooth_materialized",
   "detailed_chunk_materialized",
   "brief_chunk_materialized",
@@ -292,6 +297,12 @@ export function createSmoothTurnMaterializedTokenCountRecord(
   input: CreateScopedTokenCountRecordInput,
 ): TokenCountValidationResult<SmoothTurnMaterializedTokenCountRecord> {
   return createScopedTokenCountRecord("smooth_turn_materialized", input);
+}
+
+export function createTurnLowerBandProjectionMaterializedTokenCountRecord(
+  input: CreateScopedTokenCountRecordInput,
+): TokenCountValidationResult<TurnLowerBandProjectionMaterializedTokenCountRecord> {
+  return createScopedTokenCountRecord("turn_lower_band_projection_materialized", input);
 }
 
 export function createChunkSmoothMaterializedTokenCountRecord(

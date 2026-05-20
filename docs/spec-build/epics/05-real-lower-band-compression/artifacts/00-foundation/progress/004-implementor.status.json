@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "command": "story-implement",
+  "status": "completed",
+  "phase": "finalizing",
+  "startedAt": "2026-05-17T23:00:40.237Z",
+  "updatedAt": "2026-05-17T23:16:11.889Z",
+  "lastOutputAt": "2026-05-17T23:16:11.782Z",
+  "providerLiveness": "completed",
+  "provider": "codex",
+  "pid": 54625,
+  "cwd": "/Users/leemoore/code/pi-long-horizon",
+  "timeoutMs": 7200000,
+  "configuredStartupTimeoutMs": 300000,
+  "configuredSilenceTimeoutMs": 600000,
+  "artifactPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/05-real-lower-band-compression/artifacts/00-foundation/004-implementor.json",
+  "streamPaths": {
+    "stdoutPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/05-real-lower-band-compression/artifacts/00-foundation/streams/004-implementor.stdout.log",
+    "stderrPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/05-real-lower-band-compression/artifacts/00-foundation/streams/004-implementor.stderr.log"
+  },
+  "progressPaths": {
+    "statusPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/05-real-lower-band-compression/artifacts/00-foundation/progress/004-implementor.status.json",
+    "progressPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/05-real-lower-band-compression/artifacts/00-foundation/progress/004-implementor.progress.jsonl"
+  },
+  "lastEvent": "completed",
+  "lastEventSummary": "story-implement completed for 00-foundation with outcome ready-for-verification.",
+  "selfReviewPassesCompleted": 0,
+  "selfReviewPassesPlanned": 0
+}

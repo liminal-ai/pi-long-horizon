@@ -1,0 +1,9 @@
+{"timestamp":"2026-05-18T11:02:35.082Z","command":"epic-reverify","phase":"epic-reverify","event":"command-started","summary":"epic-reverify started."}
+{"timestamp":"2026-05-18T11:02:35.098Z","command":"epic-reverify","phase":"epic-reverify","event":"provider-spawned","summary":"Provider spawned with pid 61404.","metadata":{"pid":61404}}
+{"timestamp":"2026-05-18T11:02:35.189Z","command":"epic-reverify","phase":"epic-reverify","event":"first-output-received","summary":"First provider stderr output received.","metadata":{"stream":"stderr"}}
+{"timestamp":"2026-05-18T11:03:08.648Z","command":"epic-reverify","phase":"epic-reverify","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-18T11:03:42.342Z","command":"epic-reverify","phase":"epic-reverify","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-18T11:05:54.083Z","command":"epic-reverify","phase":"epic-reverify","event":"provider-output","summary":"Provider stderr output continues.","metadata":{"stream":"stderr"}}
+{"timestamp":"2026-05-18T11:06:33.741Z","command":"epic-reverify","phase":"epic-reverify","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-18T11:06:54.420Z","command":"epic-reverify","phase":"epic-reverify","event":"provider-exit","summary":"Provider exited with code 0.","metadata":{"exitCode":0,"signal":null,"elapsedMs":259323,"configuredTimeoutMs":3600000}}
+{"timestamp":"2026-05-18T11:06:54.428Z","command":"epic-reverify","phase":"finalizing","event":"completed","summary":"epic-reverify completed with outcome ready-for-closeout.","metadata":{"outcome":"ready-for-closeout"}}

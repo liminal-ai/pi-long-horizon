@@ -4,9 +4,19 @@ import {
   type ThreadSnapshotFixture,
 } from "../../../context-steward/test/fixtures.js";
 import {
+  CHUNK_SCHEMA_VERSION,
   cloneChunkState,
+  type CanonicalChunkState,
   type ChunkState,
+  type LegacyPlaceholderChunkState,
 } from "../domain/chunk-state.js";
+import {
+  cloneChunkConversationTranscriptRecord,
+  cloneChunkLowerBandState,
+  type ChunkConversationTranscriptRecord,
+  type ChunkLowerBandState,
+  type ChunkSemanticArtifactRecord,
+} from "../domain/lower-band-artifact-state.js";
 import {
   clonePlaceholderArtifactState,
   type PlaceholderArtifactState,
@@ -16,6 +26,7 @@ import {
   estimateDeterministicTokenCount,
   normalizeDeterministicText,
   type SmoothTurnState,
+  type TurnLowerBandProjectionState,
 } from "../domain/smooth-turn-state.js";
 import { createSmoothChunkSourceFingerprint } from "../services/placeholder-artifact-service.js";
 import { assertTokenCountRecord, type TokenCountScope } from "../../../token-accounting/index.js";
@@ -56,6 +67,7 @@ export function makeSmoothTurnState(overrides: Partial<SmoothTurnState> = {}): S
     generatedAt: overrides.generatedAt ?? DEFAULT_TEST_TIMESTAMP,
     sourceRevision: overrides.sourceRevision ?? 1,
     components,
+    lowerBandProjection: overrides.lowerBandProjection,
   });
 }
 
@@ -69,6 +81,44 @@ function makeTokenCountRecord(count: number, scope: TokenCountScope) {
     sourceRevision: 1,
     createdAt: DEFAULT_TEST_TIMESTAMP,
   });
+}
+
+function makeExactTokenCountRecord(count: number, scope: TokenCountScope) {
+  return assertTokenCountRecord({
+    count,
+    scope,
+    source: "provider_input_count",
+    trustClass: "exact",
+    provider: "openai",
+    model: "gpt-5.4-mini",
+    representationHash: `sha256:test-${scope}-${count}`,
+    sourceRevision: 1,
+    createdAt: DEFAULT_TEST_TIMESTAMP,
+  });
+}
+
+export function makeTurnLowerBandProjection(
+  overrides: Partial<TurnLowerBandProjectionState> = {},
+): TurnLowerBandProjectionState {
+  const text = overrides.text ?? "> Steward request\n● Assistant response";
+  const count = overrides.tokenCountMetadata?.count ?? estimateDeterministicTokenCount(text);
+
+  return {
+    status: overrides.status ?? "ready",
+    text: overrides.status === "pending" || overrides.status === "failed" || overrides.status === "invalid"
+      ? overrides.text
+      : text,
+    tokenCountMetadata:
+      overrides.tokenCountMetadata ??
+      (overrides.status === "pending" || overrides.status === "failed" || overrides.status === "invalid"
+        ? undefined
+        : makeExactTokenCountRecord(count, "turn_lower_band_projection_materialized")),
+    sourceFingerprint: overrides.sourceFingerprint ?? "sha256:test-lower-band-projection",
+    sourceRevision: overrides.sourceRevision ?? 1,
+    generatedAt: overrides.generatedAt ?? DEFAULT_TEST_TIMESTAMP,
+    errorCode: overrides.errorCode,
+    errorMessage: overrides.errorMessage,
+  };
 }
 
 export function makePlaceholderArtifactState(
@@ -125,21 +175,54 @@ export function makePlaceholderArtifactState(
   });
 }
 
-export function makeChunkState(overrides: Partial<ChunkState> = {}): ChunkState {
+export function makeChunkLowerBandArtifacts(
+  overrides: Partial<ChunkLowerBandState> = {},
+): ChunkLowerBandState {
+  return cloneChunkLowerBandState({
+    detailed:
+      overrides.detailed === undefined
+        ? {
+            band: "detailed",
+            status: "ready",
+            text: "Detailed semantic lower-band artifact",
+            updatedAt: DEFAULT_TEST_TIMESTAMP,
+          }
+        : overrides.detailed,
+    brief:
+      overrides.brief === undefined
+        ? {
+            band: "brief",
+            status: "ready",
+            text: "Brief semantic lower-band artifact",
+            updatedAt: DEFAULT_TEST_TIMESTAMP,
+          }
+        : overrides.brief,
+  });
+}
+
+function makeChunkConversationTranscript(
+  overrides: Partial<ChunkConversationTranscriptRecord> = {},
+): ChunkConversationTranscriptRecord {
+  return cloneChunkConversationTranscriptRecord({
+    status: overrides.status ?? "ready",
+    text: overrides.text ?? "> Steward request\n● Assistant response",
+    sourceFingerprint: overrides.sourceFingerprint ?? "sha256:test-chunk-transcript",
+    sourceRevision: overrides.sourceRevision ?? 1,
+    updatedAt: overrides.updatedAt ?? DEFAULT_TEST_TIMESTAMP,
+    errorCode: overrides.errorCode,
+    errorMessage: overrides.errorMessage,
+  });
+}
+
+export function makeChunkState(overrides: Partial<CanonicalChunkState> = {}): CanonicalChunkState {
   const lifecycleStatus = overrides.lifecycleStatus ?? "closed";
-  const placeholders =
-    overrides.placeholders === undefined
-      ? lifecycleStatus === "closed"
-        ? makePlaceholderArtifactState({
-            threadId: overrides.threadId ?? "thread-001",
-            chunkId: overrides.chunkId ?? "chunk-001",
-          })
-        : undefined
-      : overrides.placeholders;
+  const threadId = overrides.threadId ?? "thread-001";
+  const chunkId = overrides.chunkId ?? "chunk-001";
+  const closedDefaults = lifecycleStatus === "closed";
 
   return cloneChunkState({
-    chunkId: overrides.chunkId ?? "chunk-001",
-    threadId: overrides.threadId ?? "thread-001",
+    chunkId,
+    threadId,
     lifecycleStatus,
     sourceTurnIds: overrides.sourceTurnIds ? [...overrides.sourceTurnIds] : ["turn-001", "turn-002"],
     smoothText: overrides.smoothText ?? "Combined smooth chunk text",
@@ -147,9 +230,48 @@ export function makeChunkState(overrides: Partial<ChunkState> = {}): ChunkState 
       overrides.smoothTokenCountMetadata ??
       makeTokenCountRecord(4, "chunk_smooth_materialized"),
     openedAt: overrides.openedAt ?? DEFAULT_TEST_TIMESTAMP,
-    closedAt: overrides.closedAt ?? (lifecycleStatus === "closed" ? DEFAULT_TEST_TIMESTAMP : undefined),
-    closeReason: overrides.closeReason ?? (lifecycleStatus === "closed" ? "soft_threshold" : undefined),
+    closedAt: overrides.closedAt ?? (closedDefaults ? DEFAULT_TEST_TIMESTAMP : undefined),
+    closeReason: overrides.closeReason ?? (closedDefaults ? "soft_threshold" : undefined),
     sourceRevision: overrides.sourceRevision ?? 1,
-    placeholders,
-  });
+    schemaVersion: overrides.schemaVersion ?? (closedDefaults ? CHUNK_SCHEMA_VERSION : undefined),
+    conversationTranscript:
+      overrides.conversationTranscript === undefined
+        ? closedDefaults
+          ? makeChunkConversationTranscript({
+              sourceRevision: overrides.sourceRevision ?? 1,
+            })
+          : undefined
+        : overrides.conversationTranscript,
+    lowerBand:
+      overrides.lowerBand === undefined
+        ? closedDefaults
+          ? makeChunkLowerBandArtifacts()
+          : undefined
+        : overrides.lowerBand,
+  }) as CanonicalChunkState;
+}
+
+export function makeLegacyPlaceholderChunkState(
+  overrides: Partial<LegacyPlaceholderChunkState> = {},
+): LegacyPlaceholderChunkState {
+  return cloneChunkState({
+    chunkId: overrides.chunkId ?? "chunk-001",
+    threadId: overrides.threadId ?? "thread-001",
+    lifecycleStatus: overrides.lifecycleStatus ?? "closed",
+    sourceTurnIds: overrides.sourceTurnIds ? [...overrides.sourceTurnIds] : ["turn-001", "turn-002"],
+    smoothText: overrides.smoothText ?? "Combined smooth chunk text",
+    smoothTokenCountMetadata:
+      overrides.smoothTokenCountMetadata ??
+      makeTokenCountRecord(4, "chunk_smooth_materialized"),
+    openedAt: overrides.openedAt ?? DEFAULT_TEST_TIMESTAMP,
+    closedAt: overrides.closedAt ?? (overrides.lifecycleStatus === "open" ? undefined : DEFAULT_TEST_TIMESTAMP),
+    closeReason: overrides.closeReason ?? (overrides.lifecycleStatus === "open" ? undefined : "soft_threshold"),
+    sourceRevision: overrides.sourceRevision ?? 1,
+    placeholders:
+      overrides.placeholders ??
+      makePlaceholderArtifactState({
+        threadId: overrides.threadId ?? "thread-001",
+        chunkId: overrides.chunkId ?? "chunk-001",
+      }),
+  }) as LegacyPlaceholderChunkState;
 }

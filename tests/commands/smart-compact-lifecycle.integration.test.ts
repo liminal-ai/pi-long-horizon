@@ -29,7 +29,10 @@ import {
 } from "../../src/token-accounting/index.js";
 import { withTempFeature3Store } from "../../src/thread-view/test/fixtures.js";
 import { FileThreadViewStore } from "../../src/thread-view/store/file-thread-view-store.js";
-import { seedDeterministicRebuildThread } from "../thread-view/helpers.js";
+import {
+  seedDeterministicRebuildThread,
+  seedDeterministicRebuildThreadWithOptions,
+} from "../thread-view/helpers.js";
 import type { StewardResult } from "../../src/thread/domain/errors.js";
 import type { TurnRecord } from "../../src/thread/domain/records.js";
 import { FileThreadStore } from "../../src/thread/store/file-thread-store.js";
@@ -475,7 +478,7 @@ test("smart compact consumes assembled smooth components instead of stale persis
     const result = await runCompact(context, temp, {
       mode: "strict",
       requestedLowerBound: 180,
-      requestedBandPercentages: FORCE_SMOOTH_BANDS,
+      requestedBandPercentages: ONLY_SMOOTH_BANDS,
     });
 
     assert.equal(result.compactStatus, "success");
@@ -522,7 +525,7 @@ test("prepare smart compact catches up missing deterministic components", async 
     const result = await runCompact(context, temp, {
       mode: "prepare",
       requestedLowerBound: 220,
-      requestedBandPercentages: FORCE_SMOOTH_BANDS,
+      requestedBandPercentages: ONLY_SMOOTH_BANDS,
     });
 
     assert.equal(result.compactStatus, "success");
@@ -556,9 +559,9 @@ test("smart compact does not mutate canonical raw messages", async () => {
   });
 });
 
-test("prepare regenerates lower-band placeholders after component source changes", async () => {
+test("prepare refreshes canonical chunk transcript and smooth text after component source changes", async () => {
   await withTempFeature3Store(async (temp) => {
-    const context = await seedDeterministicRebuildThread(temp.storeRootDir);
+    const context = await seedDeterministicRebuildThreadWithOptions(temp.storeRootDir, { canonicalClosedChunks: true });
     const snapshot = expectOk(await context.threadStore.openThread(context.threadId));
     const changedTurnId = context.turns.oldest.turnId;
     const changedText = "UPDATED_COMPONENT_SOURCE_FOR_LOWER_BAND";
@@ -568,13 +571,11 @@ test("prepare regenerates lower-band placeholders after component source changes
             ...turn,
             sourceRevision: turn.sourceRevision + 1,
             smooth: {
-              ...turn.smooth,
-              sourceRevision: turn.sourceRevision + 1,
-              tokenCountMetadata: undefined,
-              materialized: undefined,
-              components: turn.smooth.components.map((component) =>
-                component.kind === "assistant_message"
-                  ? { ...component, text: changedText, sourceRevision: turn.sourceRevision + 1 }
+            ...turn.smooth,
+            sourceRevision: turn.sourceRevision + 1,
+            components: turn.smooth.components.map((component) =>
+              component.kind === "assistant_message"
+                ? { ...component, text: changedText, sourceRevision: turn.sourceRevision + 1 }
                   : { ...component, sourceRevision: turn.sourceRevision + 1 }),
             },
           }
@@ -583,8 +584,8 @@ test("prepare regenerates lower-band placeholders after component source changes
 
     const result = await runCompact(context, temp, {
       mode: "prepare",
-      requestedLowerBound: 180,
-      requestedBandPercentages: FORCE_LOWER_BANDS,
+      requestedLowerBound: READY_LOWER_BOUND,
+      requestedBandPercentages: ONLY_SMOOTH_BANDS,
     });
 
     assert.equal(result.compactStatus, "success");
@@ -593,20 +594,15 @@ test("prepare regenerates lower-band placeholders after component source changes
     const refreshedChunk = chunks.find((chunk) => chunk.chunkId === context.chunks.oldestClosed);
     assert.ok(refreshedChunk);
     assert.match(refreshedChunk.smoothText ?? "", new RegExp(changedText));
-    assert.equal(refreshedChunk.placeholders?.brief?.generatedFromComponentSmooth, true);
-    assert.equal(refreshedChunk.placeholders?.brief?.smoothSourceRevision, refreshedChunk.sourceRevision);
-    assert.equal(
-      refreshedChunk.placeholders?.brief?.smoothSourceTokenCount,
-      refreshedChunk.smoothTokenCountMetadata?.count,
-    );
+    assert.equal(refreshedChunk.placeholders, undefined);
 
     const generated = await readFile(result.generatedFilePath!, "utf8");
-    assert.match(generated, /"generatedSource":"detailed_chunk_summary"/);
-    assert.match(generated, /deterministic-placeholder:brief|deterministic-placeholder:detailed/);
+    assert.match(generated, new RegExp(changedText));
+    assert.equal(generated.includes("deterministic-placeholder"), false);
   });
 });
 
-test("strict ignores stale selected lower-band provenance", async () => {
+test("strict blocks legacy lower-band selection even when stale placeholder provenance is present", async () => {
   await withTempFeature3Store(async (temp) => {
     const context = await seedDeterministicRebuildThread(temp.storeRootDir);
     const snapshot = expectOk(await context.threadStore.openThread(context.threadId));
@@ -617,19 +613,31 @@ test("strict ignores stale selected lower-band provenance", async () => {
         expectedSourceRevision: snapshot.thread.sourceRevision,
         expectedMessageHighWatermark: snapshot.thread.messageHighWatermark,
         expectedTurnsRevision: snapshot.thread.turnsRevision,
-        chunks: chunks.map((chunk) =>
-          chunk.chunkId === context.chunks.newerClosed && chunk.placeholders?.detailed
-            ? {
-                ...chunk,
-                placeholders: {
-                  ...chunk.placeholders,
-                  detailed: {
-                    ...chunk.placeholders.detailed,
-                    smoothSourceRevision: 999,
-                  },
-                },
-              }
-            : chunk),
+        chunks: chunks.map((chunk) => {
+          if (chunk.chunkId !== context.chunks.newerClosed || !chunk.placeholders?.detailed) {
+            return chunk;
+          }
+
+          return {
+            chunkId: chunk.chunkId,
+            threadId: chunk.threadId,
+            lifecycleStatus: chunk.lifecycleStatus,
+            sourceTurnIds: [...chunk.sourceTurnIds],
+            smoothText: chunk.smoothText,
+            smoothTokenCountMetadata: chunk.smoothTokenCountMetadata,
+            openedAt: chunk.openedAt,
+            closedAt: chunk.closedAt,
+            closeReason: chunk.closeReason,
+            sourceRevision: chunk.sourceRevision,
+            placeholders: {
+              ...chunk.placeholders,
+              detailed: {
+                ...chunk.placeholders.detailed,
+                smoothSourceRevision: 999,
+              },
+            },
+          };
+        }),
       }),
     );
 
@@ -639,8 +647,15 @@ test("strict ignores stale selected lower-band provenance", async () => {
       requestedBandPercentages: FORCE_LOWER_BANDS,
     });
 
-    assert.equal(result.compactStatus, "success");
-    assert.ok(result.generatedFilePath);
-    assert.equal(result.blockers.some((issue) => issue.code === "CHUNK_PLACEHOLDER_MISSING"), false);
+    assert.equal(result.compactStatus, "blocked");
+    assert.equal(result.generatedFilePath, undefined);
+    assert.equal(
+      result.blockers.some(
+        (issue) =>
+          issue.code === "CHUNK_STATE_INVALID" &&
+          issue.cause === "legacy_placeholder_chunk_state",
+      ),
+      true,
+    );
   });
 });

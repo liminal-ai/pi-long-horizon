@@ -1,0 +1,36 @@
+{
+  "snapshotId": "2026-05-19T21-42-31Z-thread_df67cbe0-src463-full-thread-snapshot",
+  "capturedAt": "2026-05-19T21:42:31Z",
+  "threadId": "thread_df67cbe0-2c0d-4c6e-90fa-570b04cd9bcc",
+  "archivePath": ".thread-snapshots/2026-05-19T21-42-31Z-thread_df67cbe0-src463-full-thread-snapshot.zip",
+  "threadDirectory": ".context-steward/threads/thread_df67cbe0-2c0d-4c6e-90fa-570b04cd9bcc",
+  "sourceRevision": 463,
+  "turnsRevision": 372,
+  "turnCount": 52,
+  "canonicalMessageCount": 463,
+  "activeGeneratedSessionFile": "/Users/leemoore/code/pi-long-horizon/.context-steward/threads/thread_df67cbe0-2c0d-4c6e-90fa-570b04cd9bcc/generated/projection_98a763de-8491-4572-a18f-6b64108b1596-thread_view_f31f8006-0bb6-43a0-a0dd-08cdf56a8761.jsonl",
+  "projectionRevisionId": "projection_98a763de-8491-4572-a18f-6b64108b1596",
+  "threadViewId": "thread_view_f31f8006-0bb6-43a0-a0dd-08cdf56a8761",
+  "projectedThreadViewTokens": 165391,
+  "canonicalWholeThreadTokens": 834676,
+  "initialSmartCompact": {
+    "requestedBandPercentages": {
+      "fullFidelity": 20,
+      "smooth": 40,
+      "detailed": 20,
+      "brief": 20
+    },
+    "selectedCounts": {
+      "fullFidelity": 15,
+      "smooth": 10,
+      "detailed": 0,
+      "brief": 0
+    }
+  },
+  "notes": [
+    "The first smart compact produced only full_fidelity and smooth upper-band output.",
+    "Many verbose turns were added after that compact.",
+    "Post-compact turns remain in the active full-fidelity region and are subject to prompt-visible tool-result pruning after the 32k live raw-zone threshold.",
+    "The next smart compact is expected to populate the detailed band and may populate the brief band, but the brief-band expectation is not yet confirmed."
+  ]
+}

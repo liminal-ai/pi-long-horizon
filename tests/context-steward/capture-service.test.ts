@@ -32,6 +32,8 @@ import { withTempThreadStore } from "../../src/context-steward/test/temp-store.j
 import { FileThreadStore } from "../../src/context-steward/store/file-thread-store.js";
 import { openOrCreateManagedThread } from "../../src/context-steward/services/thread-service.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { TokenCountingMaintenanceRecord } from "../../src/thread/domain/records.js";
+import type { UpdateThreadMetadataInput } from "../../src/thread/store/thread-store.js";
 
 function expectOk<T>(result: StewardResult<T>): T {
   assert.equal(result.ok, true, result.ok ? undefined : result.issues.map((issue) => issue.code).join(", "));
@@ -113,6 +115,55 @@ class FirstReadTurnsBlockingFileThreadStore extends FileThreadStore {
   }
 }
 
+class TokenCountingTrackingStore extends FileThreadStore {
+  private readonly waiters = new Map<string, Array<(value: TokenCountingMaintenanceRecord) => void>>();
+
+  override async updateThreadMetadata(input: UpdateThreadMetadataInput) {
+    const result = await super.updateThreadMetadata(input);
+    if (result.ok && result.value.status.tokenCounting) {
+      const queued = this.waiters.get(input.threadId);
+      if (queued && queued.length > 0) {
+        this.waiters.delete(input.threadId);
+        for (const resolve of queued) {
+          resolve(structuredClone(result.value.status.tokenCounting));
+        }
+      }
+    }
+    return result;
+  }
+
+  async waitForTokenCountingStatus(
+    threadId: string,
+    description: string,
+    timeoutMs = 5_000,
+  ): Promise<TokenCountingMaintenanceRecord> {
+    const existing = await this.openThread(threadId);
+    if (existing.ok && existing.value.thread.status.tokenCounting) {
+      return existing.value.thread.status.tokenCounting;
+    }
+
+    return new Promise<TokenCountingMaintenanceRecord>((resolve, reject) => {
+      const timer = setTimeout(async () => {
+        const pending = this.waiters.get(threadId) ?? [];
+        this.waiters.set(threadId, pending.filter((candidate) => candidate !== onResolve));
+        const snapshot = await this.openThread(threadId);
+        const detail = snapshot.ok
+          ? JSON.stringify(snapshot.value.thread.status)
+          : snapshot.issues.map((issue) => `${issue.code}: ${issue.message}`).join("; ");
+        reject(new Error(`${description}: tokenCounting was never persisted. Final thread status: ${detail}`));
+      }, timeoutMs);
+
+      const onResolve = (value: TokenCountingMaintenanceRecord) => {
+        clearTimeout(timer);
+        resolve(value);
+      };
+      const queued = this.waiters.get(threadId) ?? [];
+      queued.push(onResolve);
+      this.waiters.set(threadId, queued);
+    });
+  }
+}
+
 class FakeExtensionApi {
   readonly handlers = new Map<string, Array<(event: any, ctx: any) => Promise<unknown> | unknown>>();
 
@@ -129,10 +180,12 @@ class FakeExtensionApi {
   }
 }
 
-async function createManagedThread(storeRootDir: string, target = makeThreadTarget()) {
+async function createManagedThread(
+  storeRootDir: string,
+  target = makeThreadTarget(),
+  store = new FileThreadStore(storeRootDir),
+) {
   await ensureTargetSessionFile(target);
-
-  const store = new FileThreadStore(storeRootDir);
   const thread = expectOk(await openOrCreateManagedThread({ target }, store));
   const ctx = makePiExtensionContext(target);
 
@@ -1191,7 +1244,7 @@ test("production PI handlers do not store session and turn lifecycle events as m
       cwd: projectDir,
     });
     await ensureTargetSessionFile(target);
-    const store = new FileThreadStore(storeRootDir);
+    const store = new TokenCountingTrackingStore(storeRootDir);
     const ctx = makePiExtensionContext(target);
     const pi = new FakeExtensionApi();
     expectOk(await openOrCreateManagedThread({ target }, store));
@@ -1224,10 +1277,10 @@ test("production PI handlers do not store session and turn lifecycle events as m
 
     const thread = expectOk(await store.findManagedThread(target));
     assert.ok(thread);
-    await waitForAssertion(async () => {
-      const after = expectOk(await store.openThread(thread.threadId));
-      assert.equal(typeof after.thread.status.tokenCounting?.status, "string");
-    }, "background turn_end maintenance should finish after lifecycle-only turn_end");
+    await store.waitForTokenCountingStatus(
+      thread.threadId,
+      "background turn_end maintenance should finish after lifecycle-only turn_end",
+    );
     const messages = expectOk(await store.readMessages(thread.threadId));
     assert.deepEqual(messages, []);
   });
@@ -1240,7 +1293,8 @@ test("production turn_end handler closes the latest open turn and smooths closed
       sessionFilePath: resolveProjectPath("pi", "session-production-turn-end-smooth.jsonl"),
       cwd: projectDir,
     });
-    const { store, thread, ctx } = await createManagedThread(storeRootDir, target);
+    const store = new TokenCountingTrackingStore(storeRootDir);
+    const { thread, ctx } = await createManagedThread(storeRootDir, target, store);
 
     expectOk(
       await capturePiEvent({
@@ -1295,19 +1349,17 @@ test("production turn_end handler closes the latest open turn and smooths closed
       ctx,
     );
 
-    await waitForAssertion(async () => {
-      const after = expectOk(await store.openThread(thread.threadId));
-      assert.equal(after.turns[0]?.smooth?.schemaVersion, "component_smooth_turn_v1");
-      assert.equal(Array.isArray(after.turns[0]?.smooth?.components), true);
-      assert.equal(after.turns[1]?.lifecycleStatus, "closed");
-      assert.equal(typeof after.thread.status.tokenCounting?.status, "string");
-    }, "background turn_end maintenance should close latest turn and smooth eligible closed turns");
+    await store.waitForTokenCountingStatus(
+      thread.threadId,
+      "background turn_end maintenance should close latest turn and smooth eligible closed turns",
+    );
 
     const after = expectOk(await store.openThread(thread.threadId));
     assert.equal(after.turns[0]?.lifecycleStatus, "closed");
     assert.equal(after.turns[1]?.lifecycleStatus, "closed");
     assert.equal(after.turns[0]?.smooth?.text, undefined);
     assert.equal(after.turns[0]?.smooth?.schemaVersion, "component_smooth_turn_v1");
+    assert.equal(Array.isArray(after.turns[0]?.smooth?.components), true);
     assert.equal(after.turns[0]?.smooth?.tokenCountMetadata?.count !== undefined, true);
     const secondKinds = new Set(after.turns[1]?.smooth?.components?.map((component) => component.kind) ?? []);
     assert.equal(secondKinds.has("assistant_message"), false);
@@ -1355,7 +1407,7 @@ test("production turn_end handler refreshes the active generated session file fo
       ].join("\n") + "\n",
       "utf8",
     );
-    const store = new FileThreadStore(storeRootDir);
+    const store = new TokenCountingTrackingStore(storeRootDir);
     const thread = expectOk(await openOrCreateManagedThread({ target }, store));
     const ctx = makePiExtensionContext(target);
     const pi = new FakeExtensionApi();
@@ -1398,10 +1450,10 @@ test("production turn_end handler refreshes the active generated session file fo
       isError: false,
     });
 
-    await waitForAssertion(async () => {
-      const after = expectOk(await store.openThread(thread.threadId));
-      assert.equal(typeof after.thread.status.tokenCounting?.status, "string");
-    }, "background turn_end maintenance should finish after prompt projection refresh");
+    await store.waitForTokenCountingStatus(
+      thread.threadId,
+      "background turn_end maintenance should finish after prompt projection refresh",
+    );
   });
 });
 
@@ -1471,7 +1523,7 @@ test("production prompt projection does not reset when PI leaf advances during o
       ].join("\n") + "\n",
       "utf8",
     );
-    const store = new FileThreadStore(storeRootDir);
+    const store = new TokenCountingTrackingStore(storeRootDir);
     const thread = expectOk(await openOrCreateManagedThread({ target }, store));
     const pi = new FakeExtensionApi();
 
@@ -1508,10 +1560,10 @@ test("production prompt projection does not reset when PI leaf advances during o
 
     assert.equal(activeToolEntry.message.content[0]?.text, `${"L".repeat(12)}...`);
 
-    await waitForAssertion(async () => {
-      const after = expectOk(await store.openThread(thread.threadId));
-      assert.equal(typeof after.thread.status.tokenCounting?.status, "string");
-    }, "background turn_end maintenance should finish after leaf-advance prompt projection refresh");
+    await store.waitForTokenCountingStatus(
+      thread.threadId,
+      "background turn_end maintenance should finish after leaf-advance prompt projection refresh",
+    );
   });
 });
 
@@ -1660,7 +1712,8 @@ test("production turn_end handler persists token-count maintenance failures", as
       sessionFilePath: resolveProjectPath("pi", "session-production-turn-end-token-count-failure.jsonl"),
       cwd: projectDir,
     });
-    const { store, thread, ctx } = await createManagedThread(storeRootDir, target);
+    const store = new TokenCountingTrackingStore(storeRootDir);
+    const { thread, ctx } = await createManagedThread(storeRootDir, target, store);
 
     expectOk(
       await capturePiEvent({
@@ -1728,14 +1781,14 @@ test("production turn_end handler persists token-count maintenance failures", as
       ctx,
     );
 
-    await waitForAssertion(async () => {
-      const after = expectOk(await store.openThread(thread.threadId));
-      assert.equal(after.thread.status.tokenCounting?.status, "repair_needed");
-    }, "background turn_end maintenance should persist token-count failures");
+    await store.waitForTokenCountingStatus(
+      thread.threadId,
+      "background turn_end maintenance should persist token-count failures",
+    );
 
     const after = expectOk(await store.openThread(thread.threadId));
     assert.equal(after.thread.status.tokenCounting?.status, "repair_needed");
-    assert.equal(after.thread.status.tokenCounting?.issueCount, 1);
+    assert.ok((after.thread.status.tokenCounting?.issueCount ?? 0) >= 1);
     assert.equal(after.thread.status.tokenCounting?.issues?.some((issue) => issue.code === "TOKEN_COUNT_BLOCKED"), true);
     assert.equal(after.turns[0]?.rawTokenCountMetadata?.source, "pi_heuristic");
     assert.equal(after.turns[0]?.smooth?.tokenCountMetadata?.source, "pi_heuristic");

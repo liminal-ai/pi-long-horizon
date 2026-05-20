@@ -29,10 +29,15 @@ import {
 } from "../../src/context-workbench/test/fixtures.js";
 import type { ThreadViewRecord, WorkbenchChunkRead } from "../../src/context-workbench/domain/thread-view-records.js";
 import { withTempWorkbenchStore } from "../../src/context-workbench/test/temp-workbench-store.js";
+import {
+  makeChunkState,
+  makeLegacyPlaceholderChunkState,
+} from "../../src/thread/async-thread/test/fixtures.js";
 import { withTempFeature3Store } from "../../src/thread-view/test/fixtures.js";
 import {
   seedDeterministicRebuildThread,
-  seedMissingDetailedPlaceholderThread,
+  seedDeterministicRebuildThreadWithOptions,
+  seedMissingDetailedLowerBandArtifactThread,
 } from "../thread-view/helpers.js";
 
 const fakeOpenAICounter = new OpenAIInputTokenCounter({
@@ -162,6 +167,23 @@ async function writeThreadTurns(store: FileThreadStore, threadId: string, turns:
       expectedTurnsRevision: snapshot.thread.turnsRevision,
       turns,
       turnState: "ready",
+    }),
+  );
+}
+
+async function writeThreadChunks(
+  store: FileThreadStore,
+  threadId: string,
+  chunks: Array<ReturnType<typeof makeChunkState> | ReturnType<typeof makeLegacyPlaceholderChunkState>>,
+) {
+  const snapshot = expectOk(await store.openThread(threadId));
+  return expectOk(
+    await store.writeChunks({
+      threadId,
+      expectedSourceRevision: snapshot.thread.sourceRevision,
+      expectedMessageHighWatermark: snapshot.thread.messageHighWatermark,
+      expectedTurnsRevision: snapshot.thread.turnsRevision,
+      chunks,
     }),
   );
 }
@@ -699,7 +721,7 @@ test("ignores stale legacy activeThreadViewId state", async () => {
 
 test("blocked smooth state appears in inspectable records without consumer-side placeholder stale checks", async () => {
   await withTempFeature3Store(async ({ storeRootDir }) => {
-    const context = await seedDeterministicRebuildThread(storeRootDir);
+    const context = await seedDeterministicRebuildThreadWithOptions(storeRootDir, { canonicalClosedChunks: true });
     const snapshot = await context.threadStore.openThread(context.threadId);
     assert.equal(snapshot.ok, true);
 
@@ -729,21 +751,21 @@ test("blocked smooth state appears in inspectable records without consumer-side 
     const chunkDetail = expectOk(
       await queryService.openChunkDetail({
         threadId: context.threadId,
-        chunkId: context.chunks.newerClosed,
+        chunkId: context.chunks.oldestClosed,
       }),
     );
 
     assert.equal(openedThread.usableStatus, "blocked");
     assert.equal(openedThread.blockers.some((issue) => issue.code === "SMOOTH_MISSING"), true);
-    assert.equal(openedThread.blockers.some((issue) => issue.code === "CHUNK_PLACEHOLDER_MISSING"), false);
+    assert.equal(openedThread.blockers.some((issue) => issue.code === "CHUNK_LOWER_BAND_MISSING"), false);
     assert.equal(turnDetail.turn.smooth, undefined);
-    assert.equal(chunkDetail.chunk.issues?.some((issue) => issue.code === "CHUNK_PLACEHOLDER_MISSING") ?? false, false);
+    assert.equal(chunkDetail.chunk.issues?.some((issue) => issue.code === "CHUNK_LOWER_BAND_MISSING") ?? false, false);
   });
 });
 
 test("projection failure state appears in inspectable output metadata", async () => {
   await withTempFeature3Store(async ({ storeRootDir }) => {
-    const context = await seedDeterministicRebuildThread(storeRootDir);
+    const context = await seedDeterministicRebuildThreadWithOptions(storeRootDir, { canonicalClosedChunks: true });
 
     const result = await runSmartCompact(
       {
@@ -776,7 +798,7 @@ test("projection failure state appears in inspectable output metadata", async ()
 
 test("chunk inspection reports unresolved source turns as invalid state", async () => {
   await withTempFeature3Store(async ({ storeRootDir }) => {
-    const context = await seedDeterministicRebuildThread(storeRootDir);
+    const context = await seedDeterministicRebuildThreadWithOptions(storeRootDir, { canonicalClosedChunks: true });
     const snapshot = await context.threadStore.openThread(context.threadId);
     assert.equal(snapshot.ok, true);
     const chunks = await context.threadStore.readChunks(context.threadId);
@@ -810,7 +832,7 @@ test("chunk inspection reports unresolved source turns as invalid state", async 
 
 test("threshold-degraded compact results remain inspectable through normal workbench state", async () => {
   await withTempFeature3Store(async ({ storeRootDir }) => {
-    const context = await seedDeterministicRebuildThread(storeRootDir);
+    const context = await seedDeterministicRebuildThreadWithOptions(storeRootDir, { canonicalClosedChunks: true });
 
     const result = await runSmartCompact(
       {
@@ -834,9 +856,9 @@ test("threshold-degraded compact results remain inspectable through normal workb
   });
 });
 
-test("placeholder strategy is visible in lower-band records", async () => {
+test("semantic lower-band summaries are exposed through lower-band records", async () => {
   await withTempFeature3Store(async ({ storeRootDir }) => {
-    const context = await seedDeterministicRebuildThread(storeRootDir);
+    const context = await seedDeterministicRebuildThreadWithOptions(storeRootDir, { canonicalClosedChunks: true });
     const queryService = new WorkbenchQueryService(context.threadStore, context.threadViewStore);
 
     const detail = expectOk(
@@ -846,12 +868,14 @@ test("placeholder strategy is visible in lower-band records", async () => {
       }),
     );
 
-    assert.equal(detail.chunk.detailedSummaryStrategy, "deterministic_truncate_30");
-    assert.equal(detail.chunk.briefSummaryStrategy, "deterministic_truncate_5");
+    assert.equal(detail.chunk.detailedSummary, `semantic detailed ${context.chunks.newerClosed}`);
+    assert.equal(detail.chunk.briefSummary, `semantic brief ${context.chunks.newerClosed}`);
+    assert.equal(detail.chunk.placeholderExplicit, undefined);
+    assert.equal(detail.chunk.summaryQuality, undefined);
   });
 });
 
-test("Feature 3 lower-band output stays explicit about non-semantic summary quality", async () => {
+test("legacy placeholder lower-band records stay inspectable without blessing placeholder text as semantic output", async () => {
   await withTempFeature3Store(async ({ storeRootDir }) => {
     const context = await seedDeterministicRebuildThread(storeRootDir);
     const queryService = new WorkbenchQueryService(context.threadStore, context.threadViewStore);
@@ -863,10 +887,18 @@ test("Feature 3 lower-band output stays explicit about non-semantic summary qual
       }),
     );
 
-    assert.equal(detail.chunk.placeholderExplicit, true);
-    assert.equal(detail.chunk.summaryQuality, "deterministic_placeholder_not_semantic");
-    assert.match(detail.chunk.detailedSummary ?? "", /\[not-semantic-summary\]/);
-    assert.match(detail.chunk.briefSummary ?? "", /\[not-semantic-summary\]/);
+    assert.equal(detail.chunk.detailedSummary, undefined);
+    assert.equal(detail.chunk.briefSummary, undefined);
+    assert.equal(detail.chunk.placeholderExplicit, undefined);
+    assert.equal(detail.chunk.summaryQuality, undefined);
+    assert.equal(
+      detail.chunk.issues?.some(
+        (issue) =>
+          issue.code === "CHUNK_STATE_INVALID" &&
+          issue.cause === "legacy_placeholder_chunk_state",
+      ),
+      true,
+    );
   });
 });
 
@@ -1430,6 +1462,36 @@ test("closed chunk with detailed artifact is shown as eligible for the detailed 
   });
 });
 
+test("placeholder-labeled lower-band summaries do not count as readiness truth", async () => {
+  await withTempWorkbenchStore(async ({ storeRootDir }) => {
+    const { thread } = await createManagedThread(storeRootDir, "session-placeholder-readiness");
+    const placeholderChunk = makeWorkbenchChunkRead({
+      chunkId: "chunk-placeholder-only",
+      lifecycleStatus: "closed",
+      sourceTurnIds: [],
+      smoothText: "Closed chunk smooth text",
+      detailedSummary: "placeholder detailed [deterministic-placeholder:detailed]",
+      briefSummary: "placeholder brief [deterministic-placeholder:brief]",
+      placeholderExplicit: true,
+      summaryQuality: "deterministic_placeholder_not_semantic",
+    });
+    const { queryService } = await createQueryHarness(storeRootDir, {
+      chunkReader: new InMemoryChunkReader({
+        [thread.threadId]: [placeholderChunk],
+      }),
+    });
+
+    const readiness = expectOk(
+      await queryService.inspectLowerBandReadiness({
+        threadId: thread.threadId,
+      }),
+    );
+
+    assert.equal(readiness.detailedBand[0]?.status, "missing_artifacts");
+    assert.equal(readiness.briefBand[0]?.status, "missing_artifacts");
+  });
+});
+
 test("closed chunk missing a required lower-band artifact is shown as not ready", async () => {
   await withTempWorkbenchStore(async ({ storeRootDir }) => {
     const { queryService, thread, view } = await seedLowerBandFixture(storeRootDir);
@@ -1449,6 +1511,169 @@ test("closed chunk missing a required lower-band artifact is shown as not ready"
       readiness.briefBand.find((entry) => entry.chunkId === "chunk-lower-missing")?.status,
       "missing_artifacts",
     );
+  });
+});
+
+test("inspectLowerBandStatus reports transcript readiness, band failures, and compact blockers without eval fields", async () => {
+  await withTempWorkbenchStore(async ({ storeRootDir }) => {
+    const threadStore = new FileThreadStore(storeRootDir);
+    const threadViewStore = new FileThreadViewStore(storeRootDir, threadStore);
+    const thread = expectOk(
+      await openOrCreateManagedThread(
+        {
+          target: makeThreadTarget({
+            sessionId: "session-lower-band-status-report",
+            sessionFilePath: undefined,
+          }),
+        },
+        threadStore,
+      ),
+    );
+
+    const prompt = await appendThreadMessage({
+      store: threadStore,
+      threadId: thread.threadId,
+      actorId: "actor-human-status",
+      actorType: "human",
+      displayName: "Steward",
+      messageId: "message-lower-band-status-001",
+      messageKind: "prompt",
+      parts: [makePartRecord({ partId: "part-lower-band-status-001", content: "Inspect lower-band state." })],
+    });
+    const response = await appendThreadMessage({
+      store: threadStore,
+      threadId: thread.threadId,
+      actorId: "actor-agent-status",
+      actorType: "agent",
+      displayName: "Pair Agent",
+      messageId: "message-lower-band-status-002",
+      messageKind: "response",
+      parts: [makePartRecord({ partId: "part-lower-band-status-002", content: "Reporting lower-band readiness." })],
+    });
+
+    const [closedTurn] = await writeThreadTurns(threadStore, thread.threadId, [
+      makeTurnRecord({
+        threadId: thread.threadId,
+        turnId: "turn-lower-band-status-001",
+        turnOrder: 1,
+        lifecycleStatus: "closed",
+        repairStatus: "ready",
+        initiatingMessageId: prompt.messageId,
+        messageIds: [prompt.messageId, response.messageId],
+        sourceRange: { fromSourceOrder: prompt.sourceOrder, toSourceOrder: response.sourceOrder },
+        sourceRevision: response.sourceRevision,
+        openedAt: prompt.capturedAt,
+        closedAt: response.capturedAt,
+      }),
+    ]);
+
+    await writeThreadChunks(threadStore, thread.threadId, [
+      makeChunkState({
+        threadId: thread.threadId,
+        chunkId: "chunk-ready-status",
+        sourceTurnIds: [closedTurn.turnId],
+      }),
+      makeChunkState({
+        threadId: thread.threadId,
+        chunkId: "chunk-failed-status",
+        sourceTurnIds: [closedTurn.turnId],
+        lowerBand: {
+          detailed: {
+            band: "detailed",
+            status: "failed",
+            errorCode: "MODEL_UNAVAILABLE",
+            errorMessage: "provider unavailable",
+            updatedAt: "2026-05-18T00:00:00.000Z",
+          },
+          brief: {
+            band: "brief",
+            status: "pending",
+            updatedAt: "2026-05-18T00:00:00.000Z",
+          },
+        },
+      }),
+      makeLegacyPlaceholderChunkState({
+        threadId: thread.threadId,
+        chunkId: "chunk-legacy-status",
+        sourceTurnIds: [closedTurn.turnId],
+      }),
+    ]);
+
+    const view = makeThreadView({
+      threadId: thread.threadId,
+      state: "active",
+      name: "Lower Band Status View",
+      detailedBand: makeBandRecord({
+        bandType: "detailed",
+        selectedIds: ["chunk-failed-status"],
+        renderedStatus: "missing_artifacts",
+      }),
+      briefBand: makeBandRecord({
+        bandType: "brief",
+        selectedIds: ["chunk-legacy-status"],
+        renderedStatus: "blocked",
+      }),
+    });
+    expectOk(await threadViewStore.createThreadView({ view }));
+    await writeProjectionForView(threadStore, view);
+
+    const report = expectOk(
+      await new WorkbenchQueryService(threadStore, threadViewStore).inspectLowerBandStatus({
+        threadId: thread.threadId,
+        threadViewId: view.threadViewId,
+      }),
+    );
+
+    assert.equal(report.threadId, thread.threadId);
+    assert.equal(report.threadViewId, view.threadViewId);
+
+    assert.deepEqual(
+      report.chunks.map((chunk) => ({
+        chunkId: chunk.chunkId,
+        selectedBands: chunk.selectedBands,
+        legacyPlaceholderBlocked: chunk.legacyPlaceholderBlocked,
+        transcriptStatus: chunk.transcript.status,
+        detailedStatus: chunk.detailed.status,
+        briefStatus: chunk.brief.status,
+        detailedErrorCode: chunk.detailed.errorCode,
+      })),
+      [
+        {
+          chunkId: "chunk-ready-status",
+          selectedBands: [],
+          legacyPlaceholderBlocked: false,
+          transcriptStatus: "ready",
+          detailedStatus: "ready",
+          briefStatus: "ready",
+          detailedErrorCode: undefined,
+        },
+        {
+          chunkId: "chunk-failed-status",
+          selectedBands: ["detailed"],
+          legacyPlaceholderBlocked: false,
+          transcriptStatus: "ready",
+          detailedStatus: "failed",
+          briefStatus: "pending",
+          detailedErrorCode: "MODEL_UNAVAILABLE",
+        },
+        {
+          chunkId: "chunk-legacy-status",
+          selectedBands: ["brief"],
+          legacyPlaceholderBlocked: true,
+          transcriptStatus: "blocked_legacy_placeholder",
+          detailedStatus: "blocked_legacy_placeholder",
+          briefStatus: "blocked_legacy_placeholder",
+          detailedErrorCode: undefined,
+        },
+      ],
+    );
+
+    assert.ok(
+      report.compactBlockers.some((blocker) =>
+        blocker.chunkId === "chunk-failed-status" && blocker.bandLabel === "detailed/brief"),
+    );
+    assert.equal("qualityScore" in report, false);
+    assert.equal("modelComparison" in report, false);
   });
 });
 
