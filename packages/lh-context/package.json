@@ -1,0 +1,27 @@
+{
+  "name": "@pi-long-horizon/context",
+  "version": "0.1.0",
+  "description": "Read-only SDK and CLI for inspecting PI Long Horizon Context Steward state.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "lhx": "./dist/cli.js"
+  },
+  "files": ["dist", "README.md"],
+  "scripts": {
+    "build": "npx tsc -p tsconfig.json",
+    "typecheck": "npx tsc -p tsconfig.json --noEmit",
+    "test": "npx vitest run",
+    "dev:cli": "npx tsx src/cli.ts"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0",
+    "vitest": "^4.0.0",
+    "tsx": "^4.20.0"
+  }
+}
