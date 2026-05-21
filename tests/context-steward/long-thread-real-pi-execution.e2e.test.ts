@@ -300,20 +300,20 @@ async function readFetchObserverEvents(filePath: string): Promise<FetchObserverE
 }
 
 async function assertOpenAIInputTokenCountingObserved(input: {
-  run: PiRunResult;
+  store: FileThreadStore;
+  threadId: string;
+  turnId: string;
   description: string;
 }): Promise<void> {
-  const events = await readFetchObserverEvents(input.run.fetchLogPath);
-  assert.ok(events.length > 0, `${input.description}: expected fetch observer events.`);
-  assert.ok(
-    events.some(
-      (event) =>
-        event.event === "fetch_start" &&
-        (event.url?.includes("/responses/input_tokens") ?? false) &&
-        (event.callSite?.includes("openai-input-token-counter") ?? false),
-    ),
-    `${input.description}: expected async thread view to call OpenAI input token counting.`,
-  );
+  await waitForAssertion(async () => {
+    const snapshot = expectOk(await input.store.openThread(input.threadId));
+    const turn = snapshot.turns.find((candidate) => candidate.turnId === input.turnId);
+    assert.ok(turn, `${input.description}: expected repaired turn ${input.turnId}.`);
+    assert.equal(turn.rawTokenCountMetadata?.source, "provider_input_count");
+    assert.equal(turn.rawTokenCountMetadata?.trustClass, "exact");
+    assert.equal(turn.smooth?.tokenCountMetadata?.source, "provider_input_count");
+    assert.equal(turn.smooth?.tokenCountMetadata?.trustClass, "exact");
+  }, input.description);
 }
 
 async function waitForClosedModelSmoothedTurn(input: {
@@ -448,10 +448,10 @@ async function assertInferenceGeneratedLowerBandArtifacts(input: {
 
   const detailed = closedChunks
     .map((chunk) => chunk.lowerBand?.detailed as LowerBandArtifactWithProviderMetadata | undefined)
-    .find((artifact) => artifact?.status === "ready");
+    .find((artifact) => artifact?.status === "ready" && artifact.providerMetadata?.providerId === "openai-codex");
   const brief = closedChunks
     .map((chunk) => chunk.lowerBand?.brief as LowerBandArtifactWithProviderMetadata | undefined)
-    .find((artifact) => artifact?.status === "ready");
+    .find((artifact) => artifact?.status === "ready" && artifact.providerMetadata?.providerId === "openai-codex");
 
   assert.ok(detailed, `${input.description}: expected inference-generated detailed lower-band text.`);
   assert.ok(detailed.text?.trim(), `${input.description}: expected non-empty detailed lower-band text.`);
@@ -559,7 +559,9 @@ test(
         description: "real PI execution should persist closed turn and model-smoothed user prompt",
       });
       await assertOpenAIInputTokenCountingObserved({
-        run: result,
+        store,
+        threadId: prepared.threadId,
+        turnId: verified.turn.turnId,
         description: "real PI execution async thread view",
       });
       await waitForAsyncThreadViewProjectionAndChunking({

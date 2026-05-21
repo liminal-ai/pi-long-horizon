@@ -40,6 +40,13 @@ import {
   type TokenCountRecord,
 } from "../../../token-accounting/index.js";
 
+export interface AsyncThreadArtifactRepairLimits {
+  maxSmoothTurns?: number;
+  maxProjectionTurns?: number;
+  maxTokenTurns?: number;
+  maxTokenChunks?: number;
+}
+
 export interface AsyncThreadRunDependencies {
   store: ThreadStore;
   lowerBandCompressionProvider?: LowerBandCompressionProvider;
@@ -56,6 +63,7 @@ export interface AsyncThreadRunDependencies {
     Partial<Pick<OpenAIInputTokenCounter, "countTurnLowerBandProjectionMaterialized">>;
   exactTokenCountRepairEnabled?: boolean;
   tokenCountModel?: string;
+  artifactRepairLimits?: AsyncThreadArtifactRepairLimits;
   now?: () => Date;
 }
 
@@ -151,6 +159,18 @@ function createLowerBandCompressionScheduler(
 }
 
 const BAND_ALLOCATION_KEYS = ["fullFidelity", "smooth", "detailed", "brief"] as const;
+const DEFAULT_BACKGROUND_ARTIFACT_REPAIR_LIMITS: Required<AsyncThreadArtifactRepairLimits> = {
+  maxSmoothTurns: 2,
+  maxProjectionTurns: 2,
+  maxTokenTurns: 2,
+  maxTokenChunks: 2,
+};
+
+function normalizeRepairLimit(limit: number | undefined): number {
+  if (limit === undefined) return Number.MAX_SAFE_INTEGER;
+  if (!Number.isFinite(limit)) return Number.MAX_SAFE_INTEGER;
+  return Math.max(0, Math.floor(limit));
+}
 
 function blockedReadiness(threadId: string, issues: readonly StewardIssue[]): PrepareAsyncThreadResult {
   return {
@@ -189,6 +209,11 @@ function sortTurnsInSourceOrder(turns: readonly TurnRecord[]): TurnRecord[] {
 
     return left.turnId.localeCompare(right.turnId);
   });
+}
+
+function sortTurnsForBoundedRepair(turns: readonly TurnRecord[], limits?: AsyncThreadArtifactRepairLimits): TurnRecord[] {
+  const sorted = sortTurnsInSourceOrder(turns);
+  return limits ? sorted.reverse() : sorted;
 }
 
 function sortMessagesInSourceOrder(messages: readonly MessageRecord[]): MessageRecord[] {
@@ -399,6 +424,14 @@ function selectLowerBandChunkIds(
   };
 }
 
+function hasProviderGeneratedLowerBandArtifact(
+  chunk: ChunkState,
+  bandType: ChunkSemanticArtifactBand,
+): boolean {
+  const artifact = chunk.lowerBand?.[bandType];
+  return artifact?.status === "ready" && typeof artifact.text === "string" && artifact.text.length > 0 && artifact.providerMetadata?.providerId === "openai-codex";
+}
+
 function findLowerBandCatchUpTarget(
   candidates: readonly OrderedChunkCandidate[],
   budget: number,
@@ -420,7 +453,7 @@ function findLowerBandCatchUpTarget(
       bandType,
       policyMode: "prepare",
     });
-    if (!accounting) {
+    if (!accounting || !hasProviderGeneratedLowerBandArtifact(candidate.chunk, bandType)) {
       return {
         target: {
           chunkId: candidate.chunk.chunkId,
@@ -1126,6 +1159,7 @@ async function repairMissingArtifacts(
   dependencies: AsyncThreadRunDependencies,
   options: {
     warnOnSmoothCatchUp?: boolean;
+    limits?: AsyncThreadArtifactRepairLimits;
   } = {},
 ): Promise<StewardIssue[]> {
   const startedAt = Date.now();
@@ -1138,6 +1172,9 @@ async function repairMissingArtifacts(
   let lowerBandCatchUpMs = 0;
   let closedTurns = 0;
   let projectedTurns = 0;
+  let smoothTurnsRepaired = 0;
+  let smoothTurnsSkippedByLimit = 0;
+  let projectionTurnsSkippedByLimit = 0;
   let closedChunks = 0;
   let result = "unknown";
   let stepStartedAt = Date.now();
@@ -1154,7 +1191,7 @@ async function repairMissingArtifacts(
 
   stepStartedAt = Date.now();
   const messagesById = new Map(threadSnapshot.value.messages.map((message) => [message.messageId, message]));
-  for (const turn of threadSnapshot.value.turns) {
+  for (const turn of sortTurnsForBoundedRepair(threadSnapshot.value.turns, options.limits)) {
     if (turn.lifecycleStatus !== "closed") {
       continue;
     }
@@ -1166,6 +1203,11 @@ async function repairMissingArtifacts(
         .filter((message): message is MessageRecord => message !== undefined),
     );
     if (isSmoothTurnReady(turn, messages)) {
+      continue;
+    }
+
+    if (smoothTurnsRepaired >= normalizeRepairLimit(options.limits?.maxSmoothTurns)) {
+      smoothTurnsSkippedByLimit += 1;
       continue;
     }
 
@@ -1185,6 +1227,7 @@ async function repairMissingArtifacts(
           now: dependencies.now,
         },
       );
+      smoothTurnsRepaired += 1;
     } catch (error) {
       smoothMs += Date.now() - stepStartedAt;
       result = "smoothFailed";
@@ -1198,6 +1241,13 @@ async function repairMissingArtifacts(
     }
   }
   smoothMs = Date.now() - stepStartedAt;
+  const limitIssues: StewardIssue[] = [];
+  if (smoothTurnsSkippedByLimit > 0) {
+    limitIssues.push(tokenCountBlockedIssue({
+      threadId,
+      message: `Async smooth repair limit reached; ${smoothTurnsSkippedByLimit} closed turn(s) still need smooth repair. Run standalone thread maintenance for full catch-up.`,
+    }));
+  }
 
   if (dependencies.openAIInputTokenCounter?.countTurnLowerBandProjectionMaterialized) {
     stepStartedAt = Date.now();
@@ -1214,8 +1264,13 @@ async function repairMissingArtifacts(
       return projectionSnapshot.issues;
     }
 
-    for (const turn of projectionSnapshot.value.turns) {
+    for (const turn of sortTurnsForBoundedRepair(projectionSnapshot.value.turns, options.limits)) {
       if (turn.lifecycleStatus !== "closed" || isCurrentExactLowerBandProjection(turn)) {
+        continue;
+      }
+
+      if (projectedTurns >= normalizeRepairLimit(options.limits?.maxProjectionTurns)) {
+        projectionTurnsSkippedByLimit += 1;
         continue;
       }
 
@@ -1253,6 +1308,12 @@ async function repairMissingArtifacts(
       }
     }
     projectionMs = Date.now() - stepStartedAt;
+    if (projectionTurnsSkippedByLimit > 0) {
+      limitIssues.push(tokenCountBlockedIssue({
+        threadId,
+        message: `Async projection repair limit reached; ${projectionTurnsSkippedByLimit} closed turn(s) still need lower-band projection repair. Run standalone thread maintenance for full catch-up.`,
+      }));
+    }
   }
 
   try {
@@ -1427,16 +1488,17 @@ async function repairMissingArtifacts(
     projectedTurns,
     closedChunks,
   });
-  return [];
+  return limitIssues;
 }
 
-async function repairOpenAITokenCounts(
+export async function repairOpenAITokenCounts(
   threadId: string,
   dependencies: AsyncThreadRunDependencies,
   options: {
     includeOpenRawTurns: boolean;
     failureMessage: string;
     missingCounterMessage: string;
+    limits?: Pick<AsyncThreadArtifactRepairLimits, "maxTokenTurns" | "maxTokenChunks">;
   } = {
     includeOpenRawTurns: true,
     failureMessage:
@@ -1456,10 +1518,15 @@ async function repairOpenAITokenCounts(
   let turnsVisited = 0;
   let rawCounts = 0;
   let smoothCounts = 0;
+  let tokenTurnsRepaired = 0;
+  let tokenTurnsSkippedByLimit = 0;
   let chunksVisited = 0;
   let chunkSmoothCounts = 0;
   let detailedCounts = 0;
   let briefCounts = 0;
+  let tokenChunksRepaired = 0;
+  let tokenChunksSkippedByLimit = 0;
+  const limitIssues: StewardIssue[] = [];
   let result = "unknown";
   const counter = dependencies.openAIInputTokenCounter;
   if (!counter) {
@@ -1493,7 +1560,7 @@ async function repairOpenAITokenCounts(
 
   try {
     stepStartedAt = Date.now();
-    for (const turn of nextTurns) {
+    for (const turn of sortTurnsForBoundedRepair(nextTurns, options.limits)) {
       turnsVisited += 1;
       if (!options.includeOpenRawTurns && turn.lifecycleStatus !== "closed") {
         continue;
@@ -1512,13 +1579,38 @@ async function repairOpenAITokenCounts(
         messages,
         policyMode: "prepare",
       }).record;
-      if (
+      const rawDirty = !isOpenAIProviderInputCount({
+        record: turn.rawTokenCountMetadata,
+        expected: expectedRaw,
+        model: dependencies.tokenCountModel,
+      });
+
+      const turnWithSmoothText = turn.lifecycleStatus === "closed" ? withSmoothMaterializedText(turn, messages) : undefined;
+      const expectedSmooth = turnWithSmoothText?.smooth?.text
+        ? resolveSmoothTurnTokenAccounting({
+          turn,
+          messages,
+          policyMode: "prepare",
+        })?.record
+        : undefined;
+      const smoothDirty = Boolean(
+        turnWithSmoothText?.smooth?.text &&
         !isOpenAIProviderInputCount({
-          record: turn.rawTokenCountMetadata,
-          expected: expectedRaw,
+          record: turnWithSmoothText.smooth.tokenCountMetadata,
+          expected: expectedSmooth,
           model: dependencies.tokenCountModel,
-        })
-      ) {
+        }),
+      );
+
+      if (!rawDirty && !smoothDirty) {
+        continue;
+      }
+      if (tokenTurnsRepaired >= normalizeRepairLimit(options.limits?.maxTokenTurns)) {
+        tokenTurnsSkippedByLimit += 1;
+        continue;
+      }
+
+      if (rawDirty) {
         rawCounts += 1;
         turn.rawTokenCountMetadata = await counter.countRawTurnMaterialized({
           turn,
@@ -1529,27 +1621,7 @@ async function repairOpenAITokenCounts(
         turnsChanged = true;
       }
 
-      if (turn.lifecycleStatus !== "closed") {
-        continue;
-      }
-
-      const turnWithSmoothText = withSmoothMaterializedText(turn, messages);
-      if (!turnWithSmoothText.smooth?.text) {
-        continue;
-      }
-
-      const expectedSmooth = resolveSmoothTurnTokenAccounting({
-        turn,
-        messages,
-        policyMode: "prepare",
-      })?.record;
-      if (
-        !isOpenAIProviderInputCount({
-          record: turnWithSmoothText.smooth.tokenCountMetadata,
-          expected: expectedSmooth,
-          model: dependencies.tokenCountModel,
-        })
-      ) {
+      if (smoothDirty && turnWithSmoothText) {
         smoothCounts += 1;
         turn.smooth = {
           ...turn.smooth,
@@ -1560,8 +1632,15 @@ async function repairOpenAITokenCounts(
         };
         turnsChanged = true;
       }
+      tokenTurnsRepaired += 1;
     }
     turnLoopMs = Date.now() - stepStartedAt;
+    if (tokenTurnsSkippedByLimit > 0) {
+      limitIssues.push(tokenCountBlockedIssue({
+        threadId,
+        message: `Async exact token repair limit reached; ${tokenTurnsSkippedByLimit} turn(s) still need exact token repair. Run standalone thread maintenance for full catch-up.`,
+      }));
+    }
   } catch (error) {
     result = "turnCountFailed";
     logAsyncMaintenanceTiming(threadId, "repairOpenAITokenCounts", startedAt, {
@@ -1658,13 +1737,51 @@ async function repairOpenAITokenCounts(
         chunk,
         policyMode: "prepare",
       })?.record;
-      if (
+      const chunkSmoothDirty = !isOpenAIProviderInputCount({
+        record: chunk.smoothTokenCountMetadata,
+        expected: expectedSmooth,
+        model: dependencies.tokenCountModel,
+      });
+
+      const expectedDetailed = resolveChunkSemanticArtifactAccounting({
+        chunk,
+        bandType: "detailed",
+        policyMode: "prepare",
+      })?.record;
+      const detailedDirty = Boolean(
+        expectedDetailed &&
+        chunk.lowerBand?.detailed &&
         !isOpenAIProviderInputCount({
-          record: chunk.smoothTokenCountMetadata,
-          expected: expectedSmooth,
+          record: chunk.lowerBand?.detailed?.tokenCountMetadata,
+          expected: expectedDetailed,
           model: dependencies.tokenCountModel,
-        })
-      ) {
+        }),
+      );
+
+      const expectedBrief = resolveChunkSemanticArtifactAccounting({
+        chunk,
+        bandType: "brief",
+        policyMode: "prepare",
+      })?.record;
+      const briefDirty = Boolean(
+        expectedBrief &&
+        chunk.lowerBand?.brief &&
+        !isOpenAIProviderInputCount({
+          record: chunk.lowerBand?.brief?.tokenCountMetadata,
+          expected: expectedBrief,
+          model: dependencies.tokenCountModel,
+        }),
+      );
+
+      if (!chunkSmoothDirty && !detailedDirty && !briefDirty) {
+        continue;
+      }
+      if (tokenChunksRepaired >= normalizeRepairLimit(options.limits?.maxTokenChunks)) {
+        tokenChunksSkippedByLimit += 1;
+        continue;
+      }
+
+      if (chunkSmoothDirty) {
         chunkSmoothCounts += 1;
         chunk.smoothTokenCountMetadata = await counter.countChunkSmoothMaterialized(chunk, {
           model: dependencies.tokenCountModel,
@@ -1673,20 +1790,7 @@ async function repairOpenAITokenCounts(
         chunksChanged = true;
       }
 
-      const expectedDetailed = resolveChunkSemanticArtifactAccounting({
-        chunk,
-        bandType: "detailed",
-        policyMode: "prepare",
-      })?.record;
-      if (
-        expectedDetailed &&
-        chunk.lowerBand?.detailed &&
-        !isOpenAIProviderInputCount({
-          record: chunk.lowerBand?.detailed?.tokenCountMetadata,
-          expected: expectedDetailed,
-          model: dependencies.tokenCountModel,
-        })
-      ) {
+      if (detailedDirty && expectedDetailed && chunk.lowerBand?.detailed) {
         detailedCounts += 1;
         chunk.lowerBand = {
           ...(chunk.lowerBand ?? {}),
@@ -1701,20 +1805,7 @@ async function repairOpenAITokenCounts(
         chunksChanged = true;
       }
 
-      const expectedBrief = resolveChunkSemanticArtifactAccounting({
-        chunk,
-        bandType: "brief",
-        policyMode: "prepare",
-      })?.record;
-      if (
-        expectedBrief &&
-        chunk.lowerBand?.brief &&
-        !isOpenAIProviderInputCount({
-          record: chunk.lowerBand?.brief?.tokenCountMetadata,
-          expected: expectedBrief,
-          model: dependencies.tokenCountModel,
-        })
-      ) {
+      if (briefDirty && expectedBrief && chunk.lowerBand?.brief) {
         briefCounts += 1;
         chunk.lowerBand = {
           ...(chunk.lowerBand ?? {}),
@@ -1729,8 +1820,16 @@ async function repairOpenAITokenCounts(
         chunksChanged = true;
       }
 
+      tokenChunksRepaired += 1;
+
     }
     chunkLoopMs = Date.now() - stepStartedAt;
+    if (tokenChunksSkippedByLimit > 0) {
+      limitIssues.push(tokenCountBlockedIssue({
+        threadId,
+        message: `Async exact chunk token repair limit reached; ${tokenChunksSkippedByLimit} chunk(s) still need exact token repair. Run standalone thread maintenance for full catch-up.`,
+      }));
+    }
   } catch (error) {
     result = "chunkCountFailed";
     logAsyncMaintenanceTiming(threadId, "repairOpenAITokenCounts", startedAt, {
@@ -1776,7 +1875,7 @@ async function repairOpenAITokenCounts(
       detailedCounts,
       briefCounts,
     });
-    return [];
+    return limitIssues;
   }
 
   stepStartedAt = Date.now();
@@ -1808,7 +1907,7 @@ async function repairOpenAITokenCounts(
     briefCounts,
   });
 
-  return writeChunksResult.ok ? [] : writeChunksResult.issues;
+  return writeChunksResult.ok ? limitIssues : writeChunksResult.issues;
 }
 
 async function persistDegradedRawTokenCountsForClosedTurns(
@@ -1950,7 +2049,7 @@ async function persistDegradedRawTokenCountsForClosedTurns(
   return lastIssues;
 }
 
-async function persistTokenCountingMaintenanceStatus(input: {
+export async function persistTokenCountingMaintenanceStatus(input: {
   threadId: string;
   dependencies: AsyncThreadRunDependencies;
   status: "ready" | "repair_needed";
@@ -2041,6 +2140,9 @@ export async function maintainAsyncThread(
       threadId: input.threadId,
     },
     dependencies,
+    {
+      limits: dependencies.artifactRepairLimits ?? DEFAULT_BACKGROUND_ARTIFACT_REPAIR_LIMITS,
+    },
   );
   artifactsMs = Date.now() - stepStartedAt;
   stepStartedAt = Date.now();
@@ -2063,6 +2165,7 @@ export async function maintainAsyncThread(
             "OpenAI materialized token counter is not configured; async maintenance left exact materialized token counts repair-needed for smart compact prepare.",
           failureMessage:
             "OpenAI materialized token counting failed during async maintenance; deterministic artifacts were left with repair-needed heuristic counts for smart compact prepare.",
+          limits: dependencies.artifactRepairLimits ?? DEFAULT_BACKGROUND_ARTIFACT_REPAIR_LIMITS,
         });
   exactCountsMs = Date.now() - stepStartedAt;
   const tokenCountingIssues = [...degradedRawIssues, ...tokenCountIssues];

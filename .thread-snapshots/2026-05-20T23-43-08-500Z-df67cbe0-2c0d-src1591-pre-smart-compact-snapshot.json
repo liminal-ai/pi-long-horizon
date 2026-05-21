@@ -1,0 +1,209 @@
+{
+  "capturedAt": "2026-05-20T23:43:08.500Z",
+  "label": "pre-smart-compact-after-repair-command-design-work",
+  "archivePath": ".thread-snapshots/2026-05-20T23-43-08-500Z-df67cbe0-2c0d-src1591-pre-smart-compact-snapshot.zip",
+  "archiveBytes": 5098185,
+  "threadId": "thread_df67cbe0-2c0d-4c6e-90fa-570b04cd9bcc",
+  "threadDir": "/Users/leemoore/code/pi-long-horizon/.context-steward/threads/thread_df67cbe0-2c0d-4c6e-90fa-570b04cd9bcc",
+  "sourceRevision": 1591,
+  "turnsRevision": 1784,
+  "messageHighWatermark": 1591,
+  "updatedAt": "2026-05-20T23:42:39.284Z",
+  "activeGeneratedThreadView": "/Users/leemoore/code/pi-long-horizon/.context-steward/threads/thread_df67cbe0-2c0d-4c6e-90fa-570b04cd9bcc/generated/projection_4642e567-fce3-4816-bebb-808eabc0956b-thread_view_4aaed88f-52fd-4569-8bb7-c069bd55850b.jsonl",
+  "generatedSessionTokenCount": {
+    "count": 81001,
+    "label": "provider_exact",
+    "source": "thread_view_output_summary.generatedSessionTokenCountMetadata",
+    "metadata": {
+      "count": 81001,
+      "scope": "generated_session",
+      "source": "provider_input_count",
+      "trustClass": "exact",
+      "provider": "openai",
+      "model": "gpt-5.5",
+      "representationHash": "sha256:ac3179382315cb37168bcc1a78ef85204ac944f0f42fa62d77ebe13d7c3ead2f",
+      "sourceRevision": 1064,
+      "createdAt": "2026-05-20T03:59:54.240Z",
+      "provenance": "pi-long-horizon.openai-input-token-counter.v1:responses.input_tokens",
+      "note": "OpenAI Responses input token count over the generated Thread View model-input representation."
+    }
+  },
+  "canonicalRawEstimate": {
+    "count": 1420071,
+    "label": "estimate",
+    "method": "visible_text_chars_div_4"
+  },
+  "toolResultRawEstimate": {
+    "count": 1003515,
+    "label": "estimate",
+    "method": "visible_text_chars_div_4"
+  },
+  "messages": {
+    "total": 1589,
+    "byKind": {
+      "prompt": 261,
+      "response": 752,
+      "tool_result": 576
+    },
+    "byActorType": {
+      "human": 261,
+      "agent": 752,
+      "tool": 576
+    }
+  },
+  "turns": {
+    "total": 261,
+    "closed": 261,
+    "open": 0
+  },
+  "chunks": {
+    "total": 62,
+    "closed": 61,
+    "open": 1
+  },
+  "status": {
+    "degraded": [],
+    "repairNeeded": [
+      {
+        "path": "status.tokenCounting",
+        "status": "repair_needed",
+        "issueCount": 1,
+        "issues": [
+          {
+            "code": "TOKEN_COUNT_BLOCKED",
+            "message": "OpenAI materialized token count repair was intentionally skipped during PI async background maintenance; exact materialized counts remain repair-needed for smart compact prepare.",
+            "threadId": "thread_df67cbe0-2c0d-4c6e-90fa-570b04cd9bcc",
+            "cause": "exact_token_count_repair_skipped"
+          }
+        ]
+      }
+    ]
+  },
+  "preSmartCompactBandState": {
+    "note": "Bands are from the last generated smart-compact projection. Turns after that projection source revision are live post-compact tail and have not yet been reshuffled into a new projection.",
+    "generatedProjectionSourceRevision": 1064,
+    "generatedProjectionBands": {
+      "fullFidelityTurns": 11,
+      "fullFidelityRange": {
+        "firstId": "turn_afa77b94-9cf6-490f-b35a-7e21ac29f677",
+        "lastId": "turn_f06d5845-5796-45e1-b057-623cb454bcc0",
+        "firstIndex": 146,
+        "lastIndex": 156
+      },
+      "smoothTurns": 110,
+      "smoothRange": {
+        "firstId": "turn_9e098c40-3549-4a53-8240-4d2e645b64a0",
+        "lastId": "turn_7f86e884-a048-4f7b-a90f-3063ea95925a",
+        "firstIndex": 36,
+        "lastIndex": 145
+      },
+      "detailedChunks": 9,
+      "detailedChunkIds": [
+        "chunk-001",
+        "chunk-002",
+        "chunk-003",
+        "chunk-004",
+        "chunk-005",
+        "chunk-006",
+        "chunk-007",
+        "chunk-008",
+        "chunk-009"
+      ],
+      "detailedCoveredTurns": 35,
+      "briefChunks": 0,
+      "briefChunkIds": [],
+      "briefCoveredTurns": 0,
+      "tokenSums": {
+        "fullFidelity": 14030,
+        "smooth": 71757,
+        "detailed": 5160,
+        "brief": 0
+      }
+    },
+    "livePostCompactTailTurns": 105,
+    "livePostCompactTailRange": {
+      "firstIndex": 157,
+      "lastIndex": 261,
+      "firstId": "turn_9ec9b89c-0d0c-4d36-b3d4-b6451c012bfb",
+      "lastId": "turn_65928004-655b-4cd0-ba8f-f28bb56417c6"
+    },
+    "effectiveCurrentFullFidelityTurnsApprox": 116
+  },
+  "tokenRollups": {
+    "rawTurnTokenMetadata": [
+      {
+        "source": "pi_heuristic",
+        "trustClass": "heuristic_estimate",
+        "count": 165896,
+        "records": 105,
+        "label": "estimate"
+      },
+      {
+        "source": "provider_input_count",
+        "trustClass": "exact",
+        "count": 502004,
+        "records": 156,
+        "label": "provider_exact"
+      }
+    ],
+    "smoothTurnTokenMetadata": [
+      {
+        "source": "pi_heuristic",
+        "trustClass": "heuristic_estimate",
+        "count": 39527,
+        "records": 105,
+        "label": "estimate"
+      },
+      {
+        "source": "provider_input_count",
+        "trustClass": "exact",
+        "count": 94114,
+        "records": 156,
+        "label": "provider_exact"
+      }
+    ],
+    "lowerBandProjectionTokenMetadata": [
+      {
+        "source": "provider_input_count",
+        "trustClass": "exact",
+        "count": 107849,
+        "records": 261,
+        "label": "provider_exact"
+      }
+    ],
+    "chunkSmoothTokenMetadata": [
+      {
+        "source": "pi_heuristic",
+        "trustClass": "heuristic_estimate",
+        "count": 41840,
+        "records": 19,
+        "label": "estimate"
+      },
+      {
+        "source": "provider_input_count",
+        "trustClass": "exact",
+        "count": 91121,
+        "records": 43,
+        "label": "provider_exact"
+      }
+    ],
+    "detailedChunkTokenMetadata": [
+      {
+        "source": "provider_input_count",
+        "trustClass": "exact",
+        "count": 36041,
+        "records": 61,
+        "label": "provider_exact"
+      }
+    ],
+    "briefChunkTokenMetadata": [
+      {
+        "source": "provider_input_count",
+        "trustClass": "exact",
+        "count": 14993,
+        "records": 61,
+        "label": "provider_exact"
+      }
+    ]
+  }
+}

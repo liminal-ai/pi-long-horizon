@@ -58,3 +58,67 @@ Notes:
 
 Summary: this snapshot captures the session after substantial additional verbose work following earlier smart compacts. The active projected thread-view is large but still under the 272k context limit through smoothing, compaction, and prompt-visible tool-result pruning. The canonical source remains much larger and full-fidelity. The thread now has 101 turns and 831 messages, with canonical raw estimated at about 1.03M tokens and tool results accounting for about 734k of that estimate. This is a good restore point before further smart-compact experiments likely intended to push detailed/brief bands harder.
 
+
+## 2026-05-20T23:43:08.500Z — pre-smart-compact after repair-command design/review work
+
+- Archive: `2026-05-20T23-43-08-500Z-df67cbe0-2c0d-src1591-pre-smart-compact-snapshot.zip`
+- Metadata: `2026-05-20T23-43-08-500Z-df67cbe0-2c0d-src1591-pre-smart-compact-snapshot.json`
+- Thread: `thread_df67cbe0-2c0d-4c6e-90fa-570b04cd9bcc`
+- Capture point: **pre-smart-compact**. This snapshot was taken before running the next requested `/lh-smart-compact --lower-bound 160000 ... --mode prepare`.
+- Source revision: `1591`
+- Turns revision: `1784`
+- Message high watermark: `1591`
+- Active generated thread-view from previous compact:
+  `projection_4642e567-fce3-4816-bebb-808eabc0956b-thread_view_4aaed88f-52fd-4569-8bb7-c069bd55850b.jsonl`
+- Previous generated session token count: **81,001** provider exact (`provider_input_count/exact`), source revision `1064`
+- Canonical raw visible-text estimate: **1,420,071 tokens**
+- Canonical tool-result raw estimate: **1,003,515 tokens**
+- Messages: **1,589** total — prompts 261, assistant responses 752, tool results 576
+- Turns: **261** total / **261** closed / **0** open
+- Chunks: **62** total / **61** closed / **1** open
+- Status: no degraded status; token counting still `repair_needed` with the known `exact_token_count_repair_skipped` issue from prior async maintenance behavior.
+
+### Current band state before the next compact
+
+These counts describe the currently loaded generated projection plus live turns added afterward. The generated projection itself is still the previous smart-compact output from source revision `1064`; turns after that are live post-compact tail and have not yet been reshuffled into a new projection.
+
+Generated projection band layout from last compact:
+
+- `full_fidelity`: **11 turns** — turn indices **146–156**, token sum metadata **14,030**
+- `smooth`: **110 turns** — turn indices **36–145**, token sum metadata **71,757**
+- `detailed`: **9 chunks** — `chunk-001` through `chunk-009`, covering **35 turns**, token sum metadata **5,160**
+- `brief`: **0 chunks / 0 turns**, token sum metadata **0**
+
+Live post-compact tail:
+
+- **105 turns** — turn indices **157–261**
+- These turns were added after the previous generated projection source revision and are effectively still in the active live/full-fidelity tail before the next smart compact.
+- Approximate effective current full-fidelity turn count before the next compact: **116 turns** (`11` generated full-fidelity turns + `105` live post-compact tail turns).
+
+### Token metadata rollups at snapshot time
+
+- Raw turn materialized counts:
+  - `provider_input_count/exact`: 156 records / 502,004 tokens
+  - `pi_heuristic/heuristic_estimate`: 105 records / 165,896 tokens
+- Smooth turn materialized counts:
+  - `provider_input_count/exact`: 156 records / 94,114 tokens
+  - `pi_heuristic/heuristic_estimate`: 105 records / 39,527 tokens
+- Lower-band turn projections:
+  - `provider_input_count/exact`: 261 records / 107,849 tokens
+- Chunk smooth counts:
+  - `provider_input_count/exact`: 43 records / 91,121 tokens
+  - `pi_heuristic/heuristic_estimate`: 19 records / 41,840 tokens
+- Detailed chunk artifacts:
+  - `provider_input_count/exact`: 61 records / 36,041 tokens
+- Brief chunk artifacts:
+  - `provider_input_count/exact`: 61 records / 14,993 tokens
+
+### Where we are in the work
+
+This snapshot captures the project after the first `lh-context` SDK/CLI slice and Beads backlog migration, after fixing async exact token repair, and during review/design of the standalone thread maintenance/repair command (`pi-long-horizon-2cz`). The repair-command implementation looked directionally useful, but full E2E review exposed that automatic PI `turn_end` maintenance can still do too much broad historical repair work on long threads. The current design direction is to split behavior clearly:
+
+- automatic `turn_end` maintenance should remain every-turn but bounded/opportunistic;
+- manual `repairThreadMaintenance` / future CLI repair should be allowed to perform full catch-up repair with a report;
+- full catch-up behavior should not run implicitly in the production PI extension path.
+
+This is a good pre-compact restore point for comparing how the next smart compact reshapes the large live tail into smooth/detailed/brief bands.

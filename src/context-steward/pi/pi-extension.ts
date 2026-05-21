@@ -2099,6 +2099,8 @@ export function registerContextStewardExtension(
 
   pi.on("turn_end", async (event, ctx) => {
     const startedAt = Date.now();
+    const backgroundModelProvider = safeContextModelProvider(ctx as ExtensionContext);
+    const backgroundTokenCountModel = safeContextModelId(ctx as ExtensionContext);
     let resolveMs = 0;
     let finalizeMs = 0;
     let maintenanceScheduleMs = 0;
@@ -2157,8 +2159,8 @@ export function registerContextStewardExtension(
       scheduleBackgroundMaintenance({
         threadId: thread.threadId,
         ctx: snapshotCaptureContext(resolvedContext) ?? resolvedContext,
-        modelProvider: resolvedContext === ctx ? safeContextModelProvider(ctx as ExtensionContext) : undefined,
-        tokenCountModel: resolvedContext === ctx ? safeContextModelId(ctx as ExtensionContext) : undefined,
+        modelProvider: backgroundModelProvider,
+        tokenCountModel: backgroundTokenCountModel,
       });
       maintenanceScheduleMs = Date.now() - stepStartedAt;
     } finally {

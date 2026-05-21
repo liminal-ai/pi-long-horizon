@@ -501,6 +501,7 @@ test("normal async maintenance writes exact counts for new deterministic artifac
         store: context.threadStore,
         openAIInputTokenCounter: counter,
         tokenCountModel: "gpt-test-maintenance",
+        artifactRepairLimits: { maxSmoothTurns: Number.POSITIVE_INFINITY, maxProjectionTurns: Number.POSITIVE_INFINITY },
       },
     );
 
@@ -542,6 +543,219 @@ test("normal async maintenance writes exact counts for new deterministic artifac
           JSON.stringify([`chunk:${context.chunks.openRecent}`]),
       true,
     );
+  });
+});
+
+test("background async maintenance bounds lower-band projection catch-up", async () => {
+  await withTempFeature3Store(async ({ storeRootDir }) => {
+    const context = await seedDeterministicRebuildThreadWithOptions(storeRootDir);
+    const counter = new FakeOpenAIInputTokenCounter();
+
+    const result = await maintainAsyncThread(
+      { threadId: context.threadId },
+      {
+        store: context.threadStore,
+        openAIInputTokenCounter: counter,
+        tokenCountModel: "gpt-test-maintenance",
+        artifactRepairLimits: { maxProjectionTurns: 2 },
+      },
+    );
+
+    assert.equal(result.artifactsReady, false);
+    assert.equal(result.blockers.some((issue) => issue.message.includes("projection repair limit")), true);
+    assert.equal(counter.calls.filter((call) => call.startsWith("projection:")).length, 2);
+    const snapshot = await context.threadStore.openThread(context.threadId);
+    assert.equal(snapshot.ok, true);
+    assert.equal(
+      snapshot.value.turns.filter((turn) => turn.smooth?.lowerBandProjection?.tokenCountMetadata?.source === "provider_input_count").length,
+      2,
+    );
+  });
+});
+
+test("background async maintenance bounds smooth turn catch-up", async () => {
+  await withTempFeature3Store(async ({ storeRootDir }) => {
+    const context = await seedDeterministicRebuildThreadWithOptions(storeRootDir);
+    const initialSnapshot = await context.threadStore.openThread(context.threadId);
+    assert.equal(initialSnapshot.ok, true);
+    await context.threadStore.writeTurns({
+      threadId: context.threadId,
+      expectedSourceRevision: initialSnapshot.value.thread.sourceRevision,
+      expectedMessageHighWatermark: initialSnapshot.value.thread.messageHighWatermark,
+      expectedTurnsRevision: initialSnapshot.value.thread.turnsRevision,
+      turns: initialSnapshot.value.turns.map((turn) => ({ ...turn, smooth: undefined })),
+      turnState: initialSnapshot.value.thread.status.turnState,
+    });
+
+    const result = await maintainAsyncThread(
+      { threadId: context.threadId },
+      {
+        store: context.threadStore,
+        openAIInputTokenCounter: new FakeOpenAIInputTokenCounter(),
+        artifactRepairLimits: { maxSmoothTurns: 2, maxProjectionTurns: 0 },
+      },
+    );
+
+    assert.equal(result.artifactsReady, false);
+    assert.equal(result.blockers.some((issue) => issue.message.includes("smooth repair limit")), true);
+    const snapshot = await context.threadStore.openThread(context.threadId);
+    assert.equal(snapshot.ok, true);
+    assert.equal(snapshot.value.turns.filter((turn) => turn.smooth !== undefined).length, 2);
+  });
+});
+
+test("prepare async thread remains full catch-up for dirty projections", async () => {
+  await withTempFeature3Store(async ({ storeRootDir }) => {
+    const context = await seedDeterministicRebuildThreadWithOptions(storeRootDir);
+    const counter = new FakeOpenAIInputTokenCounter();
+
+    const result = await prepareAsyncThread(
+      {
+        threadId: context.threadId,
+        mode: "prepare",
+        requestedLowerBound: 10_000,
+        requestedBandPercentages: { fullFidelity: 25, smooth: 25, detailed: 25, brief: 25 },
+      },
+      {
+        store: context.threadStore,
+        openAIInputTokenCounter: counter,
+        lowerBandCompressionEnabled: false,
+        tokenCountModel: "gpt-test-maintenance",
+      },
+    );
+
+    assert.equal(result.blockers.length, 0);
+    assert.equal(counter.calls.filter((call) => call.startsWith("projection:")).length, 4);
+    const snapshot = await context.threadStore.openThread(context.threadId);
+    assert.equal(snapshot.ok, true);
+    assert.equal(
+      snapshot.value.turns.every((turn) => turn.smooth?.lowerBandProjection?.tokenCountMetadata?.source === "provider_input_count"),
+      true,
+    );
+  });
+});
+
+test("default background async maintenance does not repair all historical projections", async () => {
+  await withTempFeature3Store(async ({ storeRootDir }) => {
+    const context = await seedDeterministicRebuildThreadWithOptions(storeRootDir);
+    const counter = new FakeOpenAIInputTokenCounter();
+
+    const result = await maintainAsyncThread(
+      { threadId: context.threadId },
+      {
+        store: context.threadStore,
+        openAIInputTokenCounter: counter,
+        tokenCountModel: "gpt-test-maintenance",
+      },
+    );
+
+    const projectionCalls = counter.calls.filter((call) => call.startsWith("projection:"));
+    assert.equal(projectionCalls.length < 4, true);
+    assert.equal(result.blockers.some((issue) => issue.message.includes("projection repair limit")), true);
+  });
+});
+
+test("bounded projection maintenance is sequential and capped", async () => {
+  await withTempFeature3Store(async ({ storeRootDir }) => {
+    const context = await seedDeterministicRebuildThreadWithOptions(storeRootDir);
+    const counter = new FakeOpenAIInputTokenCounter();
+
+    await maintainAsyncThread(
+      { threadId: context.threadId },
+      {
+        store: context.threadStore,
+        openAIInputTokenCounter: counter,
+        artifactRepairLimits: { maxProjectionTurns: 2 },
+      },
+    );
+
+    assert.equal(counter.calls.filter((call) => call.startsWith("projection:")).length, 2);
+  });
+});
+
+test("background exact token repair is bounded and leaves remaining debt visible", async () => {
+  await withTempFeature3Store(async ({ storeRootDir }) => {
+    const context = await seedDeterministicRebuildThreadWithOptions(storeRootDir, { canonicalClosedChunks: true });
+    const initialSnapshot = await context.threadStore.openThread(context.threadId);
+    assert.equal(initialSnapshot.ok, true);
+    await context.threadStore.writeTurns({
+      threadId: context.threadId,
+      expectedSourceRevision: initialSnapshot.value.thread.sourceRevision,
+      expectedMessageHighWatermark: initialSnapshot.value.thread.messageHighWatermark,
+      expectedTurnsRevision: initialSnapshot.value.thread.turnsRevision,
+      turns: initialSnapshot.value.turns.map((turn) => ({
+        ...turn,
+        rawTokenCountMetadata: undefined,
+        smooth: turn.smooth ? { ...turn.smooth, tokenCountMetadata: undefined } : turn.smooth,
+      })),
+      turnState: initialSnapshot.value.thread.status.turnState,
+    });
+    const counter = new FakeOpenAIInputTokenCounter();
+
+    const result = await maintainAsyncThread(
+      { threadId: context.threadId },
+      {
+        store: context.threadStore,
+        openAIInputTokenCounter: counter,
+        artifactRepairLimits: {
+          maxSmoothTurns: Number.POSITIVE_INFINITY,
+          maxProjectionTurns: Number.POSITIVE_INFINITY,
+          maxTokenTurns: 2,
+          maxTokenChunks: 0,
+        },
+      },
+    );
+
+    assert.equal(result.tokenCountsReady, false);
+    assert.equal(result.blockers.some((issue) => issue.message.includes("exact token repair limit")), true);
+    assert.equal(counter.calls.filter((call) => call.startsWith("raw:")).length, 2);
+    assert.equal(counter.calls.filter((call) => call.startsWith("smooth:")).length, 2);
+    const after = await context.threadStore.openThread(context.threadId);
+    assert.equal(after.ok, true);
+    assert.equal(after.value.thread.status.tokenCounting?.status, "repair_needed");
+    assert.equal(after.value.turns.filter((turn) => turn.rawTokenCountMetadata?.source === "provider_input_count").length, 2);
+  });
+});
+
+test("prepare async thread drains exact token-count repair without background bounds", async () => {
+  await withTempFeature3Store(async ({ storeRootDir }) => {
+    const context = await seedDeterministicRebuildThreadWithOptions(storeRootDir, { canonicalClosedChunks: true });
+    const initialSnapshot = await context.threadStore.openThread(context.threadId);
+    assert.equal(initialSnapshot.ok, true);
+    await context.threadStore.writeTurns({
+      threadId: context.threadId,
+      expectedSourceRevision: initialSnapshot.value.thread.sourceRevision,
+      expectedMessageHighWatermark: initialSnapshot.value.thread.messageHighWatermark,
+      expectedTurnsRevision: initialSnapshot.value.thread.turnsRevision,
+      turns: initialSnapshot.value.turns.map((turn) => ({
+        ...turn,
+        rawTokenCountMetadata: undefined,
+        smooth: turn.smooth ? { ...turn.smooth, tokenCountMetadata: undefined } : turn.smooth,
+      })),
+      turnState: initialSnapshot.value.thread.status.turnState,
+    });
+    const counter = new FakeOpenAIInputTokenCounter();
+
+    const result = await prepareAsyncThread(
+      {
+        threadId: context.threadId,
+        mode: "prepare",
+        requestedLowerBound: 10_000,
+        requestedBandPercentages: { fullFidelity: 25, smooth: 25, detailed: 25, brief: 25 },
+      },
+      {
+        store: context.threadStore,
+        openAIInputTokenCounter: counter,
+        lowerBandCompressionEnabled: false,
+      },
+    );
+
+    assert.equal(result.blockers.length, 0);
+    assert.equal(counter.calls.filter((call) => call.startsWith("raw:")).length, 4);
+    assert.equal(counter.calls.filter((call) => call.startsWith("smooth:")).length, 4);
+    const after = await context.threadStore.openThread(context.threadId);
+    assert.equal(after.ok, true);
+    assert.equal(after.value.turns.every((turn) => turn.rawTokenCountMetadata?.source === "provider_input_count"), true);
   });
 });
 
@@ -587,6 +801,7 @@ test("normal async maintenance schedules semantic lower-band compression on chun
         openAIInputTokenCounter: counter,
         tokenCountModel: "gpt-test-maintenance",
         lowerBandCompressionProvider: provider,
+        artifactRepairLimits: { maxSmoothTurns: Number.POSITIVE_INFINITY, maxProjectionTurns: Number.POSITIVE_INFINITY },
       },
     );
 
@@ -886,9 +1101,6 @@ test("normal async maintenance leaves repair-needed token metadata when exact co
             throw new Error("simulated count outage");
           },
           async countBriefChunkMaterialized() {
-            throw new Error("simulated count outage");
-          },
-          async countTurnLowerBandProjectionMaterialized() {
             throw new Error("simulated count outage");
           },
         },
