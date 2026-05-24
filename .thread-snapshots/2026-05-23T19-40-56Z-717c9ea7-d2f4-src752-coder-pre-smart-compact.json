@@ -1,0 +1,213 @@
+{
+  "bands": {
+    "bands": {
+      "brief": {
+        "band": "brief",
+        "chunks": {
+          "count": 0,
+          "ids": []
+        },
+        "entries": 0,
+        "turns": {
+          "count": 0,
+          "ids": [],
+          "indices": []
+        }
+      },
+      "detailed": {
+        "band": "detailed",
+        "chunks": {
+          "count": 0,
+          "ids": []
+        },
+        "entries": 0,
+        "turns": {
+          "count": 0,
+          "ids": [],
+          "indices": []
+        }
+      },
+      "full_fidelity": {
+        "band": "full_fidelity",
+        "chunks": {
+          "count": 0,
+          "ids": []
+        },
+        "entries": 0,
+        "turns": {
+          "count": 0,
+          "ids": [],
+          "indices": []
+        }
+      },
+      "smooth": {
+        "band": "smooth",
+        "chunks": {
+          "count": 0,
+          "ids": []
+        },
+        "entries": 0,
+        "turns": {
+          "count": 0,
+          "ids": [],
+          "indices": []
+        }
+      }
+    },
+    "kind": "bands",
+    "livePostCompactTailDetection": {
+      "note": "TODO: distinguish appended live PI turns from generated compact projection without guessing.",
+      "supported": false
+    },
+    "messageCount": 0,
+    "recordCount": 0,
+    "threadId": "thread_717c9ea7-d2f4-4336-9b75-051b93878be7",
+    "warnings": [
+      "No generated thread-view file path found on input or thread target metadata.",
+      "Generated thread-view metadata record is missing; band details are partial."
+    ]
+  },
+  "capturedAt": "2026-05-23T19:40:56Z",
+  "chunksFileShape": "array",
+  "label": "coder-pre-smart-compact",
+  "messageHighWatermark": 752,
+  "messageJsonlCount": 752,
+  "notes": "Snapshot of the coder managed thread before the requested 80k-lower-bound smart compact. This thread has canonical/derived state but no generated thread-view yet.",
+  "providedId": "019e4350-0555-7670-badb-5e1b794e26bf",
+  "sessionFile": ".pi/agent/sessions/--Users-leemoore-code-pi-long-horizon--/2026-05-20T02-56-18-261Z_019e4350-0555-7670-badb-5e1b794e26bf.jsonl",
+  "sourceRevision": 752,
+  "summary": {
+    "chunks": {
+      "closed": 4,
+      "open": 1,
+      "total": 5
+    },
+    "contextStewardDir": "/Users/leemoore/code/pi-long-horizon/.context-steward",
+    "kind": "summary",
+    "messageHighWatermark": 752,
+    "messages": {
+      "byActorType": {
+        "agent": 365,
+        "human": 20,
+        "tool": 367
+      },
+      "byKind": {
+        "prompt": 20,
+        "response": 365,
+        "tool_result": 367
+      },
+      "total": 752
+    },
+    "rootDir": "/Users/leemoore/code/pi-long-horizon",
+    "sourceRevision": 752,
+    "status": {
+      "degraded": [],
+      "repairNeeded": [
+        {
+          "issueCount": 1,
+          "issues": [
+            {
+              "cause": "exact_token_count_repair_skipped",
+              "code": "TOKEN_COUNT_BLOCKED",
+              "message": "OpenAI materialized token count repair was intentionally skipped during PI async background maintenance; exact materialized counts remain repair-needed for smart compact prepare.",
+              "threadId": "thread_717c9ea7-d2f4-4336-9b75-051b93878be7"
+            }
+          ],
+          "path": "status.tokenCounting",
+          "status": "repair_needed"
+        }
+      ]
+    },
+    "threadDir": "/Users/leemoore/code/pi-long-horizon/.context-steward/threads/thread_717c9ea7-d2f4-4336-9b75-051b93878be7",
+    "threadId": "thread_717c9ea7-d2f4-4336-9b75-051b93878be7",
+    "turns": {
+      "closed": 20,
+      "open": 0,
+      "total": 20
+    },
+    "updatedAt": "2026-05-21T01:48:48.589Z",
+    "warnings": [
+      "No generated thread-view file path found on input or thread target metadata."
+    ]
+  },
+  "threadDir": ".context-steward/threads/thread_717c9ea7-d2f4-4336-9b75-051b93878be7",
+  "threadId": "thread_717c9ea7-d2f4-4336-9b75-051b93878be7",
+  "threadViewPath": null,
+  "tokens": {
+    "estimates": {
+      "canonicalVisibleTextRaw": {
+        "count": 466229,
+        "label": "estimate",
+        "method": "visible_text_chars_div_4"
+      },
+      "toolResultRaw": {
+        "count": 381039,
+        "label": "estimate",
+        "method": "visible_text_chars_div_4"
+      }
+    },
+    "kind": "tokens",
+    "rollups": {
+      "briefChunkTokenMetadata": [
+        {
+          "count": 1268,
+          "label": "provider_exact",
+          "records": 4,
+          "source": "provider_input_count",
+          "trustClass": "exact"
+        }
+      ],
+      "chunkSmoothTokenMetadata": [
+        {
+          "count": 14634,
+          "label": "estimate",
+          "records": 5,
+          "source": "pi_heuristic",
+          "trustClass": "heuristic_estimate"
+        }
+      ],
+      "detailedChunkTokenMetadata": [
+        {
+          "count": 3279,
+          "label": "provider_exact",
+          "records": 4,
+          "source": "provider_input_count",
+          "trustClass": "exact"
+        }
+      ],
+      "lowerBandProjectionTokenMetadata": [
+        {
+          "count": 8088,
+          "label": "provider_exact",
+          "records": 20,
+          "source": "provider_input_count",
+          "trustClass": "exact"
+        }
+      ],
+      "rawTurnTokenMetadata": [
+        {
+          "count": 81454,
+          "label": "estimate",
+          "records": 20,
+          "source": "pi_heuristic",
+          "trustClass": "heuristic_estimate"
+        }
+      ],
+      "smoothTurnTokenMetadata": [
+        {
+          "count": 14632,
+          "label": "estimate",
+          "records": 20,
+          "source": "pi_heuristic",
+          "trustClass": "heuristic_estimate"
+        }
+      ]
+    },
+    "threadId": "thread_717c9ea7-d2f4-4336-9b75-051b93878be7",
+    "warnings": [
+      "No generated thread-view file path found on input or thread target metadata."
+    ]
+  },
+  "turnsFileShape": "array",
+  "turnsRevision": null
+}

@@ -10,6 +10,7 @@ import type {
   TurnStartEvent,
 } from "@earendil-works/pi-coding-agent";
 import { appendFile, mkdir } from "node:fs/promises";
+import { setTimeout as sleep } from "node:timers/promises";
 import { join, resolve } from "node:path";
 
 import {
@@ -2103,31 +2104,19 @@ export function registerContextStewardExtension(
     const backgroundTokenCountModel = safeContextModelId(ctx as ExtensionContext);
     let resolveMs = 0;
     let finalizeMs = 0;
+    let maintenanceDelayMs = 0;
     let maintenanceScheduleMs = 0;
     let refreshMs = 0;
     let threadId = "none";
-    let staleFallback = false;
     try {
-      let resolved: Awaited<ReturnType<typeof resolveCaptureThread>>;
-      let resolvedContext: PiExtensionCaptureContext = ctx;
-      try {
-        const stepStartedAt = Date.now();
-        resolved = await resolveCaptureThread(event, ctx);
-        resolveMs = Date.now() - stepStartedAt;
-      } catch (error) {
-        if (isStalePiContextError(error)) {
-          if (!activeSessionContext) {
-            return;
-          }
-          staleFallback = true;
-          resolvedContext = activeSessionContext;
-          const stepStartedAt = Date.now();
-          resolved = await resolveCaptureThread(event, activeSessionContext);
-          resolveMs = Date.now() - stepStartedAt;
-        } else {
-          throw error;
-        }
+      const resolvedContext = activeSessionContext;
+      if (!resolvedContext) {
+        throw new Error("turn_end cannot resolve a Long Horizon thread: no active PI session identity has been captured.");
       }
+
+      let stepStartedAt = Date.now();
+      const resolved = await resolveCaptureThread(event, resolvedContext);
+      resolveMs = Date.now() - stepStartedAt;
 
       const { store, thread } = resolved;
       if (!thread) {
@@ -2135,7 +2124,7 @@ export function registerContextStewardExtension(
       }
 
       threadId = thread.threadId;
-      let stepStartedAt = Date.now();
+      stepStartedAt = Date.now();
       const eventTimestamp = (event as { timestamp?: unknown }).timestamp;
       const finalized = await finalizeOpenTurnOnTurnEnd({
         store,
@@ -2156,6 +2145,12 @@ export function registerContextStewardExtension(
       refreshMs = Date.now() - stepStartedAt;
 
       stepStartedAt = Date.now();
+      const turnEndMaintenanceDelayMs = Number.parseInt(process.env.LH_TURN_END_MAINTENANCE_DELAY_MS ?? "1000", 10);
+      if (Number.isFinite(turnEndMaintenanceDelayMs) && turnEndMaintenanceDelayMs > 0) {
+        await sleep(turnEndMaintenanceDelayMs);
+        maintenanceDelayMs = Date.now() - stepStartedAt;
+        stepStartedAt = Date.now();
+      }
       scheduleBackgroundMaintenance({
         threadId: thread.threadId,
         ctx: snapshotCaptureContext(resolvedContext) ?? resolvedContext,
@@ -2168,8 +2163,8 @@ export function registerContextStewardExtension(
         resolve: `${resolveMs}ms`,
         finalize: `${finalizeMs}ms`,
         refresh: `${refreshMs}ms`,
+        maintenanceDelay: `${maintenanceDelayMs}ms`,
         maintenanceSchedule: `${maintenanceScheduleMs}ms`,
-        staleFallback,
         threadId,
       });
     }
@@ -2210,6 +2205,7 @@ export function registerContextStewardExtension(
         ctx,
       );
       captureMs = Date.now() - stepStartedAt;
+      activeSessionContext = snapshotCaptureContext(ctx) ?? activeSessionContext;
       duplicate = String(captureResult?.duplicate);
       if (captureResult && !captureResult.duplicate && event.message.role === "user") {
         smoothingScheduled = scheduleUserPromptSmoothing({

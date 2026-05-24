@@ -178,13 +178,27 @@ export function makePlaceholderArtifactState(
 export function makeChunkLowerBandArtifacts(
   overrides: Partial<ChunkLowerBandState> = {},
 ): ChunkLowerBandState {
+  const detailedText = "Detailed semantic lower-band artifact";
+  const briefText = "Brief semantic lower-band artifact";
+
   return cloneChunkLowerBandState({
     detailed:
       overrides.detailed === undefined
         ? {
             band: "detailed",
             status: "ready",
-            text: "Detailed semantic lower-band artifact",
+            text: detailedText,
+            providerMetadata: {
+              providerId: "openai-codex",
+              modelId: "gpt-5.4-mini",
+              reasoningEffort: "medium",
+              promptVersion: "test-lower-band-detail-v1",
+              elapsedMs: 1,
+            },
+            tokenCountMetadata: makeExactTokenCountRecord(
+              estimateDeterministicTokenCount(detailedText),
+              "detailed_chunk_materialized",
+            ),
             updatedAt: DEFAULT_TEST_TIMESTAMP,
           }
         : overrides.detailed,
@@ -193,7 +207,18 @@ export function makeChunkLowerBandArtifacts(
         ? {
             band: "brief",
             status: "ready",
-            text: "Brief semantic lower-band artifact",
+            text: briefText,
+            providerMetadata: {
+              providerId: "openai-codex",
+              modelId: "gpt-5.4-mini",
+              reasoningEffort: "medium",
+              promptVersion: "test-lower-band-brief-v1",
+              elapsedMs: 1,
+            },
+            tokenCountMetadata: makeExactTokenCountRecord(
+              estimateDeterministicTokenCount(briefText),
+              "brief_chunk_materialized",
+            ),
             updatedAt: DEFAULT_TEST_TIMESTAMP,
           }
         : overrides.brief,

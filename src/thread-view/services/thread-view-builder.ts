@@ -591,39 +591,6 @@ function buildDegradedAccountingIssues(input: {
   return issues;
 }
 
-function buildDegradedSmoothingIssues(input: {
-  threadId: string;
-  selectedTurnIds: readonly string[];
-  turnsById: ReadonlyMap<string, TurnRecord>;
-  messagesById: ReadonlyMap<string, MessageRecord>;
-}): StewardIssue[] {
-  return input.selectedTurnIds.flatMap((turnId) => {
-    const turn = input.turnsById.get(turnId);
-    if (!turn) {
-      return [];
-    }
-
-    const messages = sortMessagesInSourceOrder(
-      turn.messageIds
-        .map((messageId) => input.messagesById.get(messageId))
-        .filter((message): message is MessageRecord => message !== undefined),
-    );
-    const materialized = materializeSmoothTurnFromState({ turn, messages });
-    if (materialized.status !== "degraded") {
-      return [];
-    }
-
-    return [
-      createStewardIssue({
-        code: "SMOOTH_DEGRADED",
-        message: `Turn ${turn.turnId} used degraded deterministic-preserved user prompt smoothing.`,
-        threadId: input.threadId,
-        cause: "user_prompt_deterministic_preserved",
-      }),
-    ];
-  });
-}
-
 function buildBandRecord(
   bandType: BandRecord["bandType"],
   selectedIds: readonly string[],
@@ -898,12 +865,7 @@ export async function buildThreadViewProjection(
       { bandLabel: "Brief", selectedAccounting: briefSelection.selectedAccounting },
     ],
   });
-  const degradedSmoothingIssues = buildDegradedSmoothingIssues({
-    threadId: input.threadId,
-    selectedTurnIds: smoothSelection.selectedTurnIds,
-    turnsById,
-    messagesById,
-  });
+  const degradedSmoothingIssues: StewardIssue[] = [];
 
   const createdAt = (dependencies.now ?? (() => new Date()))().toISOString();
   const threadViewId = (dependencies.createThreadViewId ?? (() => createThreadViewId()))();
@@ -1182,12 +1144,7 @@ export async function buildDraftThreadView(
       { bandLabel: "Brief", selectedAccounting: briefSelection.selectedAccounting },
     ],
   });
-  const degradedSmoothingIssues = buildDegradedSmoothingIssues({
-    threadId: input.threadId,
-    selectedTurnIds: smoothSelection.selectedTurnIds,
-    turnsById,
-    messagesById,
-  });
+  const degradedSmoothingIssues: StewardIssue[] = [];
 
   const draftView = await openOrCreateDraftView(input, threadSnapshot.thread, budgets, dependencies);
   const orderedFullFidelityTurnIds = orderSelectedTurns(fullFidelitySelection.selectedTurnIds, orderedTurns);

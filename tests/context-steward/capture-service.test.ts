@@ -1394,6 +1394,7 @@ test("production turn_end handler closes the latest open turn and smooths closed
       createStore: () => store,
       openAIInputTokenCounter: tokenCounter as any,
     });
+    await pi.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
     await pi.emit(
       "turn_end",
       {
@@ -1836,6 +1837,7 @@ test("production turn_end handler persists token-count maintenance failures", as
         },
       },
     });
+    await pi.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
     await pi.emit(
       "turn_end",
       {

@@ -8,6 +8,10 @@ import {
 } from "../../src/thread/async-thread/domain/chunk-state.js";
 import { materializeChunkSmoothTextFromTurns } from "../../src/thread/async-thread/services/chunk-service.js";
 import { updateChunkState } from "../../src/thread/async-thread/services/chunk-service.js";
+import {
+  LOWER_BAND_BRIEF_PROMPT_VERSION,
+  LOWER_BAND_DETAIL_PROMPT_VERSION,
+} from "../../src/thread/async-thread/services/lower-band-compression-service.js";
 import { ensureSmoothTurn } from "../../src/thread/async-thread/services/smooth-turn-service.js";
 import type { StewardResult } from "../../src/thread/domain/errors.js";
 import type { ProjectionRevisionRecord, ThreadRecord } from "../../src/thread/domain/records.js";
@@ -333,6 +337,13 @@ async function normalizeSelectedChunkSmoothFreshnessBasis(input: {
             band: "detailed",
             transcriptText,
           }),
+          providerMetadata: {
+            providerId: "openai-codex",
+            modelId: "gpt-5.4-mini",
+            reasoningEffort: "medium",
+            promptVersion: LOWER_BAND_DETAIL_PROMPT_VERSION,
+            elapsedMs: 1,
+          },
           updatedAt: PREP_TIMESTAMP,
         },
         brief: {
@@ -343,6 +354,13 @@ async function normalizeSelectedChunkSmoothFreshnessBasis(input: {
             band: "brief",
             transcriptText,
           }),
+          providerMetadata: {
+            providerId: "openai-codex",
+            modelId: "gpt-5.4-mini",
+            reasoningEffort: "medium",
+            promptVersion: LOWER_BAND_BRIEF_PROMPT_VERSION,
+            elapsedMs: 1,
+          },
           updatedAt: PREP_TIMESTAMP,
         },
       },
