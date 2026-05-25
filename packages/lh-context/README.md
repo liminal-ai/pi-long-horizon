@@ -1,6 +1,8 @@
 # @pi-long-horizon/context
 
-Read-only SDK + CLI for inspecting PI Long Horizon `.context-steward` state.
+SDK + CLI tools for PI Long Horizon `.context-steward` state.
+
+`lhx` is the read-only inspection surface. The package also ships `pi-lh`, a small PI launcher that loads the packaged Long Horizon extension from this package.
 
 ## CLI
 
@@ -9,9 +11,12 @@ lhx
 lhx summary --root .
 lhx tokens --root . --json
 lhx bands --root . --thread thread_abc --json
+pi-lh [pi args...]
 ```
 
-`--json` emits stable structured output for agents. Human output is concise and avoids dumping message bodies.
+`lhx --json` emits stable structured output for agents. Human output is concise and avoids dumping message bodies.
+
+`pi-lh` runs PI from the caller's current directory, passes non-help PI args through, loads `dist/pi-extension/index.js`, and sets `PI_CODING_AGENT_DIR=<cwd>/.pi/agent` for project-local PI state. `pi-lh --help` prints launcher help without creating PI runtime state.
 
 Inputs:
 

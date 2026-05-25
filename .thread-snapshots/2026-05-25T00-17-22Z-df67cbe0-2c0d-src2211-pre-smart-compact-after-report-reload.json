@@ -1,0 +1,473 @@
+{
+  "capturedAt": "2026-05-25T00:17:22Z",
+  "label": "pre-smart-compact-after-report-reload",
+  "messageHighWatermark": 2211,
+  "piSessionInfo": {
+    "cost": {
+      "total": 19.3363
+    },
+    "messages": {
+      "assistant": 202,
+      "toolCalls": 118,
+      "toolResults": 118,
+      "total": 518,
+      "user": 87
+    },
+    "tokens": {
+      "cacheRead": 17018368,
+      "input": 1946222,
+      "output": 36535,
+      "total": 19001125
+    }
+  },
+  "postCompactReport": {
+    "bands": {
+      "brief": {
+        "band": "brief",
+        "chunks": {
+          "count": 22,
+          "ids": [
+            "chunk-001",
+            "chunk-002",
+            "chunk-003",
+            "chunk-004",
+            "chunk-005",
+            "chunk-006",
+            "chunk-007",
+            "chunk-008",
+            "chunk-009",
+            "chunk-010",
+            "chunk-011",
+            "chunk-012",
+            "chunk-013",
+            "chunk-014",
+            "chunk-015",
+            "chunk-016",
+            "chunk-017",
+            "chunk-018",
+            "chunk-019",
+            "chunk-020",
+            "chunk-021",
+            "chunk-022"
+          ]
+        },
+        "entries": 22,
+        "tokenSum": 5457,
+        "turns": {
+          "count": 0,
+          "ids": [],
+          "indices": []
+        }
+      },
+      "detailed": {
+        "band": "detailed",
+        "chunks": {
+          "count": 33,
+          "ids": [
+            "chunk-023",
+            "chunk-024",
+            "chunk-025",
+            "chunk-026",
+            "chunk-027",
+            "chunk-028",
+            "chunk-029",
+            "chunk-030",
+            "chunk-031",
+            "chunk-032",
+            "chunk-033",
+            "chunk-034",
+            "chunk-035",
+            "chunk-036",
+            "chunk-037",
+            "chunk-038",
+            "chunk-039",
+            "chunk-040",
+            "chunk-041",
+            "chunk-042",
+            "chunk-043",
+            "chunk-044",
+            "chunk-045",
+            "chunk-046",
+            "chunk-047",
+            "chunk-048",
+            "chunk-049",
+            "chunk-050",
+            "chunk-051",
+            "chunk-052",
+            "chunk-053",
+            "chunk-054",
+            "chunk-055"
+          ]
+        },
+        "entries": 33,
+        "tokenSum": 19603,
+        "turns": {
+          "count": 0,
+          "ids": [],
+          "indices": []
+        }
+      },
+      "full_fidelity": {
+        "band": "full_fidelity",
+        "chunks": {
+          "count": 0,
+          "ids": []
+        },
+        "entries": 26,
+        "tokenSum": 19563,
+        "turns": {
+          "count": 12,
+          "ids": [
+            "turn_6942d91c-8e69-4fc0-b14c-c9d588b99fca",
+            "turn_384de9e9-7ac4-46fc-aa76-4e617896fba3",
+            "turn_9987049e-5009-4f97-8f58-d8539098c86d",
+            "turn_49736458-b825-46aa-8cd3-19b9cf8c812a",
+            "turn_1660bf0b-07ea-4be6-82a1-b92fec14c465",
+            "turn_bb983654-1866-4862-a72e-178e20d7a119",
+            "turn_3022b05c-96fa-4223-ad93-923f58d84636",
+            "turn_bbc4196d-32fa-4d57-b04d-cfd1df12684b",
+            "turn_af5a43df-1247-412a-a887-d34b11051064",
+            "turn_412938e1-5075-4de9-ace9-b97b2744301a",
+            "turn_20058ea0-016f-4dc2-954c-a18d498bf997",
+            "turn_166fb18a-f1ca-4bad-98bf-9966ed4fd7a3"
+          ],
+          "indices": [
+            274,
+            275,
+            276,
+            277,
+            278,
+            279,
+            280,
+            281,
+            282,
+            283,
+            284,
+            285
+          ],
+          "range": {
+            "firstId": "turn_6942d91c-8e69-4fc0-b14c-c9d588b99fca",
+            "firstIndex": 274,
+            "lastId": "turn_166fb18a-f1ca-4bad-98bf-9966ed4fd7a3",
+            "lastIndex": 285
+          }
+        }
+      },
+      "smooth": {
+        "band": "smooth",
+        "chunks": {
+          "count": 0,
+          "ids": []
+        },
+        "entries": 56,
+        "tokenSum": 19817,
+        "turns": {
+          "count": 56,
+          "ids": [
+            "turn_31a193a8-c031-47bb-a5dc-bff2da706499",
+            "turn_5474abaa-91d8-4499-a05f-91af499e9cfe",
+            "turn_8dd39834-6f8a-4cac-ab3a-338383e6b8cf",
+            "turn_52ee9ebb-d48c-4cc8-85b3-b6b1c0178465",
+            "turn_e4d35db2-9515-424f-abfb-0d591223d652",
+            "turn_a0c90c54-10b6-44e4-980a-bfe84a369b95",
+            "turn_76bdc016-c6e6-408d-b8c0-96c502a7c2c5",
+            "turn_a88718a7-d099-469e-9e22-3d11252f66f3",
+            "turn_661e203b-9816-431c-baab-a7ace899bfc6",
+            "turn_74b75046-2d03-4d1a-8719-f69d879e8968",
+            "turn_4ca88427-379c-4a60-a633-9e65ef210b3c",
+            "turn_98b3732f-459e-4455-9a3b-f79147b72e29",
+            "turn_794ce597-efe0-4706-ae1a-7f0dcb9f59eb",
+            "turn_802ddad5-6568-4eb7-9143-2f29f63e2694",
+            "turn_0a78a529-a054-4f2a-871c-49e5236f3f05",
+            "turn_f6303c29-e138-4951-b639-9fd463d0ed7d",
+            "turn_141fd94e-671a-4ee3-ad4e-bf93e1360cdc",
+            "turn_8bfc8e93-a6c1-4572-abd7-b429367d6912",
+            "turn_9a4317af-3f9a-4676-8f38-6f7e5e287186",
+            "turn_aaf321db-4afa-4e09-84d8-e339b71bcc22",
+            "turn_0d2a0250-acd1-49d6-ba13-e3e975132c29",
+            "turn_65e1d1d5-b3b7-4e05-8b3c-5765dc73dfbc",
+            "turn_8b57d20c-a3e6-4990-b17e-8b79667244b7",
+            "turn_84ba921e-1f13-43fe-a182-d5f011c18cce",
+            "turn_ecd46e38-1fa7-4a30-9272-729b440b72e7",
+            "turn_1acce2dc-c015-4f36-98a2-eefd209e8e8f",
+            "turn_8522c0f7-7d75-4c79-8d9c-d072ceda5b17",
+            "turn_d0908c72-09bb-4183-bbe3-932c1754916c",
+            "turn_04f67e41-c71e-4033-9669-9cc78660dad5",
+            "turn_f98ecda3-ac32-4424-a677-6eed35d14e2b",
+            "turn_5be335ad-224b-4581-9ecd-b547b590f93a",
+            "turn_f828113b-7f8b-4019-9096-e88e263ca6f4",
+            "turn_1f0a5357-3a19-4756-afcd-ff7ecfd63414",
+            "turn_78e2162f-36f8-45df-a750-3bb9a1232e53",
+            "turn_eff5f0b6-fcdf-461b-b685-aba147bf5503",
+            "turn_b043c9b3-76ce-4870-b92b-6a6f8828f4b2",
+            "turn_2061173b-2783-49fd-938f-6f13505e7821",
+            "turn_b08f5e4e-b624-4b7a-9f2c-72e145f7a448",
+            "turn_f511e329-c9d6-4fc9-b7d4-c7576536a813",
+            "turn_40e1281e-3400-4eee-bb35-8fd3ce2c2dbe",
+            "turn_231ea24b-25c4-4e7b-a519-16e3235592f7",
+            "turn_27fa72b4-7618-4a20-8065-22708ae1358e",
+            "turn_92e070a4-2ad5-4114-b8a7-b19332bdaf29",
+            "turn_65928004-655b-4cd0-ba8f-f28bb56417c6",
+            "turn_072794f8-7bd6-4fdd-8c7c-ff7fe091ae86",
+            "turn_3a937414-7fe1-48df-8dd4-7d0e19e56668",
+            "turn_b125a9e0-76b7-4de8-a95e-a3f681e27afc",
+            "turn_0755e204-d7a6-4fd9-aa87-a2d27ab30025",
+            "turn_538648d2-df9c-499c-bd17-4b3f2e77f6ec",
+            "turn_2f4d3ba8-de4a-4dd2-bcd7-7459d208ee90",
+            "turn_da27419d-5396-4ed1-8db8-3732cc2b82e0",
+            "turn_59175cd9-5949-4161-bb30-c48caa6da73e",
+            "turn_74abd48b-d423-491b-b2d9-14528f2d5c75",
+            "turn_2065dc5a-47de-414d-8f8c-b3a8a9494b60",
+            "turn_2b0b3ad7-13d1-497c-a3e3-59b0c3f26084",
+            "turn_81feab10-9efe-47c8-ab22-9b7a37449b91"
+          ],
+          "indices": [
+            218,
+            219,
+            220,
+            221,
+            222,
+            223,
+            224,
+            225,
+            226,
+            227,
+            228,
+            229,
+            230,
+            231,
+            232,
+            233,
+            234,
+            235,
+            236,
+            237,
+            238,
+            239,
+            240,
+            241,
+            242,
+            243,
+            244,
+            245,
+            246,
+            247,
+            248,
+            249,
+            250,
+            251,
+            252,
+            253,
+            254,
+            255,
+            256,
+            257,
+            258,
+            259,
+            260,
+            261,
+            262,
+            263,
+            264,
+            265,
+            266,
+            267,
+            268,
+            269,
+            270,
+            271,
+            272,
+            273
+          ],
+          "range": {
+            "firstId": "turn_31a193a8-c031-47bb-a5dc-bff2da706499",
+            "firstIndex": 218,
+            "lastId": "turn_81feab10-9efe-47c8-ab22-9b7a37449b91",
+            "lastIndex": 273
+          }
+        }
+      }
+    },
+    "canonical": {
+      "chunks": {
+        "closed": 86,
+        "open": 1,
+        "total": 87
+      },
+      "messages": {
+        "byActorType": {
+          "agent": 1060,
+          "human": 406,
+          "tool": 743
+        },
+        "byKind": {
+          "prompt": 406,
+          "response": 1060,
+          "tool_result": 743
+        },
+        "total": 2209
+      },
+      "turns": {
+        "closed": 404,
+        "open": 1,
+        "total": 405
+      }
+    },
+    "generatedThreadView": {
+      "fileName": "projection_8244cf45-3f7b-49a3-9ca2-3f2e1cf612da-thread_view_96a5b154-64b8-408b-8525-df111f9092e9.jsonl",
+      "filePath": "/Users/leemoore/code/pi-long-horizon/.context-steward/threads/thread_df67cbe0-2c0d-4c6e-90fa-570b04cd9bcc/generated/projection_8244cf45-3f7b-49a3-9ca2-3f2e1cf612da-thread_view_96a5b154-64b8-408b-8525-df111f9092e9.jsonl",
+      "generatedSessionTokenCount": {
+        "count": 52959,
+        "label": "provider_exact",
+        "metadata": {
+          "count": 52959,
+          "createdAt": "2026-05-21T00:25:45.904Z",
+          "model": "gpt-5.5",
+          "note": "OpenAI Responses input token count over the generated Thread View model-input representation.",
+          "provenance": "pi-long-horizon.openai-input-token-counter.v1:responses.input_tokens",
+          "provider": "openai",
+          "representationHash": "sha256:c91d40e778d6f23bfa8df50b7fa6f0e3f97295182260c876041c967a93c1a4da",
+          "scope": "generated_session",
+          "source": "provider_input_count",
+          "sourceRevision": 1699,
+          "trustClass": "exact"
+        },
+        "source": "thread_view_output_summary.generatedSessionTokenCountMetadata"
+      },
+      "latestAssistantUsageTotalTokens": 119778,
+      "messageCount": 647,
+      "recordCount": 651,
+      "statusSummary": {
+        "degradedCount": 0,
+        "repairNeededCount": 0
+      }
+    },
+    "kind": "post_compact_report",
+    "messageHighWatermark": 2209,
+    "sourceRevision": 2209,
+    "threadId": "thread_df67cbe0-2c0d-4c6e-90fa-570b04cd9bcc",
+    "tokenScale": {
+      "briefChunk": {
+        "buckets": [
+          {
+            "count": 19965,
+            "label": "provider_exact",
+            "records": 86,
+            "source": "provider_input_count",
+            "trustClass": "exact"
+          }
+        ],
+        "estimatedTotal": 0,
+        "providerExactTotal": 19965,
+        "unknownTotal": 0
+      },
+      "canonicalRawEstimate": {
+        "count": 1819982,
+        "label": "estimate",
+        "method": "visible_text_chars_div_4"
+      },
+      "chunkSmooth": {
+        "buckets": [
+          {
+            "count": 1604,
+            "label": "estimate",
+            "records": 1,
+            "source": "pi_heuristic",
+            "trustClass": "heuristic_estimate"
+          },
+          {
+            "count": 180767,
+            "label": "provider_exact",
+            "records": 86,
+            "source": "provider_input_count",
+            "trustClass": "exact"
+          }
+        ],
+        "estimatedTotal": 1604,
+        "providerExactTotal": 180767,
+        "unknownTotal": 0
+      },
+      "detailedChunk": {
+        "buckets": [
+          {
+            "count": 47213,
+            "label": "provider_exact",
+            "records": 86,
+            "source": "provider_input_count",
+            "trustClass": "exact"
+          }
+        ],
+        "estimatedTotal": 0,
+        "providerExactTotal": 47213,
+        "unknownTotal": 0
+      },
+      "generated": {
+        "buckets": [
+          {
+            "count": 52959,
+            "label": "provider_exact",
+            "records": 1,
+            "source": "provider_input_count",
+            "trustClass": "exact"
+          }
+        ],
+        "estimatedTotal": 0,
+        "providerExactTotal": 52959,
+        "unknownTotal": 0
+      },
+      "lowerBandProjection": {
+        "buckets": [
+          {
+            "count": 148795,
+            "label": "provider_exact",
+            "records": 404,
+            "source": "provider_input_count",
+            "trustClass": "exact"
+          }
+        ],
+        "estimatedTotal": 0,
+        "providerExactTotal": 148795,
+        "unknownTotal": 0
+      },
+      "rawTurn": {
+        "buckets": [
+          {
+            "count": 982454,
+            "label": "provider_exact",
+            "records": 404,
+            "source": "provider_input_count",
+            "trustClass": "exact"
+          }
+        ],
+        "estimatedTotal": 0,
+        "providerExactTotal": 982454,
+        "unknownTotal": 0
+      },
+      "smoothTurn": {
+        "buckets": [
+          {
+            "count": 184358,
+            "label": "provider_exact",
+            "records": 404,
+            "source": "provider_input_count",
+            "trustClass": "exact"
+          }
+        ],
+        "estimatedTotal": 0,
+        "providerExactTotal": 184358,
+        "unknownTotal": 0
+      },
+      "toolResultRawEstimate": {
+        "count": 1332432,
+        "label": "estimate",
+        "method": "visible_text_chars_div_4"
+      }
+    },
+    "warnings": []
+  },
+  "providedId": "sc-df67cbe0-8244cf45-mper265s",
+  "sourceRevision": 2211,
+  "threadDir": ".context-steward/threads/thread_df67cbe0-2c0d-4c6e-90fa-570b04cd9bcc",
+  "threadId": "thread_df67cbe0-2c0d-4c6e-90fa-570b04cd9bcc",
+  "threadViewPath": ".context-steward/threads/thread_df67cbe0-2c0d-4c6e-90fa-570b04cd9bcc/generated/projection_8244cf45-3f7b-49a3-9ca2-3f2e1cf612da-thread_view_96a5b154-64b8-408b-8525-df111f9092e9.jsonl"
+}

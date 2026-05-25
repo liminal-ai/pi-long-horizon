@@ -204,3 +204,61 @@ No generated thread-view exists for this coder thread yet, so all generated band
 ### Where we are
 
 This snapshot captures the coder session immediately before the user plans to smart compact it to an 80k lower bound. The thread is relatively small in turn count but large in canonical raw/tool-result volume because the coding agent did substantial tool-heavy implementation and validation work. It has no generated projection yet, and token-counting status still reports repair-needed because raw/smooth materialized counts are heuristic while lower-band projections and closed chunk summaries already have exact provider-backed counts. A prepare-mode smart compact should repair/refresh the needed token accounting and produce the first generated thread-view for this coder session.
+
+## 2026-05-25T00:17:22Z — current session after reload, before next smart compact
+
+- Archive: `2026-05-25T00-17-22Z-df67cbe0-2c0d-src2211-pre-smart-compact-after-report-reload.zip`
+- Metadata: `2026-05-25T00-17-22Z-df67cbe0-2c0d-src2211-pre-smart-compact-after-report-reload.json`
+- Thread: `thread_df67cbe0-2c0d-4c6e-90fa-570b04cd9bcc`
+- Provided session/compact ID: `sc-df67cbe0-8244cf45-mper265s`
+- Active generated thread-view:
+  `.context-steward/threads/thread_df67cbe0-2c0d-4c6e-90fa-570b04cd9bcc/generated/projection_8244cf45-3f7b-49a3-9ca2-3f2e1cf612da-thread_view_96a5b154-64b8-408b-8525-df111f9092e9.jsonl`
+- Source revision at snapshot: `2211`
+- This is a **pre-smart-compact** snapshot taken after reloading the latest committed changes and dogfooding the new `lhx inspect report post-compact` command.
+
+### PI session usage reported by PI
+
+- Messages:
+  - User: **87**
+  - Assistant: **202**
+  - Tool calls: **118**
+  - Tool results: **118**
+  - Total: **518**
+- Tokens:
+  - Input: **1,946,222**
+  - Output: **36,535**
+  - Cache read: **17,018,368**
+  - Total: **19,001,125**
+- Cost:
+  - Total: **19.3363**
+
+### `lhx inspect report post-compact` stats
+
+- Canonical thread messages: **2,209** total
+  - prompt: **406**
+  - response: **1,060**
+  - tool_result: **743**
+- Turns: **404 closed / 1 open**
+- Chunks: **86 closed / 1 open**
+- Generated thread-view records/messages: **651 records / 647 messages**
+- Generated tokens: **52,959 exact**
+- Status: **degraded=0 repairNeeded=0**
+
+### Current generated band layout
+
+- `full_fidelity`: **12 turns**, turn indices **274–285**, tokenSum **19,563**
+- `smooth`: **56 turns**, turn indices **218–273**, tokenSum **19,817**
+- `detailed`: **33 chunks**, `chunk-023` through `chunk-055`, tokenSum **19,603**
+- `brief`: **22 chunks**, `chunk-001` through `chunk-022`, tokenSum **5,457**
+
+### Token scale
+
+- Canonical raw estimate: **1,819,982**
+- Tool-result raw estimate: **1,332,432**
+- Raw turn exact total: **982,454**
+- Smooth turn exact total: **184,358**
+- Generated exact total: **52,959**
+
+### Where we are
+
+This snapshot captures the main active long-horizon session after the latest E2E stabilization and `lhx inspect report post-compact` work were committed and reloaded. The generated context remains healthy with no degraded or repair-needed status. Canonical history has continued to grow substantially, while the active generated view still has a compact exact-counted generated base around 53k tokens plus live continuation records. The next planned action is to run smart compact if reload behavior remains stable.

@@ -1,25 +1,37 @@
 {
   "name": "@pi-long-horizon/context",
   "version": "0.1.0",
-  "description": "Read-only SDK and CLI for inspecting PI Long Horizon Context Steward state.",
+  "description": "Long Horizon context inspection CLI/SDK and PI launcher.",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
-    "lhx": "./dist/cli.js"
+    "lhx": "./dist/cli.js",
+    "pi-lh": "./dist/pi-lh.js"
   },
   "files": ["dist", "README.md"],
+  "keywords": ["pi-package"],
+  "pi": {
+    "extensions": ["./dist/pi-extension/index.js"]
+  },
   "scripts": {
-    "build": "npx tsc -p tsconfig.json",
+    "build": "npx tsc -p tsconfig.json && npx esbuild ../../src/context-steward/pi/pi-extension.ts --bundle --platform=node --format=esm --target=node24 --outfile=dist/pi-extension/index.js --external:@earendil-works/pi-agent-core --external:@earendil-works/pi-ai --external:@earendil-works/pi-coding-agent",
     "typecheck": "npx tsc -p tsconfig.json --noEmit",
     "test": "npx vitest run",
-    "dev:cli": "npx tsx src/cli.ts"
+    "dev:cli": "npx tsx src/cli.ts",
+    "dev:pi-lh": "npx tsx src/pi-lh.ts"
   },
   "engines": {
     "node": ">=24"
   },
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "0.75.3",
+    "@earendil-works/pi-ai": "0.75.3",
+    "@earendil-works/pi-coding-agent": "0.75.3"
+  },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "esbuild": "^0.27.7",
     "typescript": "^5.9.0",
     "vitest": "^4.0.0",
     "tsx": "^4.20.0"
