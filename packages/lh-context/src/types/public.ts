@@ -102,3 +102,44 @@ export interface BandsResult {
   livePostCompactTailDetection: { supported: false; note: string };
   warnings: string[];
 }
+
+export interface TokenScaleEntry {
+  buckets: TokenRollupBucket[];
+  providerExactTotal: number;
+  estimatedTotal: number;
+  unknownTotal: number;
+}
+
+export interface PostCompactReportResult {
+  kind: "post_compact_report";
+  threadId: string;
+  sourceRevision?: number;
+  messageHighWatermark?: number;
+  canonical: {
+    messages: SummaryResult["messages"];
+    turns: SummaryResult["turns"];
+    chunks: SummaryResult["chunks"];
+  };
+  generatedThreadView: {
+    filePath?: string;
+    fileName?: string;
+    generatedSessionTokenCount?: GeneratedTokenCount;
+    recordCount: number;
+    messageCount: number;
+    latestAssistantUsageTotalTokens?: number;
+    statusSummary: { degradedCount: number; repairNeededCount: number };
+  };
+  bands: Record<BandName, BandDetail>;
+  tokenScale: {
+    canonicalRawEstimate: TokensResult["estimates"]["canonicalVisibleTextRaw"];
+    toolResultRawEstimate: TokensResult["estimates"]["toolResultRaw"];
+    rawTurn: TokenScaleEntry;
+    smoothTurn: TokenScaleEntry;
+    lowerBandProjection: TokenScaleEntry;
+    chunkSmooth: TokenScaleEntry;
+    detailedChunk: TokenScaleEntry;
+    briefChunk: TokenScaleEntry;
+    generated: TokenScaleEntry;
+  };
+  warnings: string[];
+}

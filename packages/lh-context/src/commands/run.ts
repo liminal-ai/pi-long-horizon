@@ -2,6 +2,7 @@ import { LhxError } from "../errors/errors.js";
 import type { InspectInput } from "../types/public.js";
 import { runBandsCommand } from "./bands.js";
 import { HELP_TEXT } from "./help.js";
+import { runPostCompactReportCommand } from "./report.js";
 import { runSummaryCommand } from "./summary.js";
 import { runTokensCommand } from "./tokens.js";
 
@@ -10,8 +11,9 @@ export interface CliResult { exitCode: number; stdout: string; stderr: string }
 export async function runCli(argv: string[]): Promise<CliResult> {
   if (argv.length === 0 || argv.includes("--help") || argv.includes("-h")) return { exitCode: 0, stdout: HELP_TEXT, stderr: "" };
   const [command, ...rest] = argv;
-  const { input, json } = parseOptions(rest);
   try {
+    if (command === "inspect") return await runInspect(rest);
+    const { input, json } = parseOptions(rest);
     if (command === "summary") return { exitCode: 0, stdout: await runSummaryCommand(input, json), stderr: "" };
     if (command === "tokens") return { exitCode: 0, stdout: await runTokensCommand(input, json), stderr: "" };
     if (command === "bands") return { exitCode: 0, stdout: await runBandsCommand(input, json), stderr: "" };
@@ -21,6 +23,31 @@ export async function runCli(argv: string[]): Promise<CliResult> {
     const code = error instanceof LhxError ? ` (${error.code})` : "";
     return { exitCode: 1, stdout: "", stderr: `lhx error${code}: ${message}\n` };
   }
+}
+
+async function runInspect(args: string[]): Promise<CliResult> {
+  const [subcommand, ...rest] = args;
+  if (subcommand === "summary") {
+    const { input, json } = parseOptions(rest);
+    return { exitCode: 0, stdout: await runSummaryCommand(input, json), stderr: "" };
+  }
+  if (subcommand === "tokens") {
+    const { input, json } = parseOptions(rest);
+    return { exitCode: 0, stdout: await runTokensCommand(input, json), stderr: "" };
+  }
+  if (subcommand === "bands") {
+    const { input, json } = parseOptions(rest);
+    return { exitCode: 0, stdout: await runBandsCommand(input, json), stderr: "" };
+  }
+  if (subcommand === "report") {
+    const [reportName, ...reportRest] = rest;
+    if (reportName === "post-compact") {
+      const { input, json } = parseOptions(reportRest);
+      return { exitCode: 0, stdout: await runPostCompactReportCommand(input, json), stderr: "" };
+    }
+    return { exitCode: 1, stdout: HELP_TEXT, stderr: `Unknown inspect report: ${reportName ?? ""}\n` };
+  }
+  return { exitCode: 1, stdout: HELP_TEXT, stderr: `Unknown inspect command: ${subcommand ?? ""}\n` };
 }
 
 function parseOptions(args: string[]): { input: InspectInput; json: boolean } {

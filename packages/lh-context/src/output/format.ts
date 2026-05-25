@@ -1,4 +1,6 @@
-import type { BandsResult, SummaryResult, TokensResult } from "../types/public.js";
+import { basename } from "node:path";
+
+import type { BandDetail, BandsResult, PostCompactReportResult, SummaryResult, TokensResult } from "../types/public.js";
 
 export function formatJson(value: unknown): string {
   return `${JSON.stringify(value, null, 2)}\n`;
@@ -32,6 +34,37 @@ export function formatTokensHuman(r: TokensResult): string {
   return [...lines, ...warnings(r.warnings)].join("\n") + "\n";
 }
 
+export function formatPostCompactReportHuman(r: PostCompactReportResult): string {
+  const generatedFile = r.generatedThreadView.fileName ?? (r.generatedThreadView.filePath ? basename(r.generatedThreadView.filePath) : "none");
+  const lines = [
+    `Post-compact context report:`,
+    ``,
+    `Thread: ${r.threadId}`,
+    `Messages: ${formatNumber(r.canonical.messages.total)}`,
+    ...Object.entries(r.canonical.messages.byKind).sort(([a], [b]) => a.localeCompare(b)).map(([kind, count]) => `  ${kind}: ${formatNumber(count)}`),
+    `Turns: ${r.canonical.turns.closed} closed / ${r.canonical.turns.open} open`,
+    `Chunks: ${r.canonical.chunks.closed} closed / ${r.canonical.chunks.open} open`,
+    ``,
+    `Generated thread-view:`,
+    `  Generated file: ${generatedFile}`,
+    `  Generated tokens: ${formatMaybeNumber(r.generatedThreadView.generatedSessionTokenCount?.count)}${r.generatedThreadView.generatedSessionTokenCount ? ` ${tokenCountLabel(r.generatedThreadView.generatedSessionTokenCount.label)}` : ""}`,
+    `  Records: ${formatNumber(r.generatedThreadView.recordCount)}`,
+    `  Messages: ${formatNumber(r.generatedThreadView.messageCount)}`,
+    `  Status: degraded=${r.generatedThreadView.statusSummary.degradedCount} repairNeeded=${r.generatedThreadView.statusSummary.repairNeededCount}`,
+    ``,
+    `Bands:`,
+    ...(["full_fidelity", "smooth", "detailed", "brief"] as const).map((band) => formatReportBandLine(band, r.bands[band])),
+    ``,
+    `Token scale:`,
+    `  Canonical raw estimate: ${formatNumber(r.tokenScale.canonicalRawEstimate.count)}`,
+    `  Tool-result raw estimate: ${formatNumber(r.tokenScale.toolResultRawEstimate.count)}`,
+    `  Raw turn exact total: ${formatNumber(r.tokenScale.rawTurn.providerExactTotal)}`,
+    `  Smooth turn exact total: ${formatNumber(r.tokenScale.smoothTurn.providerExactTotal)}`,
+    `  Generated exact total: ${formatNumber(r.tokenScale.generated.providerExactTotal)}`,
+  ];
+  return [...lines, ...warnings(r.warnings)].join("\n") + "\n";
+}
+
 export function formatBandsHuman(r: BandsResult): string {
   const lines = [
     `PI Long Horizon band inspection`,
@@ -45,6 +78,28 @@ export function formatBandsHuman(r: BandsResult): string {
   }
   lines.push(`Live tail detection: unsupported (${r.livePostCompactTailDetection.note})`);
   return [...lines, ...warnings(r.warnings)].join("\n") + "\n";
+}
+
+function formatReportBandLine(band: string, detail: BandDetail): string {
+  const parts = [`  ${band}:`];
+  if (detail.turns.count > 0) parts.push(`${detail.turns.count} turns${formatTurnRange(detail.turns.range)}`);
+  if (detail.chunks.count > 0) parts.push(`${detail.chunks.count} chunks${detail.chunks.ids.length ? ` ${detail.chunks.ids.join(",")}` : ""}`);
+  if (detail.turns.count === 0 && detail.chunks.count === 0) parts.push(band === "detailed" || band === "brief" ? "0 chunks" : "0 turns");
+  if (detail.tokenSum !== undefined) parts.push(`tokenSum ${formatNumber(detail.tokenSum)}`);
+  return parts.join("   ");
+}
+
+function tokenCountLabel(label: string): string {
+  if (label === "provider_exact") return "exact";
+  return label;
+}
+
+function formatMaybeNumber(value: number | undefined): string {
+  return value === undefined ? "unknown" : formatNumber(value);
+}
+
+function formatNumber(value: number): string {
+  return new Intl.NumberFormat("en-US").format(value);
 }
 
 function kv(record: Record<string, number>): string {
