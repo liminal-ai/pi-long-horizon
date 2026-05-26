@@ -17,6 +17,7 @@ export function formatSummaryHuman(r: SummaryResult): string {
   return [
     `PI Long Horizon context summary`,
     `Thread: ${r.threadId}`,
+    `Backing: ${r.backing}`,
     `Updated: ${r.updatedAt ?? "unknown"}  sourceRevision=${r.sourceRevision ?? "?"}  highWatermark=${r.messageHighWatermark ?? "?"}`,
     `Messages: ${r.messages.total} (${kv(r.messages.byKind)}; actors: ${kv(r.messages.byActorType)})`,
     `Turns: ${r.turns.total} closed=${r.turns.closed} open=${r.turns.open}`,
@@ -32,6 +33,7 @@ export function formatTokensHuman(r: TokensResult): string {
   const lines = [
     `PI Long Horizon token inspection`,
     `Thread: ${r.threadId}`,
+    `Backing: ${r.backing}`,
     `Canonical visible text raw estimate: ${r.estimates.canonicalVisibleTextRaw.count} (${r.estimates.canonicalVisibleTextRaw.method})`,
     `Tool-result raw estimate: ${r.estimates.toolResultRaw.count} (${r.estimates.toolResultRaw.method})`,
     `Generated thread-view tokens: ${r.generatedThreadViewTokenCount?.count ?? "unknown"} (${r.generatedThreadViewTokenCount?.label ?? "n/a"}${r.generatedThreadViewTokenCount ? `, ${r.generatedThreadViewTokenCount.source}` : ""})`,
@@ -47,6 +49,7 @@ export function formatPostCompactReportHuman(r: PostCompactReportResult): string
     `Post-compact context report:`,
     ``,
     `Thread: ${r.threadId}`,
+    `Backing: ${r.backing}`,
     `Messages: ${formatNumber(r.canonical.messages.total)}`,
     ...Object.entries(r.canonical.messages.byKind).sort(([a], [b]) => a.localeCompare(b)).map(([kind, count]) => `  ${kind}: ${formatNumber(count)}`),
     `Turns: ${r.canonical.turns.closed} closed / ${r.canonical.turns.open} open`,
@@ -76,6 +79,7 @@ export function formatBandsHuman(r: BandsResult): string {
   const lines = [
     `PI Long Horizon band inspection`,
     `Thread: ${r.threadId}`,
+    `Backing: ${r.backing}`,
     `Generated thread-view: ${r.generatedFilePath ?? "none"}`,
     `Records: ${r.recordCount}  messages=${r.messageCount}  generatedSessionTokens=${r.generatedSessionTokenCount?.count ?? "unknown"}${r.generatedSessionTokenCount ? ` (${r.generatedSessionTokenCount.label}, ${r.generatedSessionTokenCount.source})` : ""}  latestAssistantUsage=${r.latestAssistantUsageTotalTokens ?? "unknown"}`,
   ];
@@ -91,6 +95,7 @@ export function formatReadinessHuman(r: ReadinessResult): string {
   const lines = [
     `PI Long Horizon readiness inspection`,
     `Thread: ${r.threadId}`,
+    `Backing: ${r.backing}`,
     `Overall: ${r.overallStatus}  recommendedCompactMode=${r.compactModeRecommendation}`,
     `Turn state: ${r.turnState}`,
     `Token counting: ${formatReadinessEntry(r.tokenCounting)}`,

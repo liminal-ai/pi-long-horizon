@@ -5,6 +5,7 @@ import { externalIntegrationDetails, formatExternalIntegrationFailure } from "..
 import type { MessageRecord, TurnRecord, TurnSmoothComponentRecord } from "../../domain/records.js";
 import type { ThreadSnapshot, ThreadStore } from "../../store/thread-store.js";
 import { fail, ok, StewardResultError, type StewardResult } from "../../domain/errors.js";
+import { persistTurnsWithRowFallback } from "../../services/turn-service.js";
 import { withSerializedThreadOperation } from "../../services/thread-service.js";
 import {
   SMOOTH_TURN_SCHEMA_VERSION,
@@ -261,13 +262,16 @@ async function persistComponent(input: {
             }
           : structuredClone(turn),
       );
-      const writeResult = await input.store.writeTurns({
+      const writeResult = await persistTurnsWithRowFallback({
+        store: input.store,
         threadId: input.threadId,
+        existingTurns: snapshot.turns,
+        nextTurns: turns,
         expectedSourceRevision: snapshot.thread.sourceRevision,
         expectedMessageHighWatermark: snapshot.thread.messageHighWatermark,
         expectedTurnsRevision: snapshot.thread.turnsRevision,
-        turns,
         turnState: snapshot.thread.status.turnState,
+        updatedAt: input.generatedAt,
       });
       if (!writeResult.ok) {
         return fail(...writeResult.issues);

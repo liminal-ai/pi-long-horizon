@@ -45,46 +45,51 @@ export interface LoadedThread {
   warnings: string[];
 }
 
+interface ThreadDirLoadResult {
+  backing: LoadedThread["backing"];
+  thread: any;
+  turns: any[];
+  chunks: any[];
+  messages: any[];
+  warnings: string[];
+}
+
+interface ThreadDirCandidate {
+  dir: string;
+  threadId: string;
+  updatedAt: string;
+  mtimeMs: number;
+  hasGeneratedThreadView: boolean;
+}
+
 export async function loadThread(input: InspectInput, options: { preferGeneratedThreadView?: boolean } = {}): Promise<LoadedThread> {
   const rootDir = path.resolve(input.rootDir ?? process.cwd());
   const contextStewardDir = path.join(rootDir, ".context-steward");
   const threadDir = input.threadDir
     ? path.resolve(input.threadDir)
     : await resolveThreadDir(contextStewardDir, input.threadId, rootDir, input.backing ?? "auto", options);
-  const fileThreadPath = path.join(threadDir, "thread.json");
-  const sqliteThreadPath = path.join(threadDir, SQLITE_THREAD_FILENAME);
-
-  let backing: LoadedThread["backing"];
-  let thread: any;
-  let turns: any[];
-  let chunks: any[];
-  let messages: any[];
-
-  if (input.backing !== "sqlite" && await exists(fileThreadPath)) {
-    backing = "file";
-    thread = await readJson<any>(fileThreadPath);
-    turns = (await maybeReadJson<any[]>(path.join(threadDir, "turns.json"))) ?? [];
-    chunks = (await maybeReadJson<any[]>(path.join(threadDir, "chunks.json"))) ?? [];
-    messages = await readJsonl(path.join(threadDir, "messages.jsonl"));
-  } else if (input.backing !== "file" && await exists(sqliteThreadPath)) {
-    backing = "sqlite";
-    ({ thread, turns, chunks, messages } = await loadSqliteThread(sqliteThreadPath));
-  } else {
-    throw new LhxError(`No thread.json or ${SQLITE_THREAD_FILENAME} found under ${threadDir}`, "NO_THREAD_DATA", {
-      kind: "thread_missing",
-      threadDir,
-      backing: input.backing ?? "auto",
-    });
-  }
-
-  const threadId = input.threadId ?? thread.threadId ?? path.basename(threadDir);
+  const loadedThread = await loadThreadDir(threadDir, input.backing ?? "auto");
+  const threadId = input.threadId ?? loadedThread.thread.threadId ?? path.basename(threadDir);
   const { generatedFilePath, generatedRecords, warnings } = await resolveGeneratedThreadView({
     input,
     rootDir,
     threadDir,
-    thread,
+    thread: loadedThread.thread,
   });
-  return { backing, rootDir, contextStewardDir, threadDir, threadId, thread, turns, chunks, messages, generatedFilePath, generatedRecords, warnings };
+  return {
+    backing: loadedThread.backing,
+    rootDir,
+    contextStewardDir,
+    threadDir,
+    threadId,
+    thread: loadedThread.thread,
+    turns: loadedThread.turns,
+    chunks: loadedThread.chunks,
+    messages: loadedThread.messages,
+    generatedFilePath,
+    generatedRecords,
+    warnings: [...loadedThread.warnings, ...warnings],
+  };
 }
 
 async function resolveThreadDir(
@@ -98,7 +103,7 @@ async function resolveThreadDir(
   if (threadId) return path.join(threadsDir, threadId);
   if (!(await exists(threadsDir))) throw new LhxError(`No Context Steward threads directory at ${threadsDir}`, "NO_THREADS_DIR");
   const entries = await readdir(threadsDir);
-  const candidates: Array<{ dir: string; threadId: string; updatedAt: string; mtimeMs: number; hasGeneratedThreadView: boolean }> = [];
+  const candidates: ThreadDirCandidate[] = [];
   let sqliteOnlyThreadDetected = false;
   let firstSqliteReadError: LhxError | undefined;
   for (const entry of entries.sort()) {
@@ -106,42 +111,41 @@ async function resolveThreadDir(
     const s = await stat(dir).catch(() => undefined);
     if (!s?.isDirectory()) continue;
     const fileThread = await maybeReadJson<any>(path.join(dir, "thread.json"));
-    if (fileThread) {
-      if (backing === "sqlite") {
-        continue;
+    const sqlitePath = path.join(dir, SQLITE_THREAD_FILENAME);
+    const hasSqlite = await exists(sqlitePath);
+
+    if (backing !== "file" && hasSqlite) {
+      let sqliteThread: any;
+      try {
+        sqliteThread = await readThreadRecordFromSqlite(sqlitePath);
+      } catch (error) {
+        if (error instanceof LhxError) {
+          firstSqliteReadError ??= error;
+          sqliteOnlyThreadDetected = true;
+          continue;
+        }
+        throw error;
       }
+      sqliteOnlyThreadDetected = true;
       candidates.push({
         dir,
-        threadId: fileThread.threadId ?? entry,
-        updatedAt: fileThread.updatedAt ?? "",
+        threadId: sqliteThread.threadId ?? entry,
+        updatedAt: sqliteThread.updatedAt ?? "",
         mtimeMs: s.mtimeMs,
-        hasGeneratedThreadView: await generatedThreadViewExists(rootDir, fileThread),
+        hasGeneratedThreadView: await generatedThreadViewExists(rootDir, sqliteThread),
       });
       continue;
     }
 
-    if (backing === "file") {
+    if (!fileThread) {
       continue;
     }
-
-    let sqliteThread: any | undefined;
-    try {
-      sqliteThread = await maybeLoadSqliteThreadCandidate(dir);
-    } catch (error) {
-      if (error instanceof LhxError) {
-        firstSqliteReadError ??= error;
-        continue;
-      }
-      throw error;
-    }
-    if (!sqliteThread) continue;
-    sqliteOnlyThreadDetected = true;
     candidates.push({
       dir,
-      threadId: sqliteThread.threadId ?? entry,
-      updatedAt: sqliteThread.updatedAt ?? "",
+      threadId: fileThread.threadId ?? entry,
+      updatedAt: fileThread.updatedAt ?? "",
       mtimeMs: s.mtimeMs,
-      hasGeneratedThreadView: await generatedThreadViewExists(rootDir, sqliteThread),
+      hasGeneratedThreadView: await generatedThreadViewExists(rootDir, fileThread),
     });
   }
   if (candidates.length === 0) {
@@ -163,6 +167,77 @@ async function resolveThreadDir(
   return candidates[0]!.dir;
 }
 
+function dualSourceWarning(threadDir: string, selectedBacking: LoadedThread["backing"]): string {
+  const action =
+    selectedBacking === "sqlite"
+      ? "Treating thread.sqlite as authoritative; remove or quarantine the legacy JSON files before active runtime use."
+      : "Forcing legacy JSON inspection because backing=file was requested; use backing=sqlite or backing=auto to inspect the authoritative post-cutover state.";
+  return `Both legacy JSON and ${SQLITE_THREAD_FILENAME} are present under ${threadDir}. ${action}`;
+}
+
+async function loadFileThread(threadDir: string): Promise<Pick<LoadedThread, "thread" | "turns" | "chunks" | "messages">> {
+  return {
+    thread: await readJson<any>(path.join(threadDir, "thread.json")),
+    turns: (await maybeReadJson<any[]>(path.join(threadDir, "turns.json"))) ?? [],
+    chunks: (await maybeReadJson<any[]>(path.join(threadDir, "chunks.json"))) ?? [],
+    messages: await readJsonl(path.join(threadDir, "messages.jsonl")),
+  };
+}
+
+async function loadThreadDir(
+  threadDir: string,
+  backing: NonNullable<InspectInput["backing"]>,
+): Promise<ThreadDirLoadResult> {
+  const fileThreadPath = path.join(threadDir, "thread.json");
+  const sqliteThreadPath = path.join(threadDir, SQLITE_THREAD_FILENAME);
+  const hasLegacyFile = await exists(fileThreadPath);
+  const hasSqlite = await exists(sqliteThreadPath);
+  const warnings: string[] = [];
+
+  if (backing === "file") {
+    if (!hasLegacyFile) {
+      throw new LhxError(`No thread.json found under ${threadDir}`, "NO_THREAD_DATA", {
+        kind: "thread_missing",
+        threadDir,
+        backing,
+      });
+    }
+    if (hasSqlite) {
+      warnings.push(dualSourceWarning(threadDir, "file"));
+    }
+    return {
+      backing: "file",
+      ...(await loadFileThread(threadDir)),
+      warnings,
+    };
+  }
+
+  if (hasSqlite) {
+    if (hasLegacyFile) {
+      warnings.push(dualSourceWarning(threadDir, "sqlite"));
+    }
+    return {
+      backing: "sqlite",
+      ...(await loadSqliteThread(sqliteThreadPath)),
+      warnings,
+    };
+  }
+
+  if (hasLegacyFile) {
+    return {
+      backing: "file",
+      ...(await loadFileThread(threadDir)),
+      warnings,
+    };
+  }
+
+  throw new LhxError(`No thread.json or ${SQLITE_THREAD_FILENAME} found under ${threadDir}`, "NO_THREAD_DATA", {
+    kind: "thread_missing",
+    threadDir,
+    backing,
+  });
+}
+
 async function generatedThreadViewExists(rootDir: string, thread: any): Promise<boolean> {
   const raw = thread?.target?.currentGeneratedFilePath;
   if (typeof raw !== "string" || raw.length === 0) return false;
@@ -170,14 +245,14 @@ async function generatedThreadViewExists(rootDir: string, thread: any): Promise<
   return exists(filePath);
 }
 
-async function maybeLoadSqliteThreadCandidate(threadDir: string): Promise<any | undefined> {
-  const sqlitePath = path.join(threadDir, SQLITE_THREAD_FILENAME);
-  if (!(await exists(sqlitePath))) {
-    return undefined;
-  }
-
+async function readThreadRecordFromSqlite(sqlitePath: string): Promise<any> {
   try {
-    return await readThreadRecordFromSqlite(sqlitePath);
+    const db = await openSqliteDatabase(sqlitePath);
+    try {
+      return readRequiredJsonRow<any>(db, "SELECT thread_json AS json FROM threads LIMIT 1", sqlitePath, "thread");
+    } finally {
+      db.close();
+    }
   } catch (error) {
     if (error instanceof LhxError) {
       throw error;
@@ -199,15 +274,6 @@ async function loadSqliteThread(sqlitePath: string): Promise<Pick<LoadedThread, 
     const chunks = readJsonRows<any>(db, "SELECT chunk_json AS json FROM chunks ORDER BY chunk_position ASC, chunk_id ASC");
     const messages = readJsonRows<any>(db, "SELECT message_json AS json FROM messages ORDER BY source_order ASC, message_id ASC");
     return { thread, turns, chunks, messages };
-  } finally {
-    db.close();
-  }
-}
-
-async function readThreadRecordFromSqlite(sqlitePath: string): Promise<any> {
-  const db = await openSqliteDatabase(sqlitePath);
-  try {
-    return readRequiredJsonRow<any>(db, "SELECT thread_json AS json FROM threads LIMIT 1", sqlitePath, "thread");
   } finally {
     db.close();
   }

@@ -26,6 +26,7 @@ export async function inspectSummary(input: InspectInput = {}): Promise<SummaryR
   const status = summarizeStatuses(loaded.thread?.status);
   return {
     kind: "summary",
+    backing: loaded.backing,
     rootDir: loaded.rootDir,
     contextStewardDir: loaded.contextStewardDir,
     threadDir: loaded.threadDir,
@@ -56,6 +57,7 @@ export async function inspectTokens(input: InspectInput = {}): Promise<TokensRes
   const generated = generatedSessionTokenCount(loaded.thread, loaded.generatedRecords);
   return {
     kind: "tokens",
+    backing: loaded.backing,
     threadId: loaded.threadId,
     estimates: {
       canonicalVisibleTextRaw: { count: estimateTokens(canonicalText), label: "estimate", method: "visible_text_chars_div_4" },
@@ -125,6 +127,7 @@ export async function inspectBands(input: InspectInput = {}): Promise<BandsResul
   }
   return {
     kind: "bands",
+    backing: loaded.backing,
     threadId: loaded.threadId,
     generatedFilePath: loaded.generatedFilePath,
     recordCount: loaded.generatedRecords.length,
@@ -146,6 +149,7 @@ export async function inspectReadiness(input: InspectInput = {}): Promise<Readin
 
   return {
     kind: "readiness",
+    backing: loaded.backing,
     threadId: loaded.threadId,
     overallStatus,
     compactModeRecommendation: overallStatus === "ready" ? "strict" : "prepare",

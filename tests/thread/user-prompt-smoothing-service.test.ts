@@ -3,15 +3,17 @@ import test from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 
 import { FileThreadStore } from "../../src/thread/store/file-thread-store.js";
+import { SqliteThreadStore } from "../../src/thread/store/sqlite-thread-store.js";
 import { ensureSmoothTurn, readSmoothTurnState } from "../../src/thread/async-thread/services/smooth-turn-service.js";
 import {
   USER_PROMPT_SMOOTHING_PROMPT_VERSION,
   UserPromptSmoothingService,
   type UserPromptSmoothingProvider,
 } from "../../src/thread/async-thread/services/user-prompt-smoothing-service.js";
-import { withTempThreadStore } from "../../src/thread/async-thread/test/temp-thread-store.js";
-import type { StewardResult } from "../../src/thread/domain/errors.js";
+import { withTempSqliteThreadStore, withTempThreadStore } from "../../src/thread/async-thread/test/temp-thread-store.js";
+import { fail, type StewardResult } from "../../src/thread/domain/errors.js";
 import type { ActorRecord, MessageRecord, TurnRecord } from "../../src/thread/domain/records.js";
+import type { ThreadStore } from "../../src/thread/store/thread-store.js";
 import {
   DEFAULT_TEST_TIMESTAMP,
   makeActorRecord,
@@ -53,8 +55,26 @@ async function waitForAssertion(
   throw new Error(description);
 }
 
+class RowLevelOnlySqliteSmoothingStore extends SqliteThreadStore {
+  compatibilityWrites = 0;
+  rowWrites = 0;
+
+  override async writeTurns(_input: Parameters<ThreadStore["writeTurns"]>[0]) {
+    this.compatibilityWrites += 1;
+    return fail({
+      code: "STORE_UNAVAILABLE",
+      message: "Unexpected compatibility turn write in SQLite user prompt smoothing test.",
+    });
+  }
+
+  override async writeTurnRows(input: Parameters<NonNullable<ThreadStore["writeTurnRows"]>>[0]) {
+    this.rowWrites += 1;
+    return super.writeTurnRows(input);
+  }
+}
+
 async function seedUserTurn(input: {
-  store: FileThreadStore;
+  store: ThreadStore;
   threadId: string;
   prompt: string;
   promptParts?: string[];
@@ -202,6 +222,30 @@ test("stores mocked model-smoothed user prompt with provider metadata", async ()
     assert.equal(component?.providerMetadata?.modelId, "gpt-5.4-mini");
     assert.equal(component?.providerMetadata?.reasoningEffort, "none");
     assert.equal(component?.providerMetadata?.promptVersion, USER_PROMPT_SMOOTHING_PROMPT_VERSION);
+  });
+});
+
+test("SQLite user prompt smoothing persists through row-level turn writes", async () => {
+  await withTempSqliteThreadStore(async ({ storeRootDir }) => {
+    const seedStore = new SqliteThreadStore(storeRootDir);
+    const { message, turn } = await seedUserTurn({
+      store: seedStore,
+      threadId: "thread-user-smooth-sqlite-row-level",
+      prompt: "maybe clean up /tmp/app.ts and keep threshold 0.82",
+    });
+    const store = new RowLevelOnlySqliteSmoothingStore(storeRootDir);
+
+    await new UserPromptSmoothingService({
+      store,
+      provider: providerReturning("Maybe clean up /tmp/app.ts and keep threshold 0.82."),
+    }).run({ threadId: message.threadId, messageId: message.messageId });
+
+    assert.equal(store.compatibilityWrites, 0);
+    assert.equal(store.rowWrites, 1);
+    const state = await readSmoothTurnState({ threadId: message.threadId, turnId: turn.turnId }, { store });
+    const component = state.components?.find((candidate) => candidate.kind === "user_prompt");
+    assert.equal(component?.text, "Maybe clean up /tmp/app.ts and keep threshold 0.82.");
+    assert.equal(component?.quality, "model_smoothed");
   });
 });
 

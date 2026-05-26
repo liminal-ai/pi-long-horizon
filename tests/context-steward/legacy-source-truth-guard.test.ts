@@ -9,6 +9,7 @@ const ACTIVE_PATHS = [
   "src/thread/services/turn-service.ts",
   "src/thread/services/repair-service.ts",
   "src/thread/async-thread/services/async-thread-run-service.ts",
+  "src/thread/async-thread/services/user-prompt-smoothing-service.ts",
   "src/thread/async-thread/services/thread-maintenance-repair-service.ts",
   "src/thread-view/services/thread-view-builder.ts",
 ];

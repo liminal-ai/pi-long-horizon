@@ -4,6 +4,7 @@ import { formatJson, formatReadinessHuman, formatSummaryHuman, type ReadinessRes
 
 const summary: SummaryResult = {
   kind: "summary",
+  backing: "sqlite",
   rootDir: "/r",
   contextStewardDir: "/r/.context-steward",
   threadDir: "/r/.context-steward/threads/thread_alpha",
@@ -35,6 +36,7 @@ describe("formatters", () => {
   it("renders missing maintenance sections without crashing", () => {
     const readiness: ReadinessResult = {
       kind: "readiness",
+      backing: "sqlite",
       threadId: "thread-format-readiness-001",
       overallStatus: "prepare_recommended",
       compactModeRecommendation: "prepare",

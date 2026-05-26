@@ -33,6 +33,7 @@ export interface GeneratedTokenCount {
 
 export interface SummaryResult {
   kind: "summary";
+  backing: "file" | "sqlite";
   rootDir: string;
   contextStewardDir: string;
   threadDir: string;
@@ -58,6 +59,7 @@ export interface SummaryResult {
 
 export interface TokensResult {
   kind: "tokens";
+  backing: "file" | "sqlite";
   threadId: string;
   estimates: {
     canonicalVisibleTextRaw: { count: number; label: "estimate"; method: string };
@@ -92,6 +94,7 @@ export interface BandDetail {
 
 export interface BandsResult {
   kind: "bands";
+  backing: "file" | "sqlite";
   threadId: string;
   generatedFilePath?: string;
   recordCount: number;
@@ -141,6 +144,7 @@ export interface MaintenanceReadinessEntry {
 
 export interface ReadinessResult {
   kind: "readiness";
+  backing: "file" | "sqlite";
   threadId: string;
   overallStatus: "ready" | "prepare_recommended" | "blocked";
   compactModeRecommendation: "strict" | "prepare";
@@ -164,6 +168,7 @@ export interface TokenScaleEntry {
 
 export interface PostCompactReportResult {
   kind: "post_compact_report";
+  backing: "file" | "sqlite";
   threadId: string;
   sourceRevision?: number;
   messageHighWatermark?: number;

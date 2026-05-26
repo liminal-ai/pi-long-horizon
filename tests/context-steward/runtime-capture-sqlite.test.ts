@@ -216,6 +216,59 @@ test("duplicate finalized runtime activity stays idempotent through the SQLite d
   });
 });
 
+test("runtime user prompt smoothing persists through the SQLite default store without legacy source files", async () => {
+  await withTempThreadStore(async ({ projectDir, storeRootDir, resolveStorePath }) => {
+    const target = makeThreadTarget({
+      sessionId: "session-runtime-sqlite-smoothing",
+      sessionFilePath: `${projectDir}/pi/session-runtime-sqlite-smoothing.jsonl`,
+      cwd: projectDir,
+    });
+    await ensureTargetSessionFile(target);
+
+    const pi = new FakeExtensionApi();
+    registerContextStewardExtension(pi as unknown as ExtensionAPI, {
+      userPromptSmoothing: {
+        enabled: true,
+        provider: {
+          async smoothUserPrompt(input) {
+            return {
+              text: "Please clean up ./src/app.ts and keep threshold 0.82.",
+              providerId: "openai-codex",
+              modelId: "gpt-5.4-mini",
+              reasoningEffort: "none",
+              promptVersion: input.promptVersion,
+              usage: { inputTokens: 9, outputTokens: 4 },
+              elapsedMs: 3,
+              generatedAt: "2026-05-26T12:00:00.000Z",
+            };
+          },
+        },
+      },
+    });
+
+    const ctx = makePiExtensionContext(target);
+    const rawPrompt = "maybe clean up ./src/app.ts and keep threshold 0.82";
+    await pi.emit("message_end", { type: "message_end", message: makePiUserMessage({ content: rawPrompt }) }, ctx);
+
+    const sqliteStore = new SqliteThreadStore(storeRootDir);
+    const thread = expectOk(await sqliteStore.findManagedThread(target));
+    assert.ok(thread);
+
+    await waitForAssertion(async () => {
+      const snapshot = expectOk(await sqliteStore.openThread(thread.threadId));
+      const component = snapshot.turns[0]?.smooth?.components?.find((candidate) => candidate.kind === "user_prompt");
+      assert.equal(component?.text, "Please clean up ./src/app.ts and keep threshold 0.82.");
+      assert.equal(snapshot.messages[0]?.parts[0]?.content, rawPrompt);
+    }, "runtime SQLite smoothing should persist the user prompt component");
+
+    await stat(resolveThreadSqlitePath(storeRootDir, thread.threadId));
+    await assertPathMissing(resolveStorePath("threads", thread.threadId, "thread.json"));
+    await assertPathMissing(resolveStorePath("threads", thread.threadId, "messages.jsonl"));
+    await assertPathMissing(resolveStorePath("threads", thread.threadId, "turns.json"));
+    await assertPathMissing(resolveStorePath("threads", thread.threadId, "chunks.json"));
+  });
+});
+
 test("capture surfaces explicit append failure details and succeeds on retry after a transient SQLite store error", async () => {
   await withTempThreadStore(async ({ projectDir, storeRootDir }) => {
     const target = makeThreadTarget({

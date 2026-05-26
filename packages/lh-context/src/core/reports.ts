@@ -27,6 +27,7 @@ export async function inspectPostCompactReport(input: InspectInput = {}): Promis
 
   return {
     kind: "post_compact_report",
+    backing: summary.backing,
     threadId: summary.threadId,
     sourceRevision: summary.sourceRevision,
     messageHighWatermark: summary.messageHighWatermark,

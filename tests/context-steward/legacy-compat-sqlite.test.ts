@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
-import { readdir } from "node:fs/promises";
+import { readdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import test from "node:test";
 
+import { inspectReadiness, inspectSummary } from "../../packages/lh-context/src/index.js";
 import type { StewardResult } from "../../src/context-steward/domain/errors.js";
 import { mapPiMessageEnd } from "../../src/context-steward/pi/pi-message-mapper.js";
 import { exportLegacyThreadDebugBundle } from "../../src/context-steward/services/snapshot-export-service.js";
@@ -121,5 +123,51 @@ test("explicit legacy debug export writes outside the live SQLite thread directo
 
     const exportFiles = (await readdir(exportDir)).sort();
     assert.deepEqual(exportFiles, ["legacy-debug", "manifest.json", "thread.sqlite"]);
+  });
+});
+
+test("inspection prefers SQLite and warns explicitly when legacy JSON shadows a live managed thread", async () => {
+  await withTempSqliteThreadStore(async ({ projectDir, storeRootDir, resolveProjectPath, resolveStorePath }) => {
+    const store = new SqliteThreadStore(storeRootDir);
+    const target = makeThreadTarget({
+      sessionId: "session-legacy-inspection-001",
+      sessionFilePath: resolveProjectPath("pi", "session-legacy-inspection-001.jsonl"),
+      cwd: projectDir,
+    });
+    const thread = expectOk(await openOrCreateManagedThread({ target }, store));
+
+    await capturePiMessage(store, thread.threadId, target, makePiUserMessage({ content: "Inspection prompt" }));
+
+    const liveThreadDir = resolveStorePath("threads", thread.threadId);
+    await writeFile(
+      join(liveThreadDir, "thread.json"),
+      `${JSON.stringify({
+        threadId: thread.threadId,
+        sourceRevision: -1,
+        messageHighWatermark: -1,
+        updatedAt: "1999-01-01T00:00:00.000Z",
+        target: { runtime: "pi", sessionId: "legacy-shadow-session" },
+        status: { turnState: "repair_failed" },
+      }, null, 2)}\n`,
+      "utf8",
+    );
+
+    const summary = await inspectSummary({ rootDir: projectDir, threadId: thread.threadId });
+    const readiness = await inspectReadiness({ rootDir: projectDir, threadId: thread.threadId });
+
+    assert.equal(summary.backing, "sqlite");
+    assert.equal(readiness.backing, "sqlite");
+    assert.equal(summary.messageHighWatermark, 1);
+    assert.equal(summary.messages.total, 1);
+    assert.equal(summary.sourceRevision, 1);
+    assert.equal(readiness.turnState, "ready");
+    assert.match(
+      summary.warnings.join("\n"),
+      /Treating thread\.sqlite as authoritative; remove or quarantine the legacy JSON files before active runtime use\./,
+    );
+    assert.match(
+      readiness.warnings.join("\n"),
+      /Treating thread\.sqlite as authoritative; remove or quarantine the legacy JSON files before active runtime use\./,
+    );
   });
 });
