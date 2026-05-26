@@ -4,8 +4,9 @@ import { createPiCliHarnessAdapter } from "../harness-adapter/pi-cli-ha/pi-cli-h
 import type { PiCliHarnessAdapterDependencies } from "../harness-adapter/pi-cli-ha/pi-cli-ha.js";
 import { prepareAsyncThread, type AsyncThreadRunDependencies } from "../thread/async-thread/services/async-thread-run-service.js";
 import { FileThreadMutationCoordinator, type ThreadMutationCoordinator } from "../thread/store/mutation-coordinator.js";
+import { SqliteThreadStore } from "../thread/store/sqlite-thread-store.js";
 import type { ThreadStore } from "../thread/store/thread-store.js";
-import { createStewardIssue } from "../thread/domain/errors.js";
+import { createStewardIssue, type StewardIssue } from "../thread/domain/errors.js";
 import { buildThreadViewProjection } from "../thread-view/services/thread-view-builder.js";
 import {
   buildPiThreadViewFile,
@@ -118,6 +119,49 @@ function buildGeneratedOutputMetadata(input: {
     generatedSessionTokenCountMetadata: input.generatedSessionTokenCountMetadata,
     generatedSessionCountPolicy: input.generatedSessionCountPolicy,
     issues: input.issues?.map((issue) => createStewardIssue(issue)),
+  };
+}
+
+async function persistGeneratedOutputMetadata(
+  input: Parameters<typeof updateGeneratedThreadViewOutputMetadata>[0],
+): Promise<StewardIssue[] | undefined> {
+  const updated = await updateGeneratedThreadViewOutputMetadata(input);
+  return updated.ok ? undefined : updated.issues;
+}
+
+async function resolveSmartCompactLeaseRevision(
+  threadStore: ThreadStore,
+  threadId: string,
+): Promise<
+  | {
+      ok: true;
+      expectedSourceRevision?: number;
+    }
+  | {
+      ok: false;
+      issues: StewardIssue[];
+    }
+> {
+  // SQLite smart compact needs to obtain the current compact snapshot under the lease,
+  // so skip the pre-lease source-revision check and let readCompactSnapshot define truth later.
+  if (threadStore instanceof SqliteThreadStore) {
+    return {
+      ok: true,
+      expectedSourceRevision: undefined,
+    };
+  }
+
+  const threadSnapshotResult = await threadStore.openThread(threadId);
+  if (!threadSnapshotResult.ok) {
+    return {
+      ok: false,
+      issues: threadSnapshotResult.issues,
+    };
+  }
+
+  return {
+    ok: true,
+    expectedSourceRevision: threadSnapshotResult.value.thread.sourceRevision,
   };
 }
 
@@ -323,14 +367,14 @@ export async function runSmartCompact(
     ]);
   }
 
-  const threadSnapshotResult = await dependencies.threadStore.openThread(input.threadId);
-  if (!threadSnapshotResult.ok) {
+  const leaseRevision = await resolveSmartCompactLeaseRevision(dependencies.threadStore, input.threadId);
+  if (!leaseRevision.ok) {
     return {
       threadId: input.threadId,
       requestedLowerBound: input.requestedLowerBound,
       requestedBandPercentages: input.requestedBandPercentages,
       compactStatus: "blocked",
-      blockers: threadSnapshotResult.issues,
+      blockers: leaseRevision.issues,
     };
   }
 
@@ -338,7 +382,7 @@ export async function runSmartCompact(
     dependencies.mutationCoordinator ?? new FileThreadMutationCoordinator(dependencies.threadStore);
   const lease = await mutationCoordinator.acquireThreadLease({
     threadId: input.threadId,
-    expectedSourceRevision: threadSnapshotResult.value.thread.sourceRevision,
+    expectedSourceRevision: leaseRevision.expectedSourceRevision,
   });
   const openAIInputTokenCounterForReadiness =
     dependencies.openAIInputTokenCounter ??
@@ -396,7 +440,7 @@ export async function runSmartCompact(
     const hasThresholdIssue = buildResult.blockers.some((issue) => issue.code === "LOWER_THRESHOLD_UNREACHED");
     if (compactStatus === "blocked" || hasThresholdIssue) {
       if (compactStatus === "degraded") {
-        await updateGeneratedThreadViewOutputMetadata({
+        const metadataIssues = await persistGeneratedOutputMetadata({
           store: dependencies.threadStore,
           threadId: input.threadId,
           generatedOutput: buildGeneratedOutputMetadata({
@@ -411,6 +455,19 @@ export async function runSmartCompact(
           }),
           now: dependencies.now,
         });
+        if (metadataIssues) {
+          return {
+            threadId: input.threadId,
+            requestedLowerBound: input.requestedLowerBound,
+            requestedBandPercentages: input.requestedBandPercentages,
+            projectionRevisionId,
+            threadViewId: buildResult.threadViewId,
+            compactStatus: "blocked",
+            blockers: [...buildResult.blockers, ...metadataIssues],
+            resultingTokenCount: buildResult.resultingTokenCount,
+            degradedSmoothingCount,
+          };
+        }
       }
 
       return {
@@ -427,25 +484,12 @@ export async function runSmartCompact(
     }
     const buildIssues = compactStatus === "degraded" ? buildResult.blockers : [];
 
-    const threadSnapshot = await dependencies.threadStore.openThread(input.threadId);
-    if (!threadSnapshot.ok) {
-      return {
-        threadId: input.threadId,
-        requestedLowerBound: input.requestedLowerBound,
-        requestedBandPercentages: input.requestedBandPercentages,
-        threadViewId: buildResult.threadViewId,
-        compactStatus: "blocked",
-        blockers: threadSnapshot.issues,
-        resultingTokenCount: buildResult.resultingTokenCount,
-      };
-    }
-
     const piFile = await buildPiThreadViewFile({
       threadId: input.threadId,
       threadViewId: buildResult.threadViewId,
       emittedMessages: buildResult.emittedMessages,
       sessionId: `sc-${input.threadId.replace("thread_", "").slice(0, 8)}-${projectionRevisionId.replace("projection_", "").slice(0, 8)}-${Date.now().toString(36)}`,
-      cwd: threadSnapshot.value.thread.target.cwd ?? process.cwd(),
+      cwd: buildResult.thread.target.cwd ?? process.cwd(),
       modelProvider: input.modelProvider,
       modelId: input.modelId,
       thinkingLevel: input.thinkingLevel,
@@ -469,13 +513,13 @@ export async function runSmartCompact(
       initialPiFile: promptVisiblePiFile,
       openAIInputTokenCounter: openAIInputTokenCounterForFinalCount,
       threadViewId: buildResult.threadViewId,
-      sourceRevision: threadSnapshot.value.thread.sourceRevision,
+      sourceRevision: buildResult.readRevision,
       writeTimestamp,
     });
 
     if (!finalCountResult.ok) {
       const finalIssues = [...buildIssues, ...finalCountResult.issues.map((issue) => createStewardIssue(issue))];
-      await updateGeneratedThreadViewOutputMetadata({
+      const metadataIssues = await persistGeneratedOutputMetadata({
         store: dependencies.threadStore,
         threadId: input.threadId,
         generatedOutput: buildGeneratedOutputMetadata({
@@ -492,6 +536,22 @@ export async function runSmartCompact(
         }),
         now: dependencies.now,
       });
+      if (metadataIssues) {
+        return {
+          threadId: input.threadId,
+          requestedLowerBound: input.requestedLowerBound,
+          requestedBandPercentages: input.requestedBandPercentages,
+          projectionRevisionId,
+          threadViewId: buildResult.threadViewId,
+          compactStatus: "blocked",
+          blockers: [...finalIssues, ...metadataIssues],
+          resultingTokenCount: buildResult.resultingTokenCount,
+          degradedSmoothingCount: countDegradedSmoothingIssues([...finalIssues, ...metadataIssues]),
+          generatedSessionTokenCount: finalCountResult.generatedSessionTokenCountMetadata?.count,
+          generatedSessionTokenCountMetadata: finalCountResult.generatedSessionTokenCountMetadata,
+          generatedSessionCountPolicy: finalCountResult.generatedSessionCountPolicy,
+        };
+      }
 
       return {
         threadId: input.threadId,
@@ -548,7 +608,7 @@ export async function runSmartCompact(
         generatedSessionTokenCountMetadata,
         generatedSessionCountPolicy,
       };
-      await updateGeneratedThreadViewOutputMetadata({
+      const metadataIssues = await persistGeneratedOutputMetadata({
         store: dependencies.threadStore,
         threadId: input.threadId,
         generatedOutput: buildGeneratedOutputMetadata({
@@ -565,59 +625,15 @@ export async function runSmartCompact(
         }),
         now: dependencies.now,
       });
+      if (metadataIssues) {
+        return {
+          ...writeFailedResult,
+          compactStatus: "blocked",
+          blockers: [...writeFailedResult.blockers, ...metadataIssues],
+        };
+      }
 
       return writeFailedResult;
-    }
-
-    const mappedGeneratedPiIdentities = await dependencies.threadStore.recordThreadIdMap({
-      threadId: input.threadId,
-      projectionRevisionId,
-      target: {
-        runtime: "pi",
-        sessionId: countedPiFile.sessionId,
-        sessionFilePath: writeResult.generatedFilePath,
-      },
-    });
-    if (!mappedGeneratedPiIdentities.ok) {
-      const blockedResult: SmartCompactCommandResult = {
-        threadId: input.threadId,
-        requestedLowerBound: input.requestedLowerBound,
-        requestedBandPercentages: input.requestedBandPercentages,
-        projectionRevisionId,
-        threadViewId: buildResult.threadViewId,
-        compactStatus: "blocked",
-        blockers: mappedGeneratedPiIdentities.issues,
-        resultingTokenCount: buildResult.resultingTokenCount,
-        degradedSmoothingCount,
-        generatedSessionTokenCount: generatedSessionTokenCountMetadata.count,
-        generatedSessionTokenCountMetadata,
-        generatedSessionCountPolicy,
-      };
-      await updateGeneratedThreadViewOutputMetadata({
-        store: dependencies.threadStore,
-        threadId: input.threadId,
-        generatedOutput: buildGeneratedOutputMetadata({
-          threadId: input.threadId,
-          projectionRevisionId,
-          threadViewId: buildResult.threadViewId,
-          generatedSessionId: countedPiFile.sessionId,
-          generatedFilePath: writeResult.generatedFilePath,
-          archivePath: writeResult.archivePath,
-          generatedAt: (dependencies.now ?? (() => new Date()))().toISOString(),
-          status: "blocked",
-          modelProvider: countedPiFile.modelProvider,
-          modelId: countedPiFile.modelId,
-          thinkingLevel: countedPiFile.thinkingLevel,
-          placeholderExplicit: countedPiFile.placeholderExplicit,
-          requestedLowerBound: input.requestedLowerBound,
-          generatedSessionTokenCountMetadata,
-          generatedSessionCountPolicy,
-          issues: blockedResult.blockers,
-        }),
-        now: dependencies.now,
-      });
-
-      return blockedResult;
     }
 
     const piCliHarnessAdapter =
@@ -632,7 +648,7 @@ export async function runSmartCompact(
       : "reload_failed";
     const finalIssues = loadResult.ok ? buildIssues : [...loadResult.issues, ...buildIssues];
 
-    await updateGeneratedThreadViewOutputMetadata({
+    const metadataIssues = await persistGeneratedOutputMetadata({
       store: dependencies.threadStore,
       threadId: input.threadId,
       generatedFilePath: writeResult.generatedFilePath,
@@ -687,6 +703,24 @@ export async function runSmartCompact(
       },
       now: dependencies.now,
     });
+    if (metadataIssues) {
+      return {
+        threadId: input.threadId,
+        requestedLowerBound: input.requestedLowerBound,
+        requestedBandPercentages: input.requestedBandPercentages,
+        projectionRevisionId,
+        threadViewId: buildResult.threadViewId,
+        generatedFilePath: writeResult.generatedFilePath,
+        archivePath: writeResult.archivePath,
+        compactStatus: "blocked",
+        blockers: [...finalIssues, ...metadataIssues],
+        resultingTokenCount: buildResult.resultingTokenCount,
+        degradedSmoothingCount: countDegradedSmoothingIssues([...finalIssues, ...metadataIssues]),
+        generatedSessionTokenCount: generatedSessionTokenCountMetadata.count,
+        generatedSessionTokenCountMetadata,
+        generatedSessionCountPolicy,
+      };
+    }
 
     return {
       threadId: input.threadId,

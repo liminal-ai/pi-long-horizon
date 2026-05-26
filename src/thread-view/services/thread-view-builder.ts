@@ -23,7 +23,7 @@ import type {
   ThreadRecord,
   TurnRecord,
 } from "../../thread/domain/records.js";
-import type { ThreadStore } from "../../thread/store/thread-store.js";
+import type { CompactThreadSnapshot, ThreadStore } from "../../thread/store/thread-store.js";
 import {
   createSourceStateReference,
   createThreadViewId,
@@ -111,6 +111,8 @@ export interface ThreadViewProjectionBuildDependencies {
 }
 
 export interface ThreadViewProjectionBuildResult {
+  thread: ThreadRecord;
+  readRevision: number;
   threadViewId: string;
   status: "ready" | "blocked" | "degraded";
   resultingTokenCount?: number;
@@ -733,31 +735,14 @@ function buildCompactSnapshot(input: {
   };
 }
 
-export async function buildThreadViewProjection(
+async function buildThreadViewProjectionFromCompactSnapshot(
   input: ThreadViewBuildInputs,
-  dependencies?: ThreadViewProjectionBuildDependencies,
+  compactThreadSnapshot: CompactThreadSnapshot,
+  dependencies: ThreadViewProjectionBuildDependencies,
 ): Promise<ThreadViewProjectionBuildResult> {
-  const inputErrors = validateThreadViewBuildInputs(input);
-  if (inputErrors.length > 0) {
-    throw new Error(`Invalid Thread View build inputs: ${inputErrors.join(" ")}`);
-  }
-
-  if (!dependencies?.threadStore) {
-    throw new Error("ThreadViewProjectionBuilder requires threadStore dependency.");
-  }
-
-  const materializer = dependencies.materializer ?? new ThreadViewMaterializer(dependencies.threadStore);
-  const threadSnapshot = unwrapOrThrow(
-    await dependencies.threadStore.openThread(input.threadId),
-    `Failed to open thread ${input.threadId}`,
-  );
-  const chunkState = unwrapOrThrow(
-    await dependencies.threadStore.readChunks(input.threadId),
-    `Failed to read chunk state for ${input.threadId}`,
-  );
-  const orderedTurns = sortTurnsInSourceOrder(threadSnapshot.turns);
+  const orderedTurns = sortTurnsInSourceOrder(compactThreadSnapshot.turns);
   const turnsById = new Map(orderedTurns.map((turn) => [turn.turnId, turn]));
-  const messagesById = new Map(threadSnapshot.messages.map((message) => [message.messageId, message]));
+  const messagesById = new Map(compactThreadSnapshot.messages.map((message) => [message.messageId, message]));
   const accountingPolicyMode = accountingPolicyModeForAllocation(input.mode);
   const tokenizedTurns = [...orderedTurns]
     .map((turn) => {
@@ -816,7 +801,7 @@ export async function buildThreadViewProjection(
   const orderedChunkCandidates =
     budgets.detailed > 0 || budgets.brief > 0
       ? buildOrderedChunkCandidates(
-        chunkState,
+        compactThreadSnapshot.chunks,
         turnsById,
         lowerBandBoundaryTurnOrder,
       )
@@ -870,11 +855,11 @@ export async function buildThreadViewProjection(
   const createdAt = (dependencies.now ?? (() => new Date()))().toISOString();
   const threadViewId = (dependencies.createThreadViewId ?? (() => createThreadViewId()))();
   const sourceStateReference = createSourceStateReference({
-    sourceRevision: threadSnapshot.thread.sourceRevision,
-    messageHighWatermark: threadSnapshot.thread.messageHighWatermark,
+    sourceRevision: compactThreadSnapshot.thread.sourceRevision,
+    messageHighWatermark: compactThreadSnapshot.thread.messageHighWatermark,
   });
   const projectionView = createDraftViewRecord(
-    threadSnapshot.thread,
+    compactThreadSnapshot.thread,
     input,
     threadViewId,
     createdAt,
@@ -898,10 +883,12 @@ export async function buildThreadViewProjection(
     emittedMessages: [],
     status: "incomplete",
   };
+  const materializer = dependencies.materializer ?? new ThreadViewMaterializer(dependencies.threadStore);
   const materialized = unwrapOrThrow(
     await materializer.materializeThreadView({
       threadId: input.threadId,
       draftView: nextProjectionView,
+      compactSnapshot: compactThreadSnapshot,
     }),
     `Failed to materialize projection for ${input.threadId}`,
   );
@@ -968,6 +955,8 @@ export async function buildThreadViewProjection(
   });
 
   return {
+    thread: structuredClone(compactThreadSnapshot.thread),
+    readRevision: compactThreadSnapshot.readRevision,
     threadViewId,
     status: resultStatus,
     resultingTokenCount,
@@ -980,6 +969,26 @@ export async function buildThreadViewProjection(
     emittedMessages: materialized.emittedMessages,
     compactSnapshot,
   };
+}
+
+export async function buildThreadViewProjection(
+  input: ThreadViewBuildInputs,
+  dependencies?: ThreadViewProjectionBuildDependencies,
+): Promise<ThreadViewProjectionBuildResult> {
+  const inputErrors = validateThreadViewBuildInputs(input);
+  if (inputErrors.length > 0) {
+    throw new Error(`Invalid Thread View build inputs: ${inputErrors.join(" ")}`);
+  }
+
+  if (!dependencies?.threadStore) {
+    throw new Error("ThreadViewProjectionBuilder requires threadStore dependency.");
+  }
+
+  const compactThreadSnapshot = unwrapOrThrow(
+    await dependencies.threadStore.readCompactSnapshot(input.threadId),
+    `Failed to read compact snapshot for ${input.threadId}`,
+  );
+  return await buildThreadViewProjectionFromCompactSnapshot(input, compactThreadSnapshot, dependencies);
 }
 
 async function openOrCreateDraftView(

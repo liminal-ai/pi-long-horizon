@@ -5,7 +5,7 @@ import {
 } from "../../thread/async-thread/domain/chunk-state.js";
 import { materializeSmoothTurnFromState } from "../../thread/async-thread/services/smooth-turn-service.js";
 import type { MessageRecord, ThreadRecord, TurnRecord } from "../../thread/domain/records.js";
-import type { ThreadStore } from "../../thread/store/thread-store.js";
+import type { CompactThreadSnapshot, ThreadStore } from "../../thread/store/thread-store.js";
 import {
   bandTypeToSourceUnitType,
   cloneBandRecord,
@@ -35,6 +35,7 @@ const LOWER_BAND_TYPES = ["detailed", "brief"] as const;
 export interface MaterializeThreadViewInput {
   threadId: string;
   draftView: ThreadViewRecord;
+  compactSnapshot?: CompactThreadSnapshot;
 }
 
 export interface MaterializeThreadViewResult {
@@ -688,9 +689,13 @@ function buildLowerBandMessages(input: {
 export class ThreadViewMaterializer {
   constructor(private readonly threadStore: ThreadStore) {}
 
-  async materializeThreadView(
+  private async readMaterializationSnapshot(
     input: MaterializeThreadViewInput,
-  ): Promise<WorkbenchResult<MaterializeThreadViewResult>> {
+  ): Promise<WorkbenchResult<CompactThreadSnapshot>> {
+    if (input.compactSnapshot) {
+      return okWorkbenchResult(input.compactSnapshot);
+    }
+
     const threadSnapshot = await this.threadStore.openThread(input.threadId);
     if (!threadSnapshot.ok) {
       return failWorkbenchResult(...threadSnapshot.issues);
@@ -701,9 +706,24 @@ export class ThreadViewMaterializer {
       return failWorkbenchResult(...chunksSnapshot.issues);
     }
 
-    const orderedTurns = sortTurnsInSourceOrder(threadSnapshot.value.turns);
+    return okWorkbenchResult({
+      ...threadSnapshot.value,
+      chunks: chunksSnapshot.value,
+      readRevision: threadSnapshot.value.thread.sourceRevision,
+    });
+  }
+
+  async materializeThreadView(
+    input: MaterializeThreadViewInput,
+  ): Promise<WorkbenchResult<MaterializeThreadViewResult>> {
+    const compactSnapshot = await this.readMaterializationSnapshot(input);
+    if (!compactSnapshot.ok) {
+      return compactSnapshot;
+    }
+
+    const orderedTurns = sortTurnsInSourceOrder(compactSnapshot.value.turns);
     const turnsById = indexTurns(orderedTurns);
-    const orderedChunks = sortChunksInSourceOrder(chunksSnapshot.value, turnsById);
+    const orderedChunks = sortChunksInSourceOrder(compactSnapshot.value.chunks, turnsById);
     const fullFidelityValidation = validateTurnSelections(
       input.threadId,
       orderedTurns,
@@ -715,7 +735,7 @@ export class ThreadViewMaterializer {
         input.threadId,
         orderedChunks,
         turnsById,
-        indexMessages(threadSnapshot.value.messages),
+        indexMessages(compactSnapshot.value.messages),
         getBand(input.draftView, bandType),
       ),
     );
@@ -736,10 +756,10 @@ export class ThreadViewMaterializer {
     const detailedBand = normalizeLowerBand("detailed", input.draftView.detailedBand, orderedChunks);
     const briefBand = normalizeLowerBand("brief", input.draftView.briefBand, orderedChunks);
     const upperBandMessages = buildUpperBandMessages({
-      thread: threadSnapshot.value.thread,
+      thread: compactSnapshot.value.thread,
       view: input.draftView,
       turns: orderedTurns,
-      messages: threadSnapshot.value.messages,
+      messages: compactSnapshot.value.messages,
       fullFidelityBand,
       smoothBand,
     });

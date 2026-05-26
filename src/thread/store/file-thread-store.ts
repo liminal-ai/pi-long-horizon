@@ -28,6 +28,7 @@ import type { ChunkState } from "../../thread/async-thread/domain/chunk-state.js
 import { assertSupportedThreadSchemaVersion } from "./schema-version.js";
 import type {
   AppendMessageInput,
+  CompactThreadSnapshot,
   CreateFixtureInput,
   CreateThreadInput,
   ThreadSnapshot,
@@ -594,6 +595,24 @@ export class FileThreadStore implements ThreadStore {
       await this.writeThreadJsonAtomic(paths.thread, nextThread);
 
       return ok(structuredClone(input.turns));
+    });
+  }
+
+  async readCompactSnapshot(threadId: string): Promise<StewardResult<CompactThreadSnapshot>> {
+    const thread = await this.openThread(threadId);
+    if (!thread.ok) {
+      return thread;
+    }
+
+    const chunks = await this.readChunks(threadId);
+    if (!chunks.ok) {
+      return chunks;
+    }
+
+    return ok({
+      ...thread.value,
+      chunks: structuredClone(chunks.value),
+      readRevision: thread.value.thread.sourceRevision,
     });
   }
 

@@ -29,6 +29,7 @@ import { assertSupportedThreadSchemaVersion } from "./schema-version.js";
 import { FileThreadStore } from "./file-thread-store.js";
 import type {
   AppendMessageInput,
+  CompactThreadSnapshot,
   CreateFixtureInput,
   CreateThreadInput,
   FixtureSnapshot,
@@ -1011,6 +1012,33 @@ export class SqliteThreadStore implements ThreadStore {
     }
   }
 
+  async readCompactSnapshot(threadId: string): Promise<StewardResult<CompactThreadSnapshot>> {
+    let db: Database.Database | undefined;
+
+    try {
+      await this.ensureStoreReady();
+      db = openDatabase({
+        dbPath: resolveThreadSqlitePath(this.rootDir, threadId),
+        createIfMissing: false,
+        threadId,
+      });
+      const snapshot = db.transaction(() => {
+        const threadSnapshot = this.readSnapshot(db!, threadId);
+        return {
+          ...threadSnapshot,
+          chunks: this.readChunkRecords(db!, threadId),
+          readRevision: threadSnapshot.thread.sourceRevision,
+        } satisfies CompactThreadSnapshot;
+      })();
+      return ok(snapshot);
+    } catch (error) {
+      const issue = (error as { issue?: StewardIssue }).issue;
+      return issue ? fail(issue) : fail(sqliteStoreUnavailableIssue(error, "readCompactSnapshot", threadId));
+    } finally {
+      closeDatabase(db);
+    }
+  }
+
   async openFixture(fixtureId: string): Promise<StewardResult<FixtureSnapshot>> {
     return this.fixturesDelegate.openFixture(fixtureId);
   }
@@ -1499,11 +1527,7 @@ export class SqliteThreadStore implements ThreadStore {
         threadId,
       });
       this.requireMutableThread(db, threadId);
-      return ok(
-        db.prepare<[{ threadId: string }], ChunkRow>(
-          "SELECT chunk_json FROM chunks WHERE thread_id = @threadId ORDER BY chunk_position ASC",
-        ).all({ threadId }).map((row) => JSON.parse(row.chunk_json) as ChunkState),
-      );
+      return ok(this.readChunkRecords(db, threadId));
     } catch (error) {
       const issue = (error as { issue?: StewardIssue }).issue;
       return issue ? fail(issue) : fail(sqliteStoreUnavailableIssue(error, "readChunks", threadId));
@@ -2182,6 +2206,12 @@ export class SqliteThreadStore implements ThreadStore {
     ).all({ threadId }).map((row) => JSON.parse(row.projection_json) as ProjectionRevisionRecord);
   }
 
+  private readChunkRecords(db: Database.Database, threadId: string): ChunkState[] {
+    return db.prepare<[{ threadId: string }], ChunkRow>(
+      "SELECT chunk_json FROM chunks WHERE thread_id = @threadId ORDER BY chunk_position ASC",
+    ).all({ threadId }).map((row) => JSON.parse(row.chunk_json) as ChunkState);
+  }
+
   private readSnapshot(db: Database.Database, threadId: string): ThreadSnapshot {
     const thread = this.readThreadRecord(db, threadId);
     const actors = db.prepare<[{ threadId: string }], ActorRow>(
@@ -2196,9 +2226,7 @@ export class SqliteThreadStore implements ThreadStore {
     const imports = db.prepare<[{ threadId: string }], ImportRow>(
       "SELECT import_json FROM imports WHERE thread_id = @threadId ORDER BY imported_at ASC",
     ).all({ threadId }).map((row) => JSON.parse(row.import_json) as ImportRecord);
-    const projections = db.prepare<[{ threadId: string }], ProjectionRow>(
-      "SELECT projection_json FROM projection_revisions WHERE thread_id = @threadId ORDER BY created_at ASC",
-    ).all({ threadId }).map((row) => JSON.parse(row.projection_json) as ProjectionRevisionRecord);
+    const projections = this.readProjectionRecords(db, threadId);
 
     return {
       thread: hydrateThreadRecord(thread, messages, imports, projections),

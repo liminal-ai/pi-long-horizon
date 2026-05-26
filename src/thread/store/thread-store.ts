@@ -36,6 +36,11 @@ export interface ThreadSnapshot {
   projections: ProjectionRevisionRecord[];
 }
 
+export interface CompactThreadSnapshot extends ThreadSnapshot {
+  chunks: ChunkState[];
+  readRevision: number;
+}
+
 export interface FixtureSnapshot {
   fixture: FixtureRecord;
   snapshot: ThreadSnapshot;
@@ -123,6 +128,7 @@ export interface ThreadStore {
 
   readTurns(threadId: string): Promise<StewardResult<TurnRecord[]>>;
   writeTurns(input: WriteTurnsInput): Promise<StewardResult<TurnRecord[]>>;
+  readCompactSnapshot(threadId: string): Promise<StewardResult<CompactThreadSnapshot>>;
   readChunks(threadId: string): Promise<StewardResult<ChunkState[]>>;
   writeChunks(input: WriteChunksInput): Promise<StewardResult<ChunkState[]>>;
   writeTurnRows?(input: WriteTurnRowsInput): Promise<StewardResult<TurnRecord[]>>;

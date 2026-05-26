@@ -3,14 +3,14 @@ import type { ThreadStore } from "./thread-store.js";
 
 export interface ThreadMutationLease {
   threadId: string;
-  expectedSourceRevision: number;
+  expectedSourceRevision?: number;
   release(): Promise<void>;
 }
 
 export interface ThreadMutationCoordinator {
   acquireThreadLease(input: {
     threadId: string;
-    expectedSourceRevision: number;
+    expectedSourceRevision?: number;
   }): Promise<ThreadMutationLease>;
 }
 
@@ -44,7 +44,7 @@ export class FileThreadMutationCoordinator implements ThreadMutationCoordinator 
 
   async acquireThreadLease(input: {
     threadId: string;
-    expectedSourceRevision: number;
+    expectedSourceRevision?: number;
   }): Promise<ThreadMutationLease> {
     const previous = FileThreadMutationCoordinator.threadQueues.get(input.threadId) ?? Promise.resolve();
     let releaseQueue!: () => void;
@@ -82,7 +82,10 @@ export class FileThreadMutationCoordinator implements ThreadMutationCoordinator 
         );
       }
 
-      if (threadResult.value.sourceRevision !== input.expectedSourceRevision) {
+      if (
+        input.expectedSourceRevision !== undefined &&
+        threadResult.value.sourceRevision !== input.expectedSourceRevision
+      ) {
         throw new StaleThreadMutationError({
           threadId: input.threadId,
           expectedSourceRevision: input.expectedSourceRevision,
