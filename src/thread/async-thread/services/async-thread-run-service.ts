@@ -32,6 +32,7 @@ import {
 } from "../../domain/errors.js";
 import {
   getReadyChunkLowerBandArtifact,
+  isCanonicalChunkState,
   isLegacyPlaceholderChunkState,
   type ChunkState,
 } from "../domain/chunk-state.js";
@@ -493,6 +494,33 @@ function findLowerBandCatchUpTarget(
     target: undefined,
     remainingCandidates: candidates.slice(consumedCandidateCount),
   };
+}
+
+function resolvePrepareLowerBandCatchUpBands(input: {
+  chunk: ChunkState | undefined;
+  selectedBand: ChunkSemanticArtifactBand;
+}): ChunkSemanticArtifactBand[] {
+  if (
+    !input.chunk ||
+    !isCanonicalChunkState(input.chunk) ||
+    input.chunk.lifecycleStatus !== "closed" ||
+    input.chunk.conversationTranscript?.status !== "ready"
+  ) {
+    return [input.selectedBand];
+  }
+
+  const requiredBands: ChunkSemanticArtifactBand[] = [input.selectedBand];
+  for (const band of ["detailed", "brief"] as const) {
+    if (band === input.selectedBand) {
+      continue;
+    }
+
+    if (!getReadyChunkLowerBandArtifact(input.chunk, band)?.text) {
+      requiredBands.push(band);
+    }
+  }
+
+  return requiredBands;
 }
 
 function isSmoothTurnReady(turn: TurnRecord, messages: readonly MessageRecord[]): boolean {
@@ -1437,10 +1465,14 @@ async function repairMissingArtifacts(
       );
 
       try {
+        const catchUpChunk = catchUpChunksSnapshot.value.find((chunk) => chunk.chunkId === catchUpTarget.chunkId);
         const catchUpResult = await lowerBandCompressionService.run({
           threadId,
           chunkId: catchUpTarget.chunkId,
-          requiredBands: [catchUpTarget.band],
+          requiredBands: resolvePrepareLowerBandCatchUpBands({
+            chunk: catchUpChunk,
+            selectedBand: catchUpTarget.band,
+          }),
           mode: "prepare_catch_up",
         });
         if (catchUpResult.blockers.length > 0) {

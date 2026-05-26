@@ -1273,6 +1273,105 @@ test("prepare-mode lower-band catch-up regenerates selected semantic output with
   });
 });
 
+test("prepare-mode lower-band catch-up regenerates transcript-invalidated chunk artifacts before projection", async () => {
+  await withTempFeature3Store(async ({ storeRootDir }) => {
+    const context = await seedDeterministicRebuildThreadWithOptions(storeRootDir, {
+      canonicalClosedChunks: true,
+    });
+    const snapshot = await context.threadStore.openThread(context.threadId);
+    assert.equal(snapshot.ok, true);
+    const chunks = await context.threadStore.readChunks(context.threadId);
+    assert.equal(chunks.ok, true);
+
+    await context.threadStore.writeChunks({
+      threadId: context.threadId,
+      expectedSourceRevision: snapshot.value.thread.sourceRevision,
+      expectedMessageHighWatermark: snapshot.value.thread.messageHighWatermark,
+      expectedTurnsRevision: snapshot.value.thread.turnsRevision,
+      chunks: chunks.value.map((chunk): typeof chunk =>
+        chunk.chunkId === context.chunks.newerClosed
+          ? {
+              ...chunk,
+              lowerBand: {
+                ...chunk.lowerBand,
+                detailed: {
+                  band: "detailed",
+                  status: "pending",
+                  updatedAt: DEFAULT_TEST_TIMESTAMP,
+                  errorCode: "CHUNK_SOURCE_PROJECTION_NOT_READY",
+                  errorMessage: "simulated transcript catch-up invalidation",
+                },
+                brief: {
+                  band: "brief",
+                  status: "pending",
+                  updatedAt: DEFAULT_TEST_TIMESTAMP,
+                  errorCode: "CHUNK_SOURCE_PROJECTION_NOT_READY",
+                  errorMessage: "simulated transcript catch-up invalidation",
+                },
+              },
+            } as typeof chunk
+          : chunk),
+    });
+
+    const providerCalls: LowerBandCompressionProviderInput[] = [];
+    const provider: LowerBandCompressionProvider = {
+      async compress(input) {
+        providerCalls.push(input);
+        return {
+          text:
+            input.band === "detailed"
+              ? "D".repeat(Math.max(1, Math.ceil(input.transcriptText.length * 0.2)))
+              : "B".repeat(Math.max(1, Math.ceil(input.transcriptText.length * 0.1))),
+          providerId: "openai-codex",
+          modelId: input.modelId,
+          reasoningEffort: input.reasoningEffort,
+          promptVersion: input.promptVersion,
+          elapsedMs: 25,
+          generatedAt: DEFAULT_TEST_TIMESTAMP,
+        };
+      },
+    };
+
+    const result = await prepareAsyncThread(
+      {
+        threadId: context.threadId,
+        mode: "prepare",
+        requestedLowerBound: 30,
+        requestedBandPercentages: { fullFidelity: 50, smooth: 20, detailed: 20, brief: 10 },
+      },
+      {
+        store: context.threadStore,
+        openAIInputTokenCounter: new FakeOpenAIInputTokenCounter(),
+        tokenCountModel: "gpt-test-maintenance",
+        lowerBandCompressionProvider: provider,
+      },
+    );
+
+    assert.equal(result.blockers.some((issue) => issue.code === "CHUNK_LOWER_BAND_MISSING"), false);
+    assert.equal(
+      providerCalls.some(
+        (call) => call.chunkId === context.chunks.newerClosed && call.band === "detailed",
+      ),
+      true,
+    );
+    assert.equal(
+      providerCalls.some(
+        (call) => call.chunkId === context.chunks.newerClosed && call.band === "brief",
+      ),
+      true,
+    );
+
+    const repairedChunks = await context.threadStore.readChunks(context.threadId);
+    assert.equal(repairedChunks.ok, true);
+    const repairedChunk = repairedChunks.value.find((chunk) => chunk.chunkId === context.chunks.newerClosed);
+    assert.equal(repairedChunk?.conversationTranscript?.status, "ready");
+    assert.equal(repairedChunk?.lowerBand?.detailed?.status, "ready");
+    assert.equal(typeof repairedChunk?.lowerBand?.detailed?.text, "string");
+    assert.equal(repairedChunk?.lowerBand?.brief?.status, "ready");
+    assert.equal(typeof repairedChunk?.lowerBand?.brief?.text, "string");
+  });
+});
+
 test("prepare-mode lower-band catch-up regenerates selected brief semantic output with a visible chunk-and-band warning", async () => {
   await withTempFeature3Store(async ({ storeRootDir }) => {
     const context = await seedDeterministicRebuildThreadWithOptions(storeRootDir, {

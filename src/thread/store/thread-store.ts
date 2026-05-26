@@ -119,6 +119,7 @@ export interface ThreadStore {
   findThreadByTarget(target: ThreadTargetRef): Promise<StewardResult<ThreadRecord | undefined>>;
   findManagedThread(target: ThreadTargetMetadata): Promise<StewardResult<ThreadRecord | undefined>>;
   assertCanMutate(threadId: string): Promise<StewardResult<ThreadRecord>>;
+  rollbackCreatedThread?(threadId: string): Promise<StewardResult<void>>;
 
   upsertActor(threadId: string, actor: ActorRecord): Promise<StewardResult<ActorRecord>>;
   listActors(threadId: string): Promise<StewardResult<ActorRecord[]>>;

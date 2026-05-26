@@ -314,6 +314,39 @@ test("capture surfaces explicit append failure details and succeeds on retry aft
   });
 });
 
+test("failed first managed SQLite capture does not leave a discoverable empty managed thread", async () => {
+  await withTempThreadStore(async ({ projectDir, storeRootDir }) => {
+    const target = makeThreadTarget({
+      sessionId: "session-runtime-sqlite-first-capture-rollback",
+      sessionFilePath: `${projectDir}/pi/session-runtime-sqlite-first-capture-rollback.jsonl`,
+      cwd: projectDir,
+    });
+    await ensureTargetSessionFile(target);
+
+    const store = new FlakyAppendSqliteStore(storeRootDir);
+    const pi = new FakeExtensionApi();
+    registerContextStewardExtension(pi as unknown as ExtensionAPI, {
+      createStore: () => store,
+    });
+
+    const ctx = makePiExtensionContext(target);
+    await assert.rejects(
+      () => pi.emit("message_end", { type: "message_end", message: makePiUserMessage({ content: "First prompt fails" }) }, ctx),
+      /CAPTURE_APPEND_FAILED/,
+    );
+
+    assert.equal(expectOk(await store.findManagedThread(target)), undefined);
+
+    await pi.emit("message_end", { type: "message_end", message: makePiUserMessage({ content: "Second prompt succeeds" }) }, ctx);
+
+    const thread = expectOk(await store.findManagedThread(target));
+    assert.ok(thread);
+    const snapshot = expectOk(await store.openThread(thread.threadId));
+    assert.deepEqual(snapshot.messages.map((message) => message.messageKind), ["prompt"]);
+    assert.equal(snapshot.messages[0]?.parts[0]?.content, "Second prompt succeeds");
+  });
+});
+
 test("production PI capture still appends new canonical activity while SQLite background repair is counting an older turn", async () => {
   await withTempThreadStore(async ({ projectDir, storeRootDir }) => {
     const target = makeThreadTarget({

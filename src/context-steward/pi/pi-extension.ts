@@ -27,7 +27,8 @@ import {
   type StewardIssue,
   type StewardResult,
 } from "../domain/errors.js";
-import type { FixtureRecord, ThreadRecord, ThreadTargetMetadata } from "../domain/records.js";
+import { createThreadId } from "../domain/ids.js";
+import { createThreadRecord, type FixtureRecord, type ThreadRecord, type ThreadTargetMetadata } from "../domain/records.js";
 import type { CanonicalActivity, CaptureActivityResult } from "../services/capture-service.js";
 import { captureFinalizedActivity, type CaptureActivityInput } from "../services/capture-service.js";
 import { createRealSessionFixture } from "../services/fixture-service.js";
@@ -540,6 +541,23 @@ async function captureAndReport(input: CapturePiEventInput): Promise<StewardResu
   const result = await capturePiEvent(input);
 
   return result;
+}
+
+function rollbackCreatedThreadSupported(
+  store: ThreadStore,
+): store is ThreadStore & { rollbackCreatedThread: (threadId: string) => Promise<StewardResult<void>> } {
+  return typeof store.rollbackCreatedThread === "function";
+}
+
+async function rollbackCreatedThreadIfSupported(
+  store: ThreadStore,
+  threadId: string,
+): Promise<StewardResult<void>> {
+  if (!rollbackCreatedThreadSupported(store)) {
+    return ok(undefined);
+  }
+
+  return store.rollbackCreatedThread(threadId);
 }
 
 function cloneIssues(issues: readonly StewardIssue[] | undefined): StewardIssue[] {
@@ -1695,7 +1713,9 @@ export function registerContextStewardExtension(
     ctx: PiExtensionCaptureContext,
   ): Promise<{
     store: ThreadStore;
+    target: ThreadTargetMetadata;
     thread?: ThreadRecord;
+    shouldAutoCreate: boolean;
   }> {
     const store = createStore(ctx);
     const target = targetFromContext(ctx);
@@ -1706,27 +1726,24 @@ export function registerContextStewardExtension(
 
     if (existing.value) {
       activeThread = existing.value;
-      return { store, thread: activeThread };
+      return { store, target, thread: activeThread, shouldAutoCreate: false };
     }
 
     if (activeThread && targetsMatch(activeThread.target, target)) {
-      return { store, thread: activeThread };
+      const reopened = await store.assertCanMutate(activeThread.threadId);
+      if (reopened.ok) {
+        activeThread = reopened.value;
+        return { store, target, thread: activeThread, shouldAutoCreate: false };
+      }
+      activeThread = undefined;
     }
 
-    const shouldCreateOnMessageEnd =
-      event.type === "message_end" && canAutoCreateManagedThreadForMessageEnd({ event, ctx });
-
-    if (!shouldCreateOnMessageEnd) {
-      return { store, thread: undefined };
-    }
-
-    const opened = await openOrCreateManagedThread({ target }, store);
-    if (!opened.ok) {
-      throw new Error(opened.issues.map((issue) => `${issue.code}: ${issue.message}`).join("; "));
-    }
-
-    activeThread = opened.value;
-    return { store, thread: activeThread };
+    return {
+      store,
+      target,
+      thread: undefined,
+      shouldAutoCreate: event.type === "message_end" && canAutoCreateManagedThreadForMessageEnd({ event, ctx }),
+    };
   }
 
   async function resolveExistingCaptureThread(ctx: PiExtensionCaptureContext): Promise<{
@@ -1746,7 +1763,12 @@ export function registerContextStewardExtension(
     }
 
     if (activeThread && targetsMatch(activeThread.target, target)) {
-      return { store, thread: activeThread };
+      const reopened = await store.assertCanMutate(activeThread.threadId);
+      if (reopened.ok) {
+        activeThread = reopened.value;
+        return { store, thread: activeThread };
+      }
+      activeThread = undefined;
     }
 
     return { store, thread: undefined };
@@ -1763,26 +1785,91 @@ export function registerContextStewardExtension(
     let duplicate = "n/a";
     try {
       let stepStartedAt = Date.now();
-      const { store, thread } = await resolveCaptureThread(event, ctx);
+      const { store, target, thread, shouldAutoCreate } = await resolveCaptureThread(event, ctx);
       resolveMs = Date.now() - stepStartedAt;
-      if (!thread) {
+      if (!thread && !shouldAutoCreate) {
         return undefined;
       }
 
-      threadId = thread.threadId;
+      let captureThread = thread;
+      let result: StewardResult<CaptureActivityResult | undefined>;
       stepStartedAt = Date.now();
-      const result = await captureAndReport({
-        store,
-        threadId: thread.threadId,
-        event,
-        ctx,
-      });
+      if (captureThread) {
+        threadId = captureThread.threadId;
+        result = await captureAndReport({
+          store,
+          threadId: captureThread.threadId,
+          event,
+          ctx,
+        });
+      } else {
+        const activity = mapPiCaptureEventToActivity({ event, ctx });
+        if (!activity.ok) {
+          result = fail(...activity.issues);
+        } else if (!activity.value) {
+          result = ok(undefined);
+        } else {
+          const createdAt = new Date().toISOString();
+          const created = await store.createThread({
+            thread: createThreadRecord({
+              threadId: createThreadId(),
+              target,
+              createdAt,
+            }),
+            targetRef: {
+              runtime: target.runtime,
+              sessionId: target.sessionId,
+              sessionFilePath: target.sessionFilePath,
+            },
+          });
+
+          if (!created.ok) {
+            result = fail(...created.issues);
+          } else {
+            threadId = created.value.threadId;
+            const captured = await captureFinalizedActivity({
+              store,
+              threadId: created.value.threadId,
+              activity: activity.value,
+            });
+            if (!captured.ok) {
+              const rolledBack = await rollbackCreatedThreadIfSupported(store, created.value.threadId);
+              result = rolledBack.ok ? captured : fail(...captured.issues, ...rolledBack.issues);
+            } else {
+              const mapped = await store.recordThreadIdMap({
+                threadId: created.value.threadId,
+                target: {
+                  runtime: target.runtime,
+                  sessionId: target.sessionId,
+                  sessionFilePath: target.sessionFilePath,
+                },
+              });
+              if (!mapped.ok) {
+                const rolledBack = await rollbackCreatedThreadIfSupported(store, created.value.threadId);
+                result = rolledBack.ok ? fail(...mapped.issues) : fail(...mapped.issues, ...rolledBack.issues);
+              } else {
+                const reopened = await store.assertCanMutate(created.value.threadId);
+                if (!reopened.ok) {
+                  const rolledBack = await rollbackCreatedThreadIfSupported(store, created.value.threadId);
+                  result = rolledBack.ok ? fail(...reopened.issues) : fail(...reopened.issues, ...rolledBack.issues);
+                } else {
+                  captureThread = reopened.value;
+                  result = ok(captured.value);
+                }
+              }
+            }
+          }
+        }
+      }
       captureMs = Date.now() - stepStartedAt;
 
       if (!result.ok) {
         throw new Error(result.issues.map((issue) => `${issue.code}: ${issue.message}`).join("; "));
       }
 
+      if (captureThread) {
+        activeThread = captureThread;
+      }
       duplicate = String(result.value?.duplicate);
       return result.value;
     } finally {

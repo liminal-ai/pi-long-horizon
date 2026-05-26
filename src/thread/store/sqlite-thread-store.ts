@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { mkdir, readFile, readdir, rename, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 
 import Database from "better-sqlite3";
@@ -1077,6 +1077,52 @@ export class SqliteThreadStore implements ThreadStore {
     } catch (error) {
       return fail(sqliteStoreUnavailableIssue(error, "recordThreadIdMap", input.threadId));
     }
+  }
+
+  async rollbackCreatedThread(threadId: string): Promise<StewardResult<void>> {
+    return this.withThreadMutation(threadId, async () => {
+      try {
+        await this.ensureStoreReady();
+        await rm(dirname(resolveThreadSqlitePath(this.rootDir, threadId)), {
+          recursive: true,
+          force: true,
+        });
+
+        const index = await this.readRootIndex();
+        const nextIndex = createStewardRootIndex(index.threadByTargetKey);
+        let indexChanged = false;
+        for (const [key, mappedThreadId] of Object.entries(nextIndex.threadByTargetKey)) {
+          if (mappedThreadId === threadId) {
+            delete nextIndex.threadByTargetKey[key];
+            indexChanged = true;
+          }
+        }
+        if (indexChanged) {
+          await this.writeJsonAtomic(this.indexPath, nextIndex);
+        }
+
+        const map = await this.readThreadIdMap();
+        const nextMap = createThreadIdMap(
+          map.threadIdByPiIdentityKey,
+          map.projectionRevisionIdByPiIdentityKey,
+        );
+        let mapChanged = false;
+        for (const [key, mappedThreadId] of Object.entries(nextMap.threadIdByPiIdentityKey)) {
+          if (mappedThreadId === threadId) {
+            delete nextMap.threadIdByPiIdentityKey[key];
+            delete nextMap.projectionRevisionIdByPiIdentityKey[key];
+            mapChanged = true;
+          }
+        }
+        if (mapChanged) {
+          await this.writeJsonAtomic(this.threadIdMapPath, nextMap);
+        }
+
+        return ok(undefined);
+      } catch (error) {
+        return fail(sqliteStoreUnavailableIssue(error, "rollbackCreatedThread", threadId));
+      }
+    });
   }
 
   async resolveThreadIdMap(target: ThreadTargetRef): Promise<StewardResult<string | undefined>> {

@@ -275,6 +275,46 @@ export class FileThreadStore implements ThreadStore {
     }
   }
 
+  async rollbackCreatedThread(threadId: string): Promise<StewardResult<void>> {
+    return this.withThreadMutation(threadId, async () => {
+      try {
+        await this.ensureStoreReady();
+        await this.cleanupThreadDirectory(this.getThreadPaths(threadId).threadDir);
+
+        const index = await this.readJsonFile<StewardRootIndex>(this.indexPath, createStewardRootIndex());
+        const nextIndex = createStewardRootIndex(index.threadByTargetKey);
+        let indexChanged = false;
+        for (const [key, mappedThreadId] of Object.entries(nextIndex.threadByTargetKey)) {
+          if (mappedThreadId === threadId) {
+            delete nextIndex.threadByTargetKey[key];
+            indexChanged = true;
+          }
+        }
+        if (indexChanged) {
+          await this.writeJsonAtomic(this.indexPath, nextIndex);
+        }
+
+        const map = await this.readThreadIdMap();
+        const nextMap = createThreadIdMap(map.threadIdByPiIdentityKey, map.projectionRevisionIdByPiIdentityKey);
+        let mapChanged = false;
+        for (const [key, mappedThreadId] of Object.entries(nextMap.threadIdByPiIdentityKey)) {
+          if (mappedThreadId === threadId) {
+            delete nextMap.threadIdByPiIdentityKey[key];
+            delete nextMap.projectionRevisionIdByPiIdentityKey[key];
+            mapChanged = true;
+          }
+        }
+        if (mapChanged) {
+          await this.writeJsonAtomic(this.threadIdMapPath, nextMap);
+        }
+
+        return ok(undefined);
+      } catch (error) {
+        return fail(storeUnavailableIssue(error, "rollbackCreatedThread", threadId));
+      }
+    });
+  }
+
   async resolveProjectionRevisionIdMap(target: ThreadTargetRef): Promise<StewardResult<string | undefined>> {
     try {
       await this.ensureStoreReady();
