@@ -2,10 +2,11 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { after, before, describe, test } from "node:test";
 
-import { FileThreadStore } from "../../src/context-steward/store/file-thread-store.js";
+import type { StewardResult } from "../../src/context-steward/domain/errors.js";
+import { SqliteThreadStore } from "../../src/context-steward/store/sqlite-thread-store.js";
 import { makeChunkState } from "../../src/thread/async-thread/test/fixtures.js";
 import {
   formatLowerBandInspectionJson,
@@ -165,37 +166,6 @@ async function countThreadDirs(stewardRoot: string): Promise<number> {
   return entries.length;
 }
 
-interface ThreadJson {
-  threadId: string;
-  schemaVersion: string;
-  sourceRevision: number;
-  messageHighWatermark: number;
-  target: { runtime: string; sessionId?: string; sessionFilePath?: string };
-  status: { turnState: string };
-  importSummary: { count: number };
-}
-
-interface MessageJson {
-  messageId: string;
-  sourceOrder: number;
-  actorType: string;
-  messageKind: string;
-  parts: Array<{ partType: string }>;
-}
-
-interface TurnJson {
-  turnId: string;
-  turnOrder: number;
-  lifecycleStatus: string;
-  messageIds: string[];
-  sourceRange: { fromSourceOrder: number; toSourceOrder: number };
-}
-
-interface ActorJson {
-  actorId: string;
-  actorType: string;
-}
-
 interface IndexJson {
   schemaVersion: string;
   threadByTargetKey: Record<string, string>;
@@ -207,6 +177,19 @@ interface FixtureJson {
   status: string;
   repairStatus: string;
   threadShape: string;
+}
+
+function expectOk<T>(result: StewardResult<T>): T {
+  assert.equal(result.ok, true, result.ok ? undefined : result.issues.map((issue) => issue.code).join(", "));
+  return result.value;
+}
+
+async function readSqliteSnapshot(stewardRoot: string) {
+  const threadDir = await findThreadDir(stewardRoot);
+  const threadId = basename(threadDir);
+  const store = new SqliteThreadStore(stewardRoot);
+  const snapshot = expectOk(await store.openThread(threadId));
+  return { threadDir, threadId, store, snapshot };
 }
 
 // Test 1: New Session Creates Artifacts
@@ -245,36 +228,25 @@ describe("e2e: new session creates artifacts", () => {
 
     const threadDir = await findThreadDir(stewardRoot);
     const files = (await readdir(threadDir)).sort();
-    assert.deepEqual(files, [
-      "actors.json",
-      "chunks.json",
-      "imports.json",
-      "messages.jsonl",
-      "projections.json",
-      "thread.json",
-      "turns.json",
-    ]);
+    assert.deepEqual(files, ["thread.sqlite"]);
 
-    const messages = await readJsonl<MessageJson>(join(threadDir, "messages.jsonl"));
-    const kinds = messages.map((m) => m.messageKind);
+    const { snapshot } = await readSqliteSnapshot(stewardRoot);
+    const kinds = snapshot.messages.map((message) => message.messageKind);
     assert.ok(kinds.includes("prompt"), "No prompt message captured");
     assert.ok(kinds.includes("response"), "No response message captured");
 
-    const actors = await readJson<ActorJson[]>(join(threadDir, "actors.json"));
-    const types = actors.map((a) => a.actorType);
+    const types = snapshot.actors.map((actor) => actor.actorType);
     assert.ok(types.includes("human"), "No human actor");
     assert.ok(types.includes("agent"), "No agent actor");
 
-    const turns = await readJson<TurnJson[]>(join(threadDir, "turns.json"));
-    assert.ok(turns.length >= 1, "No turns created");
+    assert.ok(snapshot.turns.length >= 1, "No turns created");
     assert.ok(
-      turns.every((turn) => turn.lifecycleStatus === "open" || turn.lifecycleStatus === "closed"),
+      snapshot.turns.every((turn) => turn.lifecycleStatus === "open" || turn.lifecycleStatus === "closed"),
       "Unexpected turn lifecycle status",
     );
 
-    const thread = await readJson<ThreadJson>(join(threadDir, "thread.json"));
-    assert.equal(thread.status.turnState, "ready");
-    assert.equal(thread.target.runtime, "pi");
+    assert.equal(snapshot.thread.status.turnState, "ready");
+    assert.equal(snapshot.thread.target.runtime, "pi");
   });
 });
 
@@ -300,10 +272,9 @@ describe("e2e: continue session reuses thread", () => {
     });
     assertPiCleanExit(r1, "continue: first prompt");
 
-    const threadDir = await findThreadDir(stewardRoot);
-    const thread = await readJson<ThreadJson>(join(threadDir, "thread.json"));
-    firstThreadId = thread.threadId;
-    firstMessageCount = (await readJsonl<MessageJson>(join(threadDir, "messages.jsonl"))).length;
+    const { snapshot } = await readSqliteSnapshot(stewardRoot);
+    firstThreadId = snapshot.thread.threadId;
+    firstMessageCount = snapshot.messages.length;
 
     // Second prompt, continuing same session
     const sessionFile = await findSessionFile(sessionDir);
@@ -321,9 +292,8 @@ describe("e2e: continue session reuses thread", () => {
   });
 
   test("same thread is reused", async () => {
-    const threadDir = await findThreadDir(stewardRoot);
-    const thread = await readJson<ThreadJson>(join(threadDir, "thread.json"));
-    assert.equal(thread.threadId, firstThreadId);
+    const { snapshot } = await readSqliteSnapshot(stewardRoot);
+    assert.equal(snapshot.thread.threadId, firstThreadId);
   });
 
   test("only one thread directory exists", async () => {
@@ -333,22 +303,20 @@ describe("e2e: continue session reuses thread", () => {
   });
 
   test("source order increases with new messages", async () => {
-    const threadDir = await findThreadDir(stewardRoot);
-    const messages = await readJsonl<MessageJson>(join(threadDir, "messages.jsonl"));
-    assert.ok(messages.length > firstMessageCount, "No new messages after continuation");
+    const { snapshot } = await readSqliteSnapshot(stewardRoot);
+    assert.ok(snapshot.messages.length > firstMessageCount, "No new messages after continuation");
 
-    const orders = messages.map((m) => m.sourceOrder);
+    const orders = snapshot.messages.map((message) => message.sourceOrder);
     for (let i = 1; i < orders.length; i++) {
       assert.ok(orders[i] > orders[i - 1], `Source order not increasing at index ${i}`);
     }
   });
 
   test("continuation turns are captured and ordered", async () => {
-    const threadDir = await findThreadDir(stewardRoot);
-    const turns = await readJson<TurnJson[]>(join(threadDir, "turns.json"));
-    assert.ok(turns.length >= 2, `Expected at least 2 turns, got ${turns.length}`);
+    const { snapshot } = await readSqliteSnapshot(stewardRoot);
+    assert.ok(snapshot.turns.length >= 2, `Expected at least 2 turns, got ${snapshot.turns.length}`);
 
-    const sorted = [...turns].sort((a, b) => a.turnOrder - b.turnOrder);
+    const sorted = [...snapshot.turns].sort((a, b) => a.turnOrder - b.turnOrder);
     assert.equal(sorted[0].lifecycleStatus, "closed", "First turn should be closed");
 
     const lastTurn = sorted[sorted.length - 1];
@@ -421,8 +389,8 @@ describe("e2e: path stability across /tmp symlink", () => {
     } catch {
       threadDir = await findThreadDir(resolvedStewardRoot);
     }
-    const messages = await readJsonl<MessageJson>(join(threadDir, "messages.jsonl"));
-    const prompts = messages.filter((m) => m.messageKind === "prompt");
+    const { snapshot } = await readSqliteSnapshot(resolvedStewardRoot);
+    const prompts = snapshot.messages.filter((message) => message.messageKind === "prompt");
     assert.ok(prompts.length >= 2, `Expected at least 2 prompts, got ${prompts.length}`);
   });
 });
@@ -471,33 +439,28 @@ describe("e2e: attach existing PI session", () => {
   });
 
   test("import metadata records the import", async () => {
-    const threadDir = await findThreadDir(stewardRoot);
-    const imports = await readJson<Array<{ importId: string; importedMessageCount: number; status: string }>>(
-      join(threadDir, "imports.json"),
-    );
+    const { snapshot } = await readSqliteSnapshot(stewardRoot);
+    const imports = snapshot.imports;
     assert.ok(imports.length >= 1, "No import records");
-    assert.ok(imports[0].importedMessageCount > 0, "Import captured zero messages");
+    assert.ok(imports[0]!.importedMessageCount > 0, "Import captured zero messages");
     assert.ok(
-      imports[0].status === "complete" || imports[0].status === "partial",
-      `Import status is ${imports[0].status}, expected complete or partial`,
+      imports[0]!.status === "complete" || imports[0]!.status === "partial",
+      `Import status is ${imports[0]!.status}, expected complete or partial`,
     );
-    assert.notEqual(imports[0].status, "failed", "Import failed entirely");
+    assert.notEqual(imports[0]!.status, "failed", "Import failed entirely");
   });
 
   test("imported messages exist in messages.jsonl", async () => {
-    const threadDir = await findThreadDir(stewardRoot);
-    const messages = await readJsonl<MessageJson>(join(threadDir, "messages.jsonl"));
-    assert.ok(messages.length > 0, "No messages after import");
-    const kinds = messages.map((m) => m.messageKind);
+    const { snapshot } = await readSqliteSnapshot(stewardRoot);
+    assert.ok(snapshot.messages.length > 0, "No messages after import");
+    const kinds = snapshot.messages.map((message) => message.messageKind);
     assert.ok(kinds.includes("prompt"), "No imported prompt");
     assert.ok(kinds.includes("response"), "No imported response");
   });
 
   test("live prompt after attach appends to same thread", async () => {
-    const threadDir = await findThreadDir(stewardRoot);
-    const threadBefore = await readJson<ThreadJson>(join(threadDir, "thread.json"));
-    const messagesBefore = await readJsonl<MessageJson>(join(threadDir, "messages.jsonl"));
-    const maxOrderBefore = Math.max(...messagesBefore.map((m) => m.sourceOrder));
+    const beforeSnapshot = (await readSqliteSnapshot(stewardRoot)).snapshot;
+    const maxOrderBefore = Math.max(...beforeSnapshot.messages.map((message) => message.sourceOrder));
 
     const r3 = await runPi({
       cwd: tmpDir,
@@ -512,14 +475,13 @@ describe("e2e: attach existing PI session", () => {
     assert.equal(count, 1, `Expected 1 thread after live prompt, got ${count}`);
 
     // Same thread ID
-    const threadAfter = await readJson<ThreadJson>(join(threadDir, "thread.json"));
-    assert.equal(threadAfter.threadId, threadBefore.threadId, "Thread ID changed after live prompt");
+    const afterSnapshot = (await readSqliteSnapshot(stewardRoot)).snapshot;
+    assert.equal(afterSnapshot.thread.threadId, beforeSnapshot.thread.threadId, "Thread ID changed after live prompt");
 
     // New messages have higher source order than imported range
-    const messagesAfter = await readJsonl<MessageJson>(join(threadDir, "messages.jsonl"));
-    const newMessages = messagesAfter.filter((m) => m.sourceOrder > maxOrderBefore);
+    const newMessages = afterSnapshot.messages.filter((message) => message.sourceOrder > maxOrderBefore);
     assert.ok(newMessages.length > 0, "No new messages after live prompt");
-    const newPrompts = newMessages.filter((m) => m.messageKind === "prompt");
+    const newPrompts = newMessages.filter((message) => message.messageKind === "prompt");
     assert.ok(newPrompts.length >= 1, "No new prompt captured after attach");
   });
 });
@@ -545,8 +507,7 @@ describe("e2e: status and turn-health commands", () => {
     });
     assertPiCleanExit(r1, "commands: setup prompt");
 
-    const threadDir = await findThreadDir(stewardRoot);
-    messageCountAfterSetup = (await readJsonl<MessageJson>(join(threadDir, "messages.jsonl"))).length;
+    messageCountAfterSetup = (await readSqliteSnapshot(stewardRoot)).snapshot.messages.length;
   });
 
   after(async () => {
@@ -571,10 +532,9 @@ describe("e2e: status and turn-health commands", () => {
     });
     assertPiCleanExit(healthResult, "commands: /lh-turn-health");
 
-    const threadDir = await findThreadDir(stewardRoot);
-    const messages = await readJsonl<MessageJson>(join(threadDir, "messages.jsonl"));
-    const newPrompts = messages.filter(
-      (m) => m.sourceOrder > messageCountAfterSetup && m.messageKind === "prompt",
+    const { snapshot } = await readSqliteSnapshot(stewardRoot);
+    const newPrompts = snapshot.messages.filter(
+      (message) => message.sourceOrder > messageCountAfterSetup && message.messageKind === "prompt",
     );
     assert.equal(newPrompts.length, 0, "Slash command was sent to model as a prompt instead of handled as a command");
   });
@@ -634,8 +594,8 @@ describe("e2e: fixture creation command", () => {
     assert.equal(fixture.status, "available");
     assert.equal(fixture.threadShape, "thread_shaped_data");
 
-    const messages = await readJsonl<MessageJson>(join(fixtureDir, "messages.jsonl"));
-    const turns = await readJson<TurnJson[]>(join(fixtureDir, "turns.json"));
+    const messages = await readJsonl<{ messageKind?: string }>(join(fixtureDir, "messages.jsonl"));
+    const turns = await readJson<Array<{ turnId?: string }>>(join(fixtureDir, "turns.json"));
     assert.ok(messages.length > 0, "Fixture has no messages");
     assert.ok(turns.length > 0, "Fixture has no turns");
   });
@@ -664,24 +624,19 @@ describe("e2e: lower-band inspection command", () => {
   });
 
   test("/lh-lower-band-status reaches the real operator command surface with truthful chunk readiness output", async () => {
-    const threadDir = await findThreadDir(stewardRoot);
-    const thread = await readJson<ThreadJson>(join(threadDir, "thread.json"));
+    const { store: threadStore, snapshot } = await readSqliteSnapshot(stewardRoot);
     const sessionFile = await findSessionFile(sessionDir);
-    const turns = await readJson<TurnJson[]>(join(threadDir, "turns.json"));
-    const closedTurn = turns.find((turn) => turn.lifecycleStatus === "closed") ?? turns[0];
+    const closedTurn = snapshot.turns.find((turn) => turn.lifecycleStatus === "closed") ?? snapshot.turns[0];
     assert.ok(closedTurn, "Expected at least one captured turn before lower-band inspection");
 
-    const threadStore = new FileThreadStore(stewardRoot);
-    const snapshot = await threadStore.openThread(thread.threadId);
-    assert.equal(snapshot.ok, true);
     const wroteChunks = await threadStore.writeChunks({
-      threadId: thread.threadId,
-      expectedSourceRevision: snapshot.value.thread.sourceRevision,
-      expectedMessageHighWatermark: snapshot.value.thread.messageHighWatermark,
-      expectedTurnsRevision: snapshot.value.thread.turnsRevision,
+      threadId: snapshot.thread.threadId,
+      expectedSourceRevision: snapshot.thread.sourceRevision,
+      expectedMessageHighWatermark: snapshot.thread.messageHighWatermark,
+      expectedTurnsRevision: snapshot.thread.turnsRevision,
       chunks: [
         makeChunkState({
-          threadId: thread.threadId,
+          threadId: snapshot.thread.threadId,
           chunkId: "chunk-e2e-lower-band-status",
           sourceTurnIds: [closedTurn.turnId],
           lowerBand: {
@@ -703,8 +658,7 @@ describe("e2e: lower-band inspection command", () => {
     });
     assert.equal(wroteChunks.ok, true);
 
-    const messagesBeforeCommand = await readJsonl<MessageJson>(join(threadDir, "messages.jsonl"));
-    const messageCountBeforeCommand = messagesBeforeCommand.length;
+    const messageCountBeforeCommand = snapshot.messages.length;
 
     const commandResult = await runPi({
       cwd: tmpDir,
@@ -714,7 +668,7 @@ describe("e2e: lower-band inspection command", () => {
     });
     assertPiCleanExit(commandResult, "lower-band-status: /lh-lower-band-status command");
 
-    const messagesAfterCommand = await readJsonl<MessageJson>(join(threadDir, "messages.jsonl"));
+    const messagesAfterCommand = expectOk(await threadStore.openThread(snapshot.thread.threadId)).messages;
     assert.equal(
       messagesAfterCommand.length,
       messageCountBeforeCommand,
@@ -722,7 +676,7 @@ describe("e2e: lower-band inspection command", () => {
     );
 
     const report = await new WorkbenchQueryService(threadStore).inspectLowerBandStatus({
-      threadId: thread.threadId,
+      threadId: snapshot.thread.threadId,
     });
     assert.equal(report.ok, true);
     const rendered = formatLowerBandInspectionJson(report.value);

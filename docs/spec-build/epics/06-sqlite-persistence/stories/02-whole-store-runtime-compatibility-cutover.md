@@ -182,6 +182,24 @@ Before closing this story, classify current store/service tests:
 2. intentional legacy file-store regression tests;
 3. store-agnostic service tests behind a factory/matrix.
 
+Current Story 2 evidence after the SQLite cutover pass:
+
+| Evidence need | Current proof |
+|---|---|
+| TC-3.3a canonical capture is independent from derived repair work | `tests/context-steward/runtime-capture-sqlite.test.ts` now blocks SQLite token-count repair for one closed turn, captures a second prompt while repair is in flight, and asserts the new canonical message persists before repair resumes. |
+| TC-3.3b stale derived write does not corrupt canonical source | `tests/thread/sqlite-thread-store-compat.test.ts` now retries a stale `writeTurns` whole-array compatibility write after a newer canonical message append and asserts `STALE_SOURCE_REVISION` plus intact source messages. |
+| TC-3.4a / TC-3.4b failure and retry observability | `tests/context-steward/runtime-capture-sqlite.test.ts` now injects a transient `SQLITE_STORE_UNAVAILABLE` append failure, asserts the surfaced `CAPTURE_APPEND_FAILED` metadata, then retries the same finalized event and confirms one persisted canonical message. |
+| TC-3.5c generated-rollout reopen reconciliation | `tests/context-steward/runtime-reopen-sqlite.test.ts` now records generated rollout linkage, captures post-compact live activity through the generated session target, reopens SQLite, and asserts the canonical thread target remains authoritative while generated linkage still resolves. |
+| TC-3.6b lossy/partial/duplicate import reporting | `tests/context-steward/attach-import-sqlite.test.ts` combines duplicate-target conflict proof with a partial import case that leaves only the affected imported turn `repair_needed` and records `UNMAPPED_PART_TYPE` source ranges in the SQLite import report. |
+
+Current test classification evidence:
+
+| Classification | Representative files | Why they belong there |
+|---|---|---|
+| Production-path / SQLite store-conformance | `tests/context-steward/runtime-capture-sqlite.test.ts`, `runtime-reopen-sqlite.test.ts`, `attach-import-sqlite.test.ts`, `lhx-sqlite-smoke.test.ts`, `snapshot-sqlite-smoke.test.ts`, `pi-extension-sqlite.e2e.test.ts`, `tests/thread/sqlite-thread-store-compat.test.ts`, `tests/context-steward/long-thread-real-pi-execution.e2e.test.ts` | These tests run the active managed-thread path through `SqliteThreadStore`, the default PI extension/runtime wiring, or the SQLite compatibility API that production still uses in Story 2. |
+| Intentional legacy file-store regression | `tests/context-steward/thread-store.test.ts`, `file-thread-store.integration.test.ts`, `capture-service.test.ts`, `import-service.test.ts`, `turn-service.test.ts`, `repair-service.test.ts`, `fixture-service.test.ts` | These suites still instantiate `FileThreadStore` directly to preserve legacy import/export/fixture and pre-cutover behavior expectations while SQLite production-path confidence comes from the dedicated cutover tests above. |
+| Store-agnostic factory / matrix | `tests/thread/sqlite-fixtures.test.ts` | This suite explicitly runs helper expectations through `createTestThreadStore({ backing })` and `withTempManagedThreadStore({ backing })`, so it proves the shared fixture/test-store rails rather than one backing only. |
+
 #### Anti-Shim Requirements
 
 - Do not make a separate test-only store factory that production never uses.

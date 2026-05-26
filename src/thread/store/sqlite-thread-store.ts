@@ -65,6 +65,14 @@ interface ChunkRow {
   chunk_json: string;
 }
 
+interface TurnOrderRow {
+  turn_id: string;
+}
+
+interface ChunkPositionRow {
+  chunk_id: string;
+}
+
 interface ImportRow {
   import_json: string;
 }
@@ -676,6 +684,62 @@ function writeChunkRow(db: Database.Database, threadId: string, chunk: ChunkStat
   );
 }
 
+function syncTurnRows(db: Database.Database, threadId: string, turns: readonly TurnRecord[]): void {
+  const existingRows = db.prepare<[{ threadId: string }], TurnOrderRow>(
+    "SELECT turn_id FROM turns WHERE thread_id = @threadId",
+  ).all({ threadId });
+  const existingIds = new Set(existingRows.map((row) => row.turn_id));
+  const nextIds = new Set(turns.map((turn) => turn.turnId));
+  const deleteTurn = db.prepare<[string, string]>("DELETE FROM turns WHERE thread_id = ? AND turn_id = ?");
+  const stageTurnOrder = db.prepare<[number, string, string]>(
+    "UPDATE turns SET turn_order = ? WHERE thread_id = ? AND turn_id = ?",
+  );
+
+  for (const row of existingRows) {
+    if (!nextIds.has(row.turn_id)) {
+      deleteTurn.run(threadId, row.turn_id);
+    }
+  }
+
+  for (const [index, turn] of turns.entries()) {
+    if (existingIds.has(turn.turnId)) {
+      stageTurnOrder.run(-(index + 1), threadId, turn.turnId);
+    }
+  }
+
+  for (const [index, turn] of turns.entries()) {
+    writeTurnRow(db, turn, index);
+  }
+}
+
+function syncChunkRows(db: Database.Database, threadId: string, chunks: readonly ChunkState[]): void {
+  const existingRows = db.prepare<[{ threadId: string }], ChunkPositionRow>(
+    "SELECT chunk_id FROM chunks WHERE thread_id = @threadId",
+  ).all({ threadId });
+  const existingIds = new Set(existingRows.map((row) => row.chunk_id));
+  const nextIds = new Set(chunks.map((chunk) => chunk.chunkId));
+  const deleteChunk = db.prepare<[string, string]>("DELETE FROM chunks WHERE thread_id = ? AND chunk_id = ?");
+  const stageChunkPosition = db.prepare<[number, string, string]>(
+    "UPDATE chunks SET chunk_position = ? WHERE thread_id = ? AND chunk_id = ?",
+  );
+
+  for (const row of existingRows) {
+    if (!nextIds.has(row.chunk_id)) {
+      deleteChunk.run(threadId, row.chunk_id);
+    }
+  }
+
+  for (const [index, chunk] of chunks.entries()) {
+    if (existingIds.has(chunk.chunkId)) {
+      stageChunkPosition.run(-(index + 1), threadId, chunk.chunkId);
+    }
+  }
+
+  for (const [index, chunk] of chunks.entries()) {
+    writeChunkRow(db, threadId, chunk, index);
+  }
+}
+
 function writeImportRow(db: Database.Database, threadId: string, record: ImportRecord): void {
   db.prepare(
     `INSERT INTO imports (thread_id, import_id, imported_at, status, import_json)
@@ -748,6 +812,19 @@ export class SqliteThreadStore implements ThreadStore {
       const keySet = resolveTargetSessionKeySet(input.targetRef);
       if (!keySet.ok) {
         return keySet;
+      }
+
+      const sqliteMatches = await this.scanThreadsByTarget(input.targetRef);
+      if (!sqliteMatches.ok) {
+        return sqliteMatches;
+      }
+
+      if (sqliteMatches.value.length > 0) {
+        return fail(
+          targetAssociationConflict(
+            `Target ${keySet.value.canonicalKey} is already associated with thread ${sqliteMatches.value[0]!.threadId}.`,
+          ),
+        );
       }
 
       const index = await this.readRootIndex();
@@ -949,6 +1026,25 @@ export class SqliteThreadStore implements ThreadStore {
       const keySet = resolveTargetSessionKeySet(target);
       if (!keySet.ok) {
         return keySet;
+      }
+
+      const sqliteMatches = await this.scanThreadsByTarget(target);
+      if (!sqliteMatches.ok) {
+        return sqliteMatches;
+      }
+
+      if (sqliteMatches.value.length > 1) {
+        return fail(
+          targetAssociationConflict(
+            `Target ${keySet.value.canonicalKey} is associated with multiple SQLite threads: ${
+              sqliteMatches.value.map((thread) => thread.threadId).join(", ")
+            }.`,
+          ),
+        );
+      }
+
+      if (sqliteMatches.value.length === 1) {
+        return ok(sqliteMatches.value[0]);
       }
 
       const index = await this.readRootIndex();
@@ -1242,8 +1338,7 @@ export class SqliteThreadStore implements ThreadStore {
             });
           }
 
-          db!.prepare("DELETE FROM turns WHERE thread_id = ?").run(input.threadId);
-          input.turns.forEach((turn, index) => writeTurnRow(db!, turn, index));
+          syncTurnRows(db!, input.threadId, input.turns);
 
           const nextThread = structuredClone(thread);
           nextThread.turnsRevision = thread.turnsRevision + 1;
@@ -1322,8 +1417,7 @@ export class SqliteThreadStore implements ThreadStore {
             });
           }
 
-          db!.prepare("DELETE FROM chunks WHERE thread_id = ?").run(input.threadId);
-          input.chunks.forEach((chunk, index) => writeChunkRow(db!, input.threadId, chunk, index));
+          syncChunkRows(db!, input.threadId, input.chunks);
 
           const nextThread = structuredClone(thread);
           nextThread.updatedAt = new Date().toISOString();

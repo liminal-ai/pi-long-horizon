@@ -42,7 +42,7 @@ import {
   type UserPromptSmoothingLogger,
   type UserPromptSmoothingProvider,
 } from "../../thread/async-thread/services/user-prompt-smoothing-service.js";
-import { FileThreadStore } from "../store/file-thread-store.js";
+import { SqliteThreadStore } from "../store/sqlite-thread-store.js";
 import type { ThreadSnapshot, ThreadStore } from "../store/thread-store.js";
 import type { SmartCompactCommandInput, SmartCompactCommandResult } from "../../thread-view/domain/pi-thread-view-file.js";
 import { FileThreadViewStore } from "../../thread-view/store/file-thread-view-store.js";
@@ -159,7 +159,7 @@ function snapshotCaptureContext(ctx: PiExtensionCaptureContext): PiExtensionCapt
 }
 
 function defaultCreateStore(ctx: PiExtensionCaptureContext): ThreadStore {
-  return new FileThreadStore(join(ctx.cwd, ".context-steward"));
+  return new SqliteThreadStore(join(ctx.cwd, ".context-steward"));
 }
 
 function defaultCreateThreadViewStore(

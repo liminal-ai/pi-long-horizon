@@ -9,6 +9,7 @@ import { runTokensCommand } from "./tokens.js";
 export interface CliResult { exitCode: number; stdout: string; stderr: string }
 
 export async function runCli(argv: string[]): Promise<CliResult> {
+  const wantsJson = argv.includes("--json");
   if (argv.length === 0 || argv.includes("--help") || argv.includes("-h")) return { exitCode: 0, stdout: HELP_TEXT, stderr: "" };
   const [command, ...rest] = argv;
   try {
@@ -20,6 +21,19 @@ export async function runCli(argv: string[]): Promise<CliResult> {
     return { exitCode: 1, stdout: HELP_TEXT, stderr: `Unknown command: ${command}\n` };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    if (wantsJson && error instanceof LhxError) {
+      return {
+        exitCode: 1,
+        stdout: `${JSON.stringify({
+          kind: "error",
+          code: error.code,
+          message: error.message,
+          details: error.details,
+        }, null, 2)}\n`,
+        stderr: "",
+      };
+    }
+
     const code = error instanceof LhxError ? ` (${error.code})` : "";
     return { exitCode: 1, stdout: "", stderr: `lhx error${code}: ${message}\n` };
   }

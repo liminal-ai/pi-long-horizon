@@ -15,6 +15,7 @@ import type { SmartCompactCommandResult } from "../../src/thread-view/domain/pi-
 import { openOrCreateManagedThread } from "../../src/context-steward/services/thread-service.js";
 import type { WriteTurnsInput } from "../../src/context-steward/store/thread-store.js";
 import { FileThreadStore } from "../../src/context-steward/store/file-thread-store.js";
+import { SqliteThreadStore } from "../../src/context-steward/store/sqlite-thread-store.js";
 import {
   DEFAULT_TEST_TIMESTAMP,
   makeActorRecord,
@@ -377,7 +378,7 @@ test("/lh-fixture renders created fixture id and failure code", async () => {
     });
     await ensureTargetSessionFile(target);
 
-    const store = new FileThreadStore(storeRootDir);
+    const store = new SqliteThreadStore(storeRootDir);
     const thread = await openOrCreateManagedThread({ target }, store);
     assert.equal(thread.ok, true);
 
@@ -444,7 +445,7 @@ test("session_start switches an older resumed PI session to the latest generated
       entries: [],
     });
 
-    const store = new FileThreadStore(storeRootDir);
+    const store = new SqliteThreadStore(storeRootDir);
     const opened = await openOrCreateManagedThread({ target }, store);
     assert.equal(opened.ok, true);
     const thread = opened.value!;
@@ -527,9 +528,7 @@ test("session_start switches an older resumed PI session to the latest generated
     );
 
     const { api, events } = createMockPiApi();
-    registerContextStewardExtension(api, {
-      createStore: () => store,
-    });
+    registerContextStewardExtension(api);
     const sessionStart = events.get("session_start");
     assert.ok(sessionStart);
 
