@@ -82,11 +82,12 @@ test("migration smoke imports core identity and message state into SQLite withou
 
     assert.equal(imported.importedCounts.threads, 1);
     assert.equal(imported.importedCounts.messages, 1);
-    assert.equal(imported.skippedCounts.turns, 1);
-    assert.equal(imported.warnings[0]?.code, "MIGRATION_VALIDATION_FAILED");
+    assert.equal(imported.importedCounts.turns, 1);
+    assert.equal(imported.warnings.length, 0);
     assert.equal(sqliteSnapshot.thread.threadId, thread.threadId);
     assert.equal(sqliteSnapshot.messages.length, 1);
     assert.equal(sqliteSnapshot.messages[0]?.parts[0]?.content, "Legacy file-backed message.");
-    assert.deepEqual(sqliteTurns, []);
+    assert.equal(sqliteTurns.length, 1);
+    assert.equal(sqliteTurns[0]?.turnId, "turn-sqlite-migration-smoke-001");
   });
 });

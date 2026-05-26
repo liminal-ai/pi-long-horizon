@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 
 import Database from "better-sqlite3";
@@ -71,6 +71,11 @@ interface ImportRow {
 
 interface ProjectionRow {
   projection_json: string;
+}
+
+interface ManagedThreadMatch {
+  thread: ThreadRecord;
+  projectionRevisionIds: string[];
 }
 
 interface SqliteSeedSnapshotInput {
@@ -388,6 +393,30 @@ function assertTargetIdentityPreserved(current: ThreadTargetRef, next: ThreadTar
   }
 
   return ok(undefined);
+}
+
+function targetsShareIdentity(left: ThreadTargetRef, right: ThreadTargetRef): StewardResult<boolean> {
+  if (left.runtime !== right.runtime) {
+    return ok(false);
+  }
+
+  const leftKeySet = resolveTargetSessionKeySet(left);
+  if (!leftKeySet.ok) {
+    return leftKeySet;
+  }
+  const rightKeySet = resolveTargetSessionKeySet(right);
+  if (!rightKeySet.ok) {
+    return rightKeySet;
+  }
+
+  const leftKeys = new Set([leftKeySet.value.canonicalKey, ...leftKeySet.value.aliasKeys]);
+  for (const key of [rightKeySet.value.canonicalKey, ...rightKeySet.value.aliasKeys]) {
+    if (leftKeys.has(key)) {
+      return ok(true);
+    }
+  }
+
+  return ok(false);
 }
 
 function selectCurrentProjection(
@@ -853,13 +882,40 @@ export class SqliteThreadStore implements ThreadStore {
 
   async resolveProjectionRevisionIdMap(target: ThreadTargetRef): Promise<StewardResult<string | undefined>> {
     try {
+      const scanned = await this.scanManagedThreadMatches(target);
+      if (!scanned.ok) {
+        return scanned;
+      }
+
+      const matchedProjectionRevisionIds = new Set(
+        scanned.value.flatMap((match) => match.projectionRevisionIds),
+      );
+      if (matchedProjectionRevisionIds.size > 1) {
+        const keySet = resolveTargetSessionKeySet(target);
+        if (!keySet.ok) {
+          return keySet;
+        }
+
+        return fail(
+          targetAssociationConflict(
+            `PI identities for ${keySet.value.canonicalKey} map to multiple generated projections in SQLite storage: ${[
+              ...matchedProjectionRevisionIds,
+            ].join(", ")}.`,
+          ),
+        );
+      }
+
+      if (matchedProjectionRevisionIds.size === 1) {
+        return ok([...matchedProjectionRevisionIds][0]);
+      }
+
+      const map = await this.readThreadIdMap();
+      const mappedProjectionRevisionIds = new Set<string>();
       const keySet = resolveTargetSessionKeySet(target);
       if (!keySet.ok) {
         return keySet;
       }
 
-      const map = await this.readThreadIdMap();
-      const mappedProjectionRevisionIds = new Set<string>();
       for (const key of [keySet.value.canonicalKey, ...keySet.value.aliasKeys]) {
         const revisionId = map.projectionRevisionIdByPiIdentityKey[key];
         if (revisionId) {
@@ -927,6 +983,29 @@ export class SqliteThreadStore implements ThreadStore {
   }
 
   async findManagedThread(target: ThreadRecord["target"]): Promise<StewardResult<ThreadRecord | undefined>> {
+    const scanned = await this.scanThreadsByTarget({
+      runtime: target.runtime,
+      sessionId: target.sessionId,
+      sessionFilePath: target.sessionFilePath,
+    });
+    if (!scanned.ok) {
+      return scanned;
+    }
+
+    if (scanned.value.length > 0) {
+      if (scanned.value.length > 1) {
+        return fail(
+          targetAssociationConflict(
+            `Target ${target.runtime}:${target.sessionId ?? "-"} is associated with multiple SQLite threads: ${
+              scanned.value.map((thread) => thread.threadId).join(", ")
+            }.`,
+          ),
+        );
+      }
+
+      return ok(scanned.value[0]);
+    }
+
     const mappedThreadId = await this.resolveThreadIdMap({
       runtime: target.runtime,
       sessionId: target.sessionId,
@@ -1517,6 +1596,88 @@ export class SqliteThreadStore implements ThreadStore {
     return this.readJsonFile<StewardRootIndex>(this.indexPath, createStewardRootIndex());
   }
 
+  private async scanThreadsByTarget(target: ThreadTargetRef): Promise<StewardResult<ThreadRecord[]>> {
+    const matches = await this.scanManagedThreadMatches(target);
+    if (!matches.ok) {
+      return matches;
+    }
+
+    return ok(matches.value.map((match) => match.thread));
+  }
+
+  private async scanManagedThreadMatches(target: ThreadTargetRef): Promise<StewardResult<ManagedThreadMatch[]>> {
+    try {
+      await this.ensureStoreReady();
+      const entries = await readdir(this.threadsDir, { withFileTypes: true });
+      const matches: ManagedThreadMatch[] = [];
+
+      for (const entry of entries) {
+        if (!entry.isDirectory()) {
+          continue;
+        }
+
+        const dbPath = join(this.threadsDir, entry.name, SQLITE_THREAD_FILENAME);
+        try {
+          await stat(dbPath);
+        } catch {
+          continue;
+        }
+
+        let db: Database.Database | undefined;
+        try {
+          db = openDatabase({
+            dbPath,
+            createIfMissing: false,
+            threadId: entry.name,
+          });
+          const thread = this.readThreadRecord(db, entry.name);
+          const projections = this.readProjectionRecords(db, entry.name);
+          const threadMatch = targetsShareIdentity(thread.target, target);
+          if (!threadMatch.ok) {
+            return threadMatch;
+          }
+
+          const projectionRevisionIds: string[] = [];
+          for (const projection of projections) {
+            if (!projection.generatedSessionId && !projection.generatedFilePath) {
+              continue;
+            }
+
+            const projectionMatch = targetsShareIdentity(
+              {
+                runtime: projection.targetRuntime,
+                sessionId: projection.generatedSessionId,
+                sessionFilePath: projection.generatedFilePath,
+              },
+              target,
+            );
+            if (!projectionMatch.ok) {
+              return projectionMatch;
+            }
+
+            if (projectionMatch.value) {
+              projectionRevisionIds.push(projection.revisionId);
+            }
+          }
+
+          if (threadMatch.value || projectionRevisionIds.length > 0) {
+            matches.push({
+              thread,
+              projectionRevisionIds: [...new Set(projectionRevisionIds)],
+            });
+          }
+        } finally {
+          closeDatabase(db);
+        }
+      }
+
+      return ok(matches);
+    } catch (error) {
+      const issue = (error as { issue?: StewardIssue }).issue;
+      return issue ? fail(issue) : fail(sqliteStoreUnavailableIssue(error, "scanThreadsByTarget"));
+    }
+  }
+
   private async readThreadIdMap(): Promise<ThreadIdMap> {
     const map = await this.readJsonFile<ThreadIdMap>(this.threadIdMapPath, createThreadIdMap());
     return createThreadIdMap(
@@ -1560,6 +1721,12 @@ export class SqliteThreadStore implements ThreadStore {
     }
 
     return deserializeThreadRecord(JSON.parse(row.thread_json) as SerializedThreadRecord);
+  }
+
+  private readProjectionRecords(db: Database.Database, threadId: string): ProjectionRevisionRecord[] {
+    return db.prepare<[{ threadId: string }], ProjectionRow>(
+      "SELECT projection_json FROM projection_revisions WHERE thread_id = @threadId ORDER BY created_at ASC",
+    ).all({ threadId }).map((row) => JSON.parse(row.projection_json) as ProjectionRevisionRecord);
   }
 
   private readSnapshot(db: Database.Database, threadId: string): ThreadSnapshot {
