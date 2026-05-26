@@ -31,6 +31,18 @@ export interface FinalizeOpenTurnResult {
   finalized: boolean;
 }
 
+export interface PersistTurnSetInput {
+  store: ThreadStore;
+  threadId: string;
+  existingTurns: readonly TurnRecord[];
+  nextTurns: TurnRecord[];
+  expectedSourceRevision: number;
+  expectedMessageHighWatermark: number;
+  expectedTurnsRevision: number;
+  turnState: ThreadRecord["status"]["turnState"];
+  updatedAt?: string;
+}
+
 export type CapturedTurnWriter = (
   input: CapturedTurnWriteInput,
 ) => Promise<StewardResult<CapturedTurnWriteResult>>;
@@ -272,6 +284,50 @@ export function applyCapturedMessageToTurns(input: ApplyTurnInput): StewardResul
   );
 }
 
+function canUseRowLevelTurnWrite(existingTurns: readonly TurnRecord[], nextTurns: readonly TurnRecord[]): boolean {
+  if (existingTurns.length !== nextTurns.length) {
+    return false;
+  }
+
+  const existingTurnsById = new Map(existingTurns.map((turn) => [turn.turnId, turn]));
+  return nextTurns.every((turn) => {
+    const existingTurn = existingTurnsById.get(turn.turnId);
+    return existingTurn !== undefined && existingTurn.sourceRevision === turn.sourceRevision;
+  });
+}
+
+function turnRowsChanged(existingTurns: readonly TurnRecord[], nextTurns: readonly TurnRecord[]): TurnRecord[] {
+  const existingTurnsById = new Map(existingTurns.map((turn) => [turn.turnId, turn]));
+  return nextTurns.filter((turn) => JSON.stringify(existingTurnsById.get(turn.turnId)) !== JSON.stringify(turn));
+}
+
+export async function persistTurnsWithRowFallback(input: PersistTurnSetInput): Promise<StewardResult<TurnRecord[]>> {
+  if (input.store.writeTurnRows && canUseRowLevelTurnWrite(input.existingTurns, input.nextTurns)) {
+    const writeResult = await input.store.writeTurnRows({
+      threadId: input.threadId,
+      expectedSourceRevision: input.expectedSourceRevision,
+      expectedMessageHighWatermark: input.expectedMessageHighWatermark,
+      turns: turnRowsChanged(input.existingTurns, input.nextTurns),
+      turnState: input.turnState,
+      updatedAt: input.updatedAt,
+    });
+    if (!writeResult.ok) {
+      return writeResult;
+    }
+
+    return ok(cloneTurns(input.nextTurns), writeResult.issues);
+  }
+
+  return input.store.writeTurns({
+    threadId: input.threadId,
+    expectedSourceRevision: input.expectedSourceRevision,
+    expectedMessageHighWatermark: input.expectedMessageHighWatermark,
+    expectedTurnsRevision: input.expectedTurnsRevision,
+    turns: input.nextTurns,
+    turnState: input.turnState,
+  });
+}
+
 export async function writeCapturedMessageTurns(
   input: CapturedTurnWriteInput,
 ): Promise<StewardResult<CapturedTurnWriteResult>> {
@@ -293,12 +349,14 @@ export async function writeCapturedMessageTurns(
     return appliedTurns;
   }
 
-  const writtenTurns = await input.store.writeTurns({
+  const writtenTurns = await persistTurnsWithRowFallback({
+    store: input.store,
     threadId: input.threadId,
+    existingTurns: existingTurns.value,
+    nextTurns: appliedTurns.value,
     expectedSourceRevision: input.message.sourceRevision,
     expectedMessageHighWatermark: input.message.sourceOrder,
     expectedTurnsRevision: mutationCheck.value.turnsRevision,
-    turns: appliedTurns.value,
     turnState: "ready",
   });
   if (!writtenTurns.ok) {
@@ -358,13 +416,16 @@ export async function finalizeOpenTurnOnTurnEnd(
   const nextTurns = turns.map((turn) =>
     turn.turnId === openTurn.turnId ? closeTurnForLifecycleEnd(turn, closedAt) : turn,
   );
-  const writtenTurns = await input.store.writeTurns({
+  const writtenTurns = await persistTurnsWithRowFallback({
+    store: input.store,
     threadId: input.threadId,
+    existingTurns: turns,
+    nextTurns,
     expectedSourceRevision: mutationCheck.value.sourceRevision,
     expectedMessageHighWatermark: mutationCheck.value.messageHighWatermark,
     expectedTurnsRevision: mutationCheck.value.turnsRevision,
-    turns: nextTurns,
     turnState: "ready",
+    updatedAt: closedAt,
   });
   if (!writtenTurns.ok) {
     return writtenTurns;

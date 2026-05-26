@@ -3,7 +3,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import test from "node:test";
 
-import type { StewardResult } from "../../src/context-steward/domain/errors.js";
+import { fail, type StewardResult } from "../../src/context-steward/domain/errors.js";
 import {
   checkTurnHealth,
   finalizeOpenTurnOnTurnEnd,
@@ -20,8 +20,10 @@ import {
   makeRuntimeNoteActivity,
   makeThreadTarget,
 } from "../../src/context-steward/test/fixtures.js";
-import { withTempThreadStore } from "../../src/context-steward/test/temp-store.js";
+import { withTempSqliteThreadStore, withTempThreadStore } from "../../src/context-steward/test/temp-store.js";
 import { FileThreadStore } from "../../src/context-steward/store/file-thread-store.js";
+import { SqliteThreadStore } from "../../src/context-steward/store/sqlite-thread-store.js";
+import type { ThreadStore } from "../../src/context-steward/store/thread-store.js";
 
 function expectOk<T>(result: StewardResult<T>): T {
   assert.equal(result.ok, true, result.ok ? undefined : result.issues.map((issue) => issue.code).join(", "));
@@ -46,7 +48,7 @@ async function createManagedThread(storeRootDir: string, target = makeThreadTarg
 }
 
 async function captureActivity(
-  store: FileThreadStore,
+  store: ThreadStore,
   threadId: string,
   activity: Parameters<typeof captureFinalizedActivity>[0]["activity"],
 ) {
@@ -58,6 +60,48 @@ async function captureActivity(
       turnWriter: writeCapturedMessageTurns,
     }),
   );
+}
+
+async function createManagedThreadForStore<TStore extends ThreadStore>(store: TStore, target = makeThreadTarget()) {
+  await ensureTargetSessionFile(target);
+
+  const thread = expectOk(await openOrCreateManagedThread({ target }, store));
+  const ctx = makePiExtensionContext(target);
+
+  return { store, thread, ctx };
+}
+
+class RowLevelOnlySqliteTurnStore extends SqliteThreadStore {
+  compatibilityWrites = 0;
+  rowWrites = 0;
+
+  override async writeTurns(_input: Parameters<ThreadStore["writeTurns"]>[0]) {
+    this.compatibilityWrites += 1;
+    return fail({
+      code: "STORE_UNAVAILABLE",
+      message: "Unexpected compatibility turn write in SQLite row-level path test.",
+    });
+  }
+
+  override async writeTurnRows(input: Parameters<NonNullable<ThreadStore["writeTurnRows"]>>[0]) {
+    this.rowWrites += 1;
+    return super.writeTurnRows(input);
+  }
+}
+
+class ObservingSqliteTurnStore extends SqliteThreadStore {
+  compatibilityWrites = 0;
+  rowWrites = 0;
+
+  override async writeTurns(input: Parameters<ThreadStore["writeTurns"]>[0]) {
+    this.compatibilityWrites += 1;
+    return super.writeTurns(input);
+  }
+
+  override async writeTurnRows(input: Parameters<NonNullable<ThreadStore["writeTurnRows"]>>[0]) {
+    this.rowWrites += 1;
+    return super.writeTurnRows(input);
+  }
 }
 
 test("opens the first canonical turn from the first agent-addressed prompt", async () => {
@@ -152,6 +196,38 @@ test("final assistant stop response closes the current canonical turn", async ()
   });
 });
 
+test("SQLite assistant capture quarantines compatibility writes to source-revision-advancing turn updates", async () => {
+  await withTempSqliteThreadStore(async ({ projectDir, storeRootDir }) => {
+    const target = makeThreadTarget({
+      sessionId: "session-turn-row-write-001",
+      sessionFilePath: `${projectDir}/pi/session-turn-row-write-001.jsonl`,
+      cwd: projectDir,
+    });
+    const seedStore = new SqliteThreadStore(storeRootDir);
+    const { thread, ctx } = await createManagedThreadForStore(seedStore, target);
+    const prompt = expectOk(mapPiMessageEnd({ message: makePiUserMessage({ content: "Seed prompt" }), ctx }));
+    await captureActivity(seedStore, thread.threadId, prompt);
+
+    const observedStore = new ObservingSqliteTurnStore(storeRootDir);
+    const response = expectOk(
+      mapPiMessageEnd({
+        message: makePiAssistantMessage({
+          stopReason: "stop",
+          responseId: "response-turn-row-write-001",
+          content: [{ type: "text", text: "Close via row write." }],
+        }),
+        ctx,
+      }),
+    );
+
+    const captured = await captureActivity(observedStore, thread.threadId, response);
+
+    assert.equal(captured.turns[0]?.lifecycleStatus, "closed");
+    assert.equal(observedStore.compatibilityWrites, 1);
+    assert.equal(observedStore.rowWrites, 0);
+  });
+});
+
 test("finalizes the latest open canonical turn on turn_end without appending messages", async () => {
   await withTempThreadStore(async ({ storeRootDir }) => {
     const { store, thread, ctx } = await createManagedThread(storeRootDir);
@@ -189,6 +265,47 @@ test("finalizes the latest open canonical turn on turn_end without appending mes
       responseCaptured.message.messageId,
     ]);
     assert.deepEqual(expectOk(await store.readMessages(thread.threadId)), beforeMessages);
+  });
+});
+
+test("SQLite turn_end finalization uses row-level turn writes when it only closes an existing turn", async () => {
+  await withTempSqliteThreadStore(async ({ projectDir, storeRootDir }) => {
+    const target = makeThreadTarget({
+      sessionId: "session-turn-finalize-row-write-001",
+      sessionFilePath: `${projectDir}/pi/session-turn-finalize-row-write-001.jsonl`,
+      cwd: projectDir,
+    });
+    const seedStore = new SqliteThreadStore(storeRootDir);
+    const { thread, ctx } = await createManagedThreadForStore(seedStore, target);
+    const prompt = expectOk(mapPiMessageEnd({ message: makePiUserMessage({ content: "Prompt first" }), ctx }));
+    const response = expectOk(
+      mapPiMessageEnd({
+        message: makePiAssistantMessage({
+          stopReason: "toolUse",
+          content: [
+            { type: "text", text: "Response inside the turn." },
+            { type: "toolCall", id: "call-turn-end-row-write", name: "read", arguments: { path: "a.ts" } },
+          ],
+        }),
+        ctx,
+      }),
+    );
+    await captureActivity(seedStore, thread.threadId, prompt);
+    await captureActivity(seedStore, thread.threadId, response);
+
+    const rowLevelStore = new RowLevelOnlySqliteTurnStore(storeRootDir);
+    const finalized = expectOk(
+      await finalizeOpenTurnOnTurnEnd({
+        store: rowLevelStore,
+        threadId: thread.threadId,
+        closedAt: "2026-05-10T00:00:30.000Z",
+      }),
+    );
+
+    assert.equal(finalized.finalized, true);
+    assert.equal(finalized.turns[0]?.closedAt, "2026-05-10T00:00:30.000Z");
+    assert.equal(rowLevelStore.compatibilityWrites, 0);
+    assert.equal(rowLevelStore.rowWrites, 1);
   });
 });
 

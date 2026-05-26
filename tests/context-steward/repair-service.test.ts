@@ -14,8 +14,9 @@ import {
   checkMaintenanceReadiness,
   checkTurnHealth,
 } from "../../src/context-steward/services/turn-service.js";
-import type { WriteTurnsInput } from "../../src/context-steward/store/thread-store.js";
+import type { ThreadStore, WriteTurnsInput } from "../../src/context-steward/store/thread-store.js";
 import { FileThreadStore } from "../../src/context-steward/store/file-thread-store.js";
+import { SqliteThreadStore } from "../../src/context-steward/store/sqlite-thread-store.js";
 import {
   DEFAULT_TEST_TIMESTAMP,
   makeActorRecord,
@@ -26,7 +27,7 @@ import {
   makePiUserMessage,
   makeThreadTarget,
 } from "../../src/context-steward/test/fixtures.js";
-import { withTempThreadStore } from "../../src/context-steward/test/temp-store.js";
+import { withTempSqliteThreadStore, withTempThreadStore } from "../../src/context-steward/test/temp-store.js";
 
 function expectOk<T>(result: StewardResult<T>): T {
   assert.equal(result.ok, true, result.ok ? undefined : result.issues.map((issue) => issue.code).join(", "));
@@ -59,8 +60,17 @@ async function createManagedThread(storeRootDir: string, target = makeThreadTarg
   return { store, thread, ctx };
 }
 
+async function createManagedThreadForStore<TStore extends ThreadStore>(store: TStore, target = makeThreadTarget()) {
+  await ensureTargetSessionFile(target);
+
+  const thread = expectOk(await openOrCreateManagedThread({ target }, store));
+  const ctx = makePiExtensionContext(target);
+
+  return { store, thread, ctx };
+}
+
 async function capturePiMessage(
-  store: FileThreadStore,
+  store: ThreadStore,
   threadId: string,
   ctx: ReturnType<typeof makePiExtensionContext>,
   message: Parameters<typeof mapPiMessageEnd>[0]["message"],
@@ -76,7 +86,7 @@ async function capturePiMessage(
   );
 }
 
-async function clearTurnState(store: FileThreadStore, threadId: string) {
+async function clearTurnState(store: ThreadStore, threadId: string) {
   const snapshot = expectOk(await store.openThread(threadId));
   expectOk(
     await store.writeTurns({
@@ -91,7 +101,7 @@ async function clearTurnState(store: FileThreadStore, threadId: string) {
 }
 
 async function writeTurns(
-  store: FileThreadStore,
+  store: ThreadStore,
   threadId: string,
   turns: TurnRecord[],
   turnState: "ready" | "repair_needed" | "repair_failed" | "unknown",
@@ -109,7 +119,7 @@ async function writeTurns(
   );
 }
 
-async function captureThreeTurnConversation(store: FileThreadStore, threadId: string, ctx: ReturnType<typeof makePiExtensionContext>) {
+async function captureThreeTurnConversation(store: ThreadStore, threadId: string, ctx: ReturnType<typeof makePiExtensionContext>) {
   const promptOne = await capturePiMessage(store, threadId, ctx, makePiUserMessage({ content: "Prompt one" }));
   const responseOne = await capturePiMessage(
     store,
@@ -213,6 +223,24 @@ class StaleRepairStore extends FileThreadStore {
     }
 
     return super.writeTurns(input);
+  }
+}
+
+class RowLevelOnlySqliteRepairStore extends SqliteThreadStore {
+  compatibilityWrites = 0;
+  rowWrites = 0;
+
+  override async writeTurns(_input: WriteTurnsInput) {
+    this.compatibilityWrites += 1;
+    return fail({
+      code: "STORE_UNAVAILABLE",
+      message: "Unexpected compatibility repair write in SQLite row-level path test.",
+    });
+  }
+
+  override async writeTurnRows(input: Parameters<NonNullable<ThreadStore["writeTurnRows"]>>[0]) {
+    this.rowWrites += 1;
+    return super.writeTurnRows(input);
   }
 }
 
@@ -636,6 +664,49 @@ test("range-limited repair does not rewrite unaffected turns", async () => {
       captured.promptTwo.message.messageId,
       captured.responseTwo.message.messageId,
     ]);
+  });
+});
+
+test("range-limited SQLite repair uses row-level turn writes when repaired turns keep their identities", async () => {
+  await withTempSqliteThreadStore(async ({ projectDir, storeRootDir }) => {
+    const target = makeThreadTarget({
+      sessionId: "session-repair-row-write-001",
+      sessionFilePath: `${projectDir}/pi/session-repair-row-write-001.jsonl`,
+      cwd: projectDir,
+    });
+    const seedStore = new SqliteThreadStore(storeRootDir);
+    const { thread, ctx } = await createManagedThreadForStore(seedStore, target);
+    const captured = await captureThreeTurnConversation(seedStore, thread.threadId, ctx);
+    const turns = expectOk(await seedStore.readTurns(thread.threadId));
+    const brokenTurns = turns.map((turn) =>
+      turn.initiatingMessageId === captured.promptTwo.message.messageId
+        ? {
+            ...turn,
+            messageIds: [captured.promptTwo.message.messageId],
+            sourceRange: createSourceRange(captured.promptTwo.message.sourceOrder),
+          }
+        : turn,
+    );
+    await writeTurns(seedStore, thread.threadId, brokenTurns, "repair_needed");
+
+    const rowLevelStore = new RowLevelOnlySqliteRepairStore(storeRootDir);
+    const repaired = expectOk(
+      await repairTurnState({
+        store: rowLevelStore,
+        threadId: thread.threadId,
+        range: createSourceRange(captured.responseTwo.message.sourceOrder),
+      }),
+    );
+    const repairedSecondTurn = repaired.turns.find(
+      (turn) => turn.initiatingMessageId === captured.promptTwo.message.messageId,
+    );
+
+    assert.deepEqual(repairedSecondTurn?.messageIds, [
+      captured.promptTwo.message.messageId,
+      captured.responseTwo.message.messageId,
+    ]);
+    assert.equal(rowLevelStore.compatibilityWrites, 0);
+    assert.equal(rowLevelStore.rowWrites, 1);
   });
 });
 

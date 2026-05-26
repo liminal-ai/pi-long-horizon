@@ -5,6 +5,7 @@ import { withSerializedThreadOperation } from "./thread-service.js";
 import {
   checkMaintenanceReadiness,
   checkTurnHealth,
+  persistTurnsWithRowFallback,
   reconstructTurnsFromMessages,
   type TurnHealthReport,
 } from "./turn-service.js";
@@ -54,7 +55,24 @@ function mergeTurnsForRange(
     return sortTurns(reconstructedTurns);
   }
 
-  const repairedTurns = reconstructedTurns.filter((turn) => rangeOverlaps(turn.sourceRange, range));
+  const existingTurnsByInitiatingMessageId = new Map(
+    existingTurns.map((turn) => [turn.initiatingMessageId, turn]),
+  );
+  const repairedTurns = reconstructedTurns
+    .filter((turn) => rangeOverlaps(turn.sourceRange, range))
+    .map((turn) => {
+      const existingTurn = existingTurnsByInitiatingMessageId.get(turn.initiatingMessageId);
+      if (!existingTurn) {
+        return turn;
+      }
+
+      return {
+        ...turn,
+        turnId: existingTurn.turnId,
+        turnOrder: existingTurn.turnOrder,
+        sourceRevision: existingTurn.sourceRevision,
+      };
+    });
   const unaffectedTurns = existingTurns.filter(
     (turn) =>
       !rangeOverlaps(turn.sourceRange, range) &&
@@ -170,13 +188,16 @@ export async function repairTurnState(
     };
     const readiness = checkMaintenanceReadiness(proposedSnapshot);
     const nextTurnState = turnStateFromReadiness(snapshot.value.thread.status.turnState, nextTurns, readiness);
-    const writeResult = await input.store.writeTurns({
+    const writeResult = await persistTurnsWithRowFallback({
+      store: input.store,
       threadId: input.threadId,
+      existingTurns: snapshot.value.turns,
+      nextTurns,
       expectedSourceRevision: snapshot.value.thread.sourceRevision,
       expectedMessageHighWatermark: snapshot.value.thread.messageHighWatermark,
       expectedTurnsRevision: snapshot.value.thread.turnsRevision,
-      turns: nextTurns,
       turnState: nextTurnState,
+      updatedAt: repairedAt,
     });
 
     if (!writeResult.ok) {
@@ -196,7 +217,7 @@ export async function repairTurnState(
 
     return ok(
       {
-        turns: sortTurns(writeResult.value),
+        turns: sortTurns(finalSnapshot.value.turns),
         health,
       },
       finalReadiness.status === "ready" ? undefined : finalReadiness.blockers,
