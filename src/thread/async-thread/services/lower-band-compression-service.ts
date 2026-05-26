@@ -464,13 +464,21 @@ async function persistLowerBandArtifactStateOnce(
       [input.band]: { ...input.record },
     };
 
-    const writeResult = await store.writeChunks({
-      threadId: input.threadId,
-      expectedSourceRevision: threadResult.value.thread.sourceRevision,
-      expectedMessageHighWatermark: threadResult.value.thread.messageHighWatermark,
-      expectedTurnsRevision: threadResult.value.thread.turnsRevision,
-      chunks: nextChunks,
-    });
+    const writeResult = store.writeChunkRows
+      ? await store.writeChunkRows({
+          threadId: input.threadId,
+          expectedSourceRevision: threadResult.value.thread.sourceRevision,
+          expectedMessageHighWatermark: threadResult.value.thread.messageHighWatermark,
+          chunks: [chunk],
+          updatedAt: input.record.updatedAt,
+        })
+      : await store.writeChunks({
+          threadId: input.threadId,
+          expectedSourceRevision: threadResult.value.thread.sourceRevision,
+          expectedMessageHighWatermark: threadResult.value.thread.messageHighWatermark,
+          expectedTurnsRevision: threadResult.value.thread.turnsRevision,
+          chunks: nextChunks,
+        });
     if (!writeResult.ok) {
       return writeResult;
     }
@@ -495,21 +503,24 @@ export class LowerBandCompressionService {
     }
 
     inFlight.add(key);
-    void this.run({
-      ...input,
-      mode: input.mode ?? "async_close",
-    })
-      .catch((error) => {
-        this.logger.error("Async lower-band compression run failed.", {
-          threadId: input.threadId,
-          chunkId: input.chunkId,
-          mode: input.mode ?? "async_close",
-          error: errorMessage(error),
-        });
+    const timer = setTimeout(() => {
+      void this.run({
+        ...input,
+        mode: input.mode ?? "async_close",
       })
-      .finally(() => {
-        inFlight.delete(key);
-      });
+        .catch((error) => {
+          this.logger.error("Async lower-band compression run failed.", {
+            threadId: input.threadId,
+            chunkId: input.chunkId,
+            mode: input.mode ?? "async_close",
+            error: errorMessage(error),
+          });
+        })
+        .finally(() => {
+          inFlight.delete(key);
+        });
+    }, 0);
+    timer.unref?.();
     return true;
   }
 

@@ -22,6 +22,9 @@ export const TURN_LIFECYCLE_STATUSES = ["open", "closed"] as const;
 export const TURN_REPAIR_STATUSES = ["ready", "repair_needed", "repair_failed", "unknown"] as const;
 export const TURN_LOWER_BAND_PROJECTION_STATUSES = ["ready", "pending", "failed", "invalid"] as const;
 export const TOKEN_COUNTING_MAINTENANCE_STATUSES = ["ready", "repair_needed", "unknown"] as const;
+export const THREAD_MAINTENANCE_RUN_MODES = ["background", "manual_repair", "prepare"] as const;
+export const THREAD_MAINTENANCE_RUN_SCOPES = ["bounded", "full"] as const;
+export const THREAD_MAINTENANCE_RUN_STATUSES = ["ready", "repair_needed", "failed"] as const;
 export const IMPORT_STATUSES = ["complete", "partial", "failed"] as const;
 export const PROJECTION_STATUSES = ["available", "stale", "failed", "unknown"] as const;
 export const FIXTURE_SOURCE_TYPES = ["managed_thread", "pi_session"] as const;
@@ -36,6 +39,9 @@ export type TurnLifecycleStatus = (typeof TURN_LIFECYCLE_STATUSES)[number];
 export type TurnRepairStatus = (typeof TURN_REPAIR_STATUSES)[number];
 export type TurnLowerBandProjectionStatus = (typeof TURN_LOWER_BAND_PROJECTION_STATUSES)[number];
 export type TokenCountingMaintenanceStatus = (typeof TOKEN_COUNTING_MAINTENANCE_STATUSES)[number];
+export type ThreadMaintenanceRunMode = (typeof THREAD_MAINTENANCE_RUN_MODES)[number];
+export type ThreadMaintenanceRunScope = (typeof THREAD_MAINTENANCE_RUN_SCOPES)[number];
+export type ThreadMaintenanceRunStatus = (typeof THREAD_MAINTENANCE_RUN_STATUSES)[number];
 export type ImportStatus = (typeof IMPORT_STATUSES)[number];
 export type ProjectionStatus = (typeof PROJECTION_STATUSES)[number];
 export type FixtureSourceType = (typeof FIXTURE_SOURCE_TYPES)[number];
@@ -81,6 +87,7 @@ export interface ThreadRecord {
   status: {
     turnState: TurnRepairStatus;
     tokenCounting?: TokenCountingMaintenanceRecord;
+    maintenance?: ThreadMaintenanceStatusRecord;
   };
   indexes: {
     targetEventKeys: Record<string, string>;
@@ -93,6 +100,33 @@ export interface TokenCountingMaintenanceRecord {
   sourceRevision?: number;
   issueCount?: number;
   issues?: StewardIssue[];
+}
+
+export interface ThreadMaintenanceDebtRecord {
+  category: string;
+  entityType: "turn" | "chunk" | "thread";
+  entityId?: string;
+  detail?: string;
+}
+
+export interface ThreadMaintenanceRunRecord {
+  mode: ThreadMaintenanceRunMode;
+  scope: ThreadMaintenanceRunScope;
+  status: ThreadMaintenanceRunStatus;
+  updatedAt: string;
+  sourceRevision?: number;
+  fixedCount: number;
+  skippedCount: number;
+  failedCount: number;
+  remainingDebtCount: number;
+  blockers?: StewardIssue[];
+  remainingDebt?: ThreadMaintenanceDebtRecord[];
+}
+
+export interface ThreadMaintenanceStatusRecord {
+  background?: ThreadMaintenanceRunRecord;
+  manualRepair?: ThreadMaintenanceRunRecord;
+  prepare?: ThreadMaintenanceRunRecord;
 }
 
 export interface ThreadTargetMetadata {
@@ -423,6 +457,12 @@ export function createThreadRecord(input: CreateThreadRecordInput): ThreadRecord
     threadViewOutputSummary,
     status: {
       turnState: input.status?.turnState ?? "unknown",
+      ...(input.status?.tokenCounting
+        ? { tokenCounting: structuredClone(input.status.tokenCounting) }
+        : {}),
+      ...(input.status?.maintenance
+        ? { maintenance: structuredClone(input.status.maintenance) }
+        : {}),
     },
     indexes: {
       targetEventKeys: { ...(input.indexes?.targetEventKeys ?? {}) },

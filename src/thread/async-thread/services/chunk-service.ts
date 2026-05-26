@@ -221,7 +221,12 @@ function setChunkConversationTranscript(
     sourceFingerprint: input.sourceFingerprint,
     updatedAt: input.updatedAt,
   };
-  if (JSON.stringify(chunk.conversationTranscript ?? null) === JSON.stringify(nextTranscript)) {
+  if (
+    chunk.conversationTranscript?.status === nextTranscript.status &&
+    chunk.conversationTranscript?.text === nextTranscript.text &&
+    chunk.conversationTranscript?.sourceRevision === nextTranscript.sourceRevision &&
+    chunk.conversationTranscript?.sourceFingerprint === nextTranscript.sourceFingerprint
+  ) {
     return false;
   }
 
@@ -250,7 +255,12 @@ function setChunkConversationTranscriptNotReady(
     errorCode: input.errorCode,
     errorMessage: input.errorMessage,
   };
-  if (JSON.stringify(chunk.conversationTranscript ?? null) === JSON.stringify(nextTranscript)) {
+  if (
+    chunk.conversationTranscript?.status === nextTranscript.status &&
+    chunk.conversationTranscript?.sourceRevision === nextTranscript.sourceRevision &&
+    chunk.conversationTranscript?.errorCode === nextTranscript.errorCode &&
+    chunk.conversationTranscript?.errorMessage === nextTranscript.errorMessage
+  ) {
     return false;
   }
 
@@ -425,6 +435,7 @@ function refreshClosedChunkFromSourceTurns(input: {
 
   let changed = false;
   let smoothSourceChanged = false;
+  let transcriptChanged = false;
   const smoothMaterialized = materializeChunkSmoothTextFromTurns(input);
   if (smoothMaterialized) {
     if (
@@ -456,25 +467,25 @@ function refreshClosedChunkFromSourceTurns(input: {
   }
 
   if (transcript.status === "ready") {
-    changed =
-      setChunkConversationTranscript(input.chunk, {
+    transcriptChanged = setChunkConversationTranscript(input.chunk, {
         text: transcript.text,
         sourceRevision: transcript.sourceRevision,
         sourceFingerprint: transcript.sourceFingerprint,
         updatedAt: input.updatedAt,
-      }) || changed;
+      });
+    changed = transcriptChanged || changed;
     return changed;
   }
 
-  return (
-    setChunkConversationTranscriptNotReady(input.chunk, {
+  transcriptChanged = setChunkConversationTranscriptNotReady(input.chunk, {
       status: transcript.status,
       sourceRevision: input.chunk.sourceRevision,
       updatedAt: input.updatedAt,
       errorCode: transcript.errorCode,
       errorMessage: transcript.errorMessage,
-    }) || changed
-  );
+    });
+  changed = transcriptChanged || changed;
+  return changed;
 }
 
 function backfillChunkSmoothTokenCountMetadata(chunk: ChunkState): boolean {
@@ -646,13 +657,24 @@ export async function updateChunkState(
     }
 
     if (JSON.stringify(originalChunks) !== JSON.stringify(nextChunks)) {
-      const writeResult = await options.store.writeChunks({
-        threadId: input.threadId,
-        expectedSourceRevision: snapshotResult.value.thread.sourceRevision,
-        expectedMessageHighWatermark: snapshotResult.value.thread.messageHighWatermark,
-        expectedTurnsRevision: snapshotResult.value.thread.turnsRevision,
-        chunks: nextChunks,
-      });
+      const changedChunks = nextChunks.filter((chunk) => updatedChunkIds.has(chunk.chunkId));
+      const writeResult = options.store.writeChunkRows
+        ? await options.store.writeChunkRows({
+            threadId: input.threadId,
+            expectedSourceRevision: snapshotResult.value.thread.sourceRevision,
+            expectedMessageHighWatermark: snapshotResult.value.thread.messageHighWatermark,
+            expectedTurnsRevision: snapshotResult.value.thread.turnsRevision,
+            chunks: changedChunks,
+            orderedChunkIds: nextChunks.map((chunk) => chunk.chunkId),
+            updatedAt: timestamp,
+          })
+        : await options.store.writeChunks({
+            threadId: input.threadId,
+            expectedSourceRevision: snapshotResult.value.thread.sourceRevision,
+            expectedMessageHighWatermark: snapshotResult.value.thread.messageHighWatermark,
+            expectedTurnsRevision: snapshotResult.value.thread.turnsRevision,
+            chunks: nextChunks,
+          });
       if (!writeResult.ok) {
         return writeResult;
       }

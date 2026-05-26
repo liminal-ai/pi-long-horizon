@@ -2,13 +2,16 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import test from "node:test";
 
+import { maintainAsyncThread } from "../../src/thread/async-thread/services/async-thread-run-service.js";
 import { makeActorRecord, makeMessageRecord, makeThreadRecord, makeThreadTarget, makeTurnRecord } from "../../src/context-steward/test/fixtures.js";
 import { assertTokenCountRecord } from "../../src/token-accounting/index.js";
 import { makeChunkState, makeSmoothTurnState } from "../../src/thread/async-thread/test/fixtures.js";
 import { importFileBackedThread } from "../../src/thread/migration/sqlite-thread-migration-service.js";
 import { SqliteThreadStore } from "../../src/thread/store/sqlite-thread-store.js";
 import { withTempThreadStore } from "../../src/thread/async-thread/test/temp-thread-store.js";
+import { withTempSqliteThreadStore } from "../../src/thread/async-thread/test/temp-thread-store.js";
 import { createLegacyThreadFixture, expectOk } from "./sqlite-migration-test-helpers.js";
+import { FakeOpenAIInputTokenCounter, seedSqliteMaintenanceFixture } from "./helpers/sqlite-maintenance-helpers.js";
 
 test("migration preserves exact and heuristic token metadata plus token-counting readiness", async () => {
   await withTempThreadStore(async ({ storeRootDir }) => {
@@ -136,5 +139,72 @@ test("invalid token metadata stays imported but is surfaced as repair-needed deb
     assert.equal(snapshot.thread.status.tokenCounting?.status, "repair_needed");
     assert.equal(snapshot.thread.status.tokenCounting?.issueCount, 1);
     assert.equal(turns[0]?.rawTokenCountMetadata?.count, 5);
+  });
+});
+
+test("exact SQLite token repair persists provider/model/trust metadata for repaired rows", async () => {
+  await withTempSqliteThreadStore(async ({ storeRootDir }) => {
+    const fixture = await seedSqliteMaintenanceFixture(storeRootDir);
+
+    await maintainAsyncThread(
+      { threadId: fixture.threadId },
+      {
+        store: fixture.store,
+        openAIInputTokenCounter: new FakeOpenAIInputTokenCounter(),
+        tokenCountModel: "gpt-test-maintenance",
+        artifactRepairLimits: {
+          maxSmoothTurns: 0,
+          maxProjectionTurns: 0,
+          maxTokenTurns: 1,
+          maxTokenChunks: 1,
+        },
+      },
+    );
+
+    const snapshot = expectOk(await fixture.store.openThread(fixture.threadId));
+    const chunks = expectOk(await fixture.store.readChunks(fixture.threadId));
+    const repairedTurn = snapshot.turns.find((turn) => turn.turnId === fixture.turnIds.newest)!;
+    const repairedChunk = chunks.find((chunk) => chunk.chunkId === fixture.chunkIds.oldestClosed)!;
+
+    assert.equal(repairedTurn.rawTokenCountMetadata?.source, "provider_input_count");
+    assert.equal(repairedTurn.rawTokenCountMetadata?.trustClass, "exact");
+    assert.equal(repairedTurn.rawTokenCountMetadata?.provider, "openai");
+    assert.equal(repairedTurn.rawTokenCountMetadata?.model, "gpt-test-maintenance");
+    assert.equal(repairedTurn.smooth?.tokenCountMetadata?.trustClass, "exact");
+    assert.equal(repairedChunk.smoothTokenCountMetadata?.source, "provider_input_count");
+    assert.equal(repairedChunk.smoothTokenCountMetadata?.trustClass, "exact");
+    assert.equal(repairedChunk.smoothTokenCountMetadata?.provider, "openai");
+  });
+});
+
+test("partial SQLite exact token repair leaves tokenCounting maintenance debt visible", async () => {
+  await withTempSqliteThreadStore(async ({ storeRootDir }) => {
+    const fixture = await seedSqliteMaintenanceFixture(storeRootDir);
+
+    await maintainAsyncThread(
+      { threadId: fixture.threadId },
+      {
+        store: fixture.store,
+        openAIInputTokenCounter: new FakeOpenAIInputTokenCounter(),
+        tokenCountModel: "gpt-test-maintenance",
+        artifactRepairLimits: {
+          maxSmoothTurns: 0,
+          maxProjectionTurns: 0,
+          maxTokenTurns: 1,
+          maxTokenChunks: 0,
+        },
+      },
+    );
+
+    const snapshot = expectOk(await fixture.store.openThread(fixture.threadId));
+    assert.equal(snapshot.thread.status.tokenCounting?.status, "repair_needed");
+    assert.equal(snapshot.thread.status.tokenCounting?.issueCount! > 0, true);
+    assert.equal(snapshot.thread.status.maintenance?.background?.remainingDebtCount! > 0, true);
+    assert.equal(
+      snapshot.thread.status.maintenance?.background?.remainingDebt?.some(
+        (debt) => debt.entityId === fixture.turnIds.oldest && debt.category === "raw_turn_token",
+      ),
+      true,
+    );
   });
 });

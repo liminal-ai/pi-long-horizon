@@ -16,8 +16,20 @@ import {
   resolveSmoothTurnTokenAccounting,
 } from "../../../thread-view/services/thread-view-builder.js";
 import type { ThreadStore } from "../../store/thread-store.js";
-import type { MessageRecord, TurnRecord } from "../../domain/records.js";
-import { createStewardIssue, StewardResultError, type StewardIssue } from "../../domain/errors.js";
+import type {
+  MessageRecord,
+  ThreadMaintenanceDebtRecord,
+  ThreadMaintenanceRunMode,
+  ThreadMaintenanceRunRecord,
+  TurnRecord,
+} from "../../domain/records.js";
+import {
+  createStewardIssue,
+  ok,
+  StewardResultError,
+  type StewardIssue,
+  type StewardResult,
+} from "../../domain/errors.js";
 import {
   getReadyChunkLowerBandArtifact,
   isLegacyPlaceholderChunkState,
@@ -1557,6 +1569,7 @@ export async function repairOpenAITokenCounts(
   const messagesById = new Map(snapshot.value.messages.map((message) => [message.messageId, message]));
   const nextTurns = structuredClone(snapshot.value.turns);
   let turnsChanged = false;
+  const changedTurnIds = new Set<string>();
 
   try {
     stepStartedAt = Date.now();
@@ -1619,6 +1632,7 @@ export async function repairOpenAITokenCounts(
           now: dependencies.now,
         });
         turnsChanged = true;
+        changedTurnIds.add(turn.turnId);
       }
 
       if (smoothDirty && turnWithSmoothText) {
@@ -1631,6 +1645,7 @@ export async function repairOpenAITokenCounts(
           }),
         };
         turnsChanged = true;
+        changedTurnIds.add(turn.turnId);
       }
       tokenTurnsRepaired += 1;
     }
@@ -1662,14 +1677,24 @@ export async function repairOpenAITokenCounts(
 
   if (turnsChanged) {
     stepStartedAt = Date.now();
-    const writeTurnsResult = await dependencies.store.writeTurns({
-      threadId,
-      expectedSourceRevision: snapshot.value.thread.sourceRevision,
-      expectedMessageHighWatermark: snapshot.value.thread.messageHighWatermark,
-      expectedTurnsRevision: snapshot.value.thread.turnsRevision,
-      turns: nextTurns,
-      turnState: snapshot.value.thread.status.turnState,
-    });
+    const updatedAt = (dependencies.now ?? (() => new Date()))().toISOString();
+    const writeTurnsResult = dependencies.store.writeTurnRows
+      ? await dependencies.store.writeTurnRows({
+          threadId,
+          expectedSourceRevision: snapshot.value.thread.sourceRevision,
+          expectedMessageHighWatermark: snapshot.value.thread.messageHighWatermark,
+          turns: nextTurns.filter((turn) => changedTurnIds.has(turn.turnId)),
+          turnState: snapshot.value.thread.status.turnState,
+          updatedAt,
+        })
+      : await dependencies.store.writeTurns({
+          threadId,
+          expectedSourceRevision: snapshot.value.thread.sourceRevision,
+          expectedMessageHighWatermark: snapshot.value.thread.messageHighWatermark,
+          expectedTurnsRevision: snapshot.value.thread.turnsRevision,
+          turns: nextTurns,
+          turnState: snapshot.value.thread.status.turnState,
+        });
     writeTurnsMs = Date.now() - stepStartedAt;
     if (!writeTurnsResult.ok) {
       result = "writeTurnsFailed";
@@ -1725,6 +1750,7 @@ export async function repairOpenAITokenCounts(
 
   const nextChunks = structuredClone(chunksSnapshot.value);
   let chunksChanged = false;
+  const changedChunkIds = new Set<string>();
   try {
     stepStartedAt = Date.now();
     for (const chunk of nextChunks) {
@@ -1788,6 +1814,7 @@ export async function repairOpenAITokenCounts(
           now: dependencies.now,
         });
         chunksChanged = true;
+        changedChunkIds.add(chunk.chunkId);
       }
 
       if (detailedDirty && expectedDetailed && chunk.lowerBand?.detailed) {
@@ -1803,6 +1830,7 @@ export async function repairOpenAITokenCounts(
           },
         };
         chunksChanged = true;
+        changedChunkIds.add(chunk.chunkId);
       }
 
       if (briefDirty && expectedBrief && chunk.lowerBand?.brief) {
@@ -1818,6 +1846,7 @@ export async function repairOpenAITokenCounts(
           },
         };
         chunksChanged = true;
+        changedChunkIds.add(chunk.chunkId);
       }
 
       tokenChunksRepaired += 1;
@@ -1879,13 +1908,22 @@ export async function repairOpenAITokenCounts(
   }
 
   stepStartedAt = Date.now();
-  const writeChunksResult = await dependencies.store.writeChunks({
-    threadId,
-    expectedSourceRevision: latestSnapshot.value.thread.sourceRevision,
-    expectedMessageHighWatermark: latestSnapshot.value.thread.messageHighWatermark,
-    expectedTurnsRevision: latestSnapshot.value.thread.turnsRevision,
-    chunks: nextChunks,
-  });
+  const updatedAt = (dependencies.now ?? (() => new Date()))().toISOString();
+  const writeChunksResult = dependencies.store.writeChunkRows
+    ? await dependencies.store.writeChunkRows({
+        threadId,
+        expectedSourceRevision: latestSnapshot.value.thread.sourceRevision,
+        expectedMessageHighWatermark: latestSnapshot.value.thread.messageHighWatermark,
+        chunks: nextChunks.filter((chunk) => changedChunkIds.has(chunk.chunkId)),
+        updatedAt,
+      })
+    : await dependencies.store.writeChunks({
+        threadId,
+        expectedSourceRevision: latestSnapshot.value.thread.sourceRevision,
+        expectedMessageHighWatermark: latestSnapshot.value.thread.messageHighWatermark,
+        expectedTurnsRevision: latestSnapshot.value.thread.turnsRevision,
+        chunks: nextChunks,
+      });
   writeChunksMs = Date.now() - stepStartedAt;
 
   result = writeChunksResult.ok ? "updated" : "writeChunksFailed";
@@ -1947,6 +1985,7 @@ async function persistDegradedRawTokenCountsForClosedTurns(
     const messagesById = new Map(snapshot.value.messages.map((message) => [message.messageId, message]));
     const nextTurns = structuredClone(snapshot.value.turns);
     let turnsChanged = false;
+    const changedTurnIds = new Set<string>();
 
     stepStartedAt = Date.now();
     for (const turn of nextTurns) {
@@ -1990,6 +2029,7 @@ async function persistDegradedRawTokenCountsForClosedTurns(
       turn.rawTokenCountMetadata = expected;
       turnsChanged = true;
       changedTurns += 1;
+      changedTurnIds.add(turn.turnId);
     }
     loopMs += Date.now() - stepStartedAt;
 
@@ -2007,14 +2047,24 @@ async function persistDegradedRawTokenCountsForClosedTurns(
     }
 
     stepStartedAt = Date.now();
-    const writeTurnsResult = await dependencies.store.writeTurns({
-      threadId,
-      expectedSourceRevision: snapshot.value.thread.sourceRevision,
-      expectedMessageHighWatermark: snapshot.value.thread.messageHighWatermark,
-      expectedTurnsRevision: snapshot.value.thread.turnsRevision,
-      turns: nextTurns,
-      turnState: snapshot.value.thread.status.turnState,
-    });
+    const updatedAt = (dependencies.now ?? (() => new Date()))().toISOString();
+    const writeTurnsResult = dependencies.store.writeTurnRows
+      ? await dependencies.store.writeTurnRows({
+          threadId,
+          expectedSourceRevision: snapshot.value.thread.sourceRevision,
+          expectedMessageHighWatermark: snapshot.value.thread.messageHighWatermark,
+          turns: nextTurns.filter((turn) => changedTurnIds.has(turn.turnId)),
+          turnState: snapshot.value.thread.status.turnState,
+          updatedAt,
+        })
+      : await dependencies.store.writeTurns({
+          threadId,
+          expectedSourceRevision: snapshot.value.thread.sourceRevision,
+          expectedMessageHighWatermark: snapshot.value.thread.messageHighWatermark,
+          expectedTurnsRevision: snapshot.value.thread.turnsRevision,
+          turns: nextTurns,
+          turnState: snapshot.value.thread.status.turnState,
+        });
     writeMs += Date.now() - stepStartedAt;
     result = writeTurnsResult.ok ? "updated" : "writeFailed";
     if (writeTurnsResult.ok) {
@@ -2105,6 +2155,356 @@ export async function persistTokenCountingMaintenanceStatus(input: {
   return writeResult.ok ? [] : writeResult.issues;
 }
 
+interface ThreadMaintenanceSnapshot {
+  sourceRevision: number;
+  debt: ThreadMaintenanceDebtRecord[];
+}
+
+function maintenanceStatusKey(mode: ThreadMaintenanceRunMode): "background" | "manualRepair" | "prepare" {
+  switch (mode) {
+    case "background":
+      return "background";
+    case "manual_repair":
+      return "manualRepair";
+    case "prepare":
+      return "prepare";
+  }
+}
+
+function isExpectedMaintenanceBacklogIssue(issue: StewardIssue): boolean {
+  return (
+    issue.code === "TOKEN_COUNT_BLOCKED" &&
+    (
+      issue.cause === "exact_token_count_repair_skipped" ||
+      issue.message.includes("limit reached") ||
+      issue.message.includes("intentionally skipped")
+    )
+  );
+}
+
+function isSmoothTurnReadyForMaintenance(turn: TurnRecord, messages: readonly MessageRecord[]): boolean {
+  const materialized = materializeSmoothTurnFromState({ turn, messages });
+  return (
+    (materialized.status === "ready" || materialized.status === "degraded") &&
+    typeof materialized.text === "string" &&
+    materialized.text.length > 0
+  );
+}
+
+function collectThreadMaintenanceDebt(input: {
+  snapshotTurns: readonly TurnRecord[];
+  snapshotMessages: readonly MessageRecord[];
+  chunks: readonly ChunkState[];
+  tokenCountModel?: string;
+}): ThreadMaintenanceDebtRecord[] {
+  const messagesById = new Map(input.snapshotMessages.map((message) => [message.messageId, message]));
+  const debt: ThreadMaintenanceDebtRecord[] = [];
+
+  for (const turn of sortTurnsInSourceOrder(input.snapshotTurns)) {
+    if (turn.lifecycleStatus !== "closed") {
+      continue;
+    }
+
+    const messages = sortMessagesInSourceOrder(
+      turn.messageIds
+        .map((messageId) => messagesById.get(messageId))
+        .filter((message): message is MessageRecord => message !== undefined),
+    );
+    if (messages.length !== turn.messageIds.length) {
+      debt.push({
+        category: "turn_source_messages_missing",
+        entityType: "turn",
+        entityId: turn.turnId,
+        detail: "canonical_messages_missing",
+      });
+      continue;
+    }
+
+    if (!isSmoothTurnReadyForMaintenance(turn, messages)) {
+      debt.push({
+        category: "smooth_turn",
+        entityType: "turn",
+        entityId: turn.turnId,
+      });
+    }
+
+    const projection = turn.smooth?.lowerBandProjection;
+    if (
+      projection?.status !== "ready" ||
+      !projection.text ||
+      !projection.tokenCountMetadata ||
+      projection.tokenCountMetadata.source !== "provider_input_count" ||
+      projection.tokenCountMetadata.trustClass !== "exact"
+    ) {
+      debt.push({
+        category: "turn_lower_band_projection",
+        entityType: "turn",
+        entityId: turn.turnId,
+      });
+    }
+
+    const expectedRaw = resolveRawTurnTokenAccounting({
+      turn,
+      messages,
+      policyMode: "prepare",
+    }).record;
+    if (
+      !isOpenAIProviderInputCount({
+        record: turn.rawTokenCountMetadata,
+        expected: expectedRaw,
+        model: input.tokenCountModel,
+      })
+    ) {
+      debt.push({
+        category: "raw_turn_token",
+        entityType: "turn",
+        entityId: turn.turnId,
+      });
+    }
+
+    const turnWithSmoothText = withSmoothMaterializedText(turn, messages);
+    const expectedSmooth = turnWithSmoothText?.smooth?.text
+      ? resolveSmoothTurnTokenAccounting({
+          turn,
+          messages,
+          policyMode: "prepare",
+        })?.record
+      : undefined;
+    if (
+      expectedSmooth &&
+      !isOpenAIProviderInputCount({
+        record: turnWithSmoothText?.smooth?.tokenCountMetadata,
+        expected: expectedSmooth,
+        model: input.tokenCountModel,
+      })
+    ) {
+      debt.push({
+        category: "smooth_turn_token",
+        entityType: "turn",
+        entityId: turn.turnId,
+      });
+    }
+  }
+
+  for (const chunk of input.chunks) {
+    if (chunk.lifecycleStatus !== "closed") {
+      continue;
+    }
+
+    if (isLegacyPlaceholderChunkState(chunk)) {
+      debt.push({
+        category: "chunk_state",
+        entityType: "chunk",
+        entityId: chunk.chunkId,
+        detail: "legacy_placeholder_state",
+      });
+      continue;
+    }
+
+    if (chunk.conversationTranscript?.status !== "ready") {
+      debt.push({
+        category: "chunk_state",
+        entityType: "chunk",
+        entityId: chunk.chunkId,
+        detail: chunk.conversationTranscript?.status ?? "missing_transcript",
+      });
+    }
+
+    if (chunk.lowerBand?.detailed?.status !== "ready") {
+      debt.push({
+        category: "detailed_chunk_artifact",
+        entityType: "chunk",
+        entityId: chunk.chunkId,
+      });
+    }
+
+    if (chunk.lowerBand?.brief?.status !== "ready") {
+      debt.push({
+        category: "brief_chunk_artifact",
+        entityType: "chunk",
+        entityId: chunk.chunkId,
+      });
+    }
+
+    const expectedSmooth = resolveChunkSmoothTokenAccounting({
+      chunk,
+      policyMode: "prepare",
+    })?.record;
+    if (
+      expectedSmooth &&
+      !isOpenAIProviderInputCount({
+        record: chunk.smoothTokenCountMetadata,
+        expected: expectedSmooth,
+        model: input.tokenCountModel,
+      })
+    ) {
+      debt.push({
+        category: "chunk_smooth_token",
+        entityType: "chunk",
+        entityId: chunk.chunkId,
+      });
+    }
+
+    const expectedDetailed = resolveChunkSemanticArtifactAccounting({
+      chunk,
+      bandType: "detailed",
+      policyMode: "prepare",
+    })?.record;
+    if (
+      expectedDetailed &&
+      !isOpenAIProviderInputCount({
+        record: chunk.lowerBand?.detailed?.tokenCountMetadata,
+        expected: expectedDetailed,
+        model: input.tokenCountModel,
+      })
+    ) {
+      debt.push({
+        category: "detailed_chunk_token",
+        entityType: "chunk",
+        entityId: chunk.chunkId,
+      });
+    }
+
+    const expectedBrief = resolveChunkSemanticArtifactAccounting({
+      chunk,
+      bandType: "brief",
+      policyMode: "prepare",
+    })?.record;
+    if (
+      expectedBrief &&
+      !isOpenAIProviderInputCount({
+        record: chunk.lowerBand?.brief?.tokenCountMetadata,
+        expected: expectedBrief,
+        model: input.tokenCountModel,
+      })
+    ) {
+      debt.push({
+        category: "brief_chunk_token",
+        entityType: "chunk",
+        entityId: chunk.chunkId,
+      });
+    }
+  }
+
+  return debt;
+}
+
+async function readThreadMaintenanceSnapshot(
+  threadId: string,
+  dependencies: AsyncThreadRunDependencies,
+): Promise<StewardResult<ThreadMaintenanceSnapshot>> {
+  const snapshot = await dependencies.store.openThread(threadId);
+  if (!snapshot.ok) {
+    return snapshot;
+  }
+
+  const chunks = await dependencies.store.readChunks(threadId);
+  if (!chunks.ok) {
+    return chunks;
+  }
+
+  return ok({
+    sourceRevision: snapshot.value.thread.sourceRevision,
+    debt: collectThreadMaintenanceDebt({
+      snapshotTurns: snapshot.value.turns,
+      snapshotMessages: snapshot.value.messages,
+      chunks: chunks.value,
+      tokenCountModel: dependencies.tokenCountModel,
+    }),
+  });
+}
+
+function maintenanceDebtKey(debt: ThreadMaintenanceDebtRecord): string {
+  return `${debt.entityType}:${debt.entityId ?? ""}:${debt.category}:${debt.detail ?? ""}`;
+}
+
+function countResolvedMaintenanceDebt(
+  initial: ThreadMaintenanceSnapshot | undefined,
+  finalSnapshot: ThreadMaintenanceSnapshot,
+): number {
+  if (!initial) {
+    return 0;
+  }
+
+  const remaining = new Set(finalSnapshot.debt.map(maintenanceDebtKey));
+  return initial.debt.filter((debt) => !remaining.has(maintenanceDebtKey(debt))).length;
+}
+
+export async function persistThreadMaintenanceRunStatus(input: {
+  threadId: string;
+  runMode: ThreadMaintenanceRunMode;
+  scope: "bounded" | "full";
+  fixedCount: number;
+  skippedCount: number;
+  failedCount: number;
+  blockers: readonly StewardIssue[];
+  dependencies: AsyncThreadRunDependencies;
+  maintenanceSnapshot?: ThreadMaintenanceSnapshot;
+}): Promise<StewardIssue[]> {
+  const snapshot = input.maintenanceSnapshot
+    ? ok(input.maintenanceSnapshot)
+    : await readThreadMaintenanceSnapshot(input.threadId, input.dependencies);
+  if (!snapshot.ok) {
+    return snapshot.issues;
+  }
+
+  const updatedAt = (input.dependencies.now ?? (() => new Date()))().toISOString();
+  const hardFailureCount = input.blockers.filter((issue) => !isExpectedMaintenanceBacklogIssue(issue)).length;
+  const hasFailureBlocker = hardFailureCount > 0;
+  const status =
+    hasFailureBlocker
+      ? "failed"
+      : snapshot.value.debt.length > 0
+        ? "repair_needed"
+        : "ready";
+  const run: ThreadMaintenanceRunRecord = {
+    mode: input.runMode,
+    scope: input.scope,
+    status,
+    updatedAt,
+    sourceRevision: snapshot.value.sourceRevision,
+    fixedCount: input.fixedCount,
+    skippedCount: input.skippedCount,
+    failedCount: hardFailureCount,
+    remainingDebtCount: snapshot.value.debt.length,
+    blockers: input.blockers.map((issue) => createStewardIssue(issue)),
+    remainingDebt: snapshot.value.debt,
+  };
+
+  if (input.dependencies.store.persistMaintenanceStatus) {
+    const persisted = await input.dependencies.store.persistMaintenanceStatus({
+      threadId: input.threadId,
+      expectedSourceRevision: snapshot.value.sourceRevision,
+      runMode: input.runMode,
+      run,
+    });
+    return persisted.ok ? [] : persisted.issues;
+  }
+
+  const threadSnapshot = await input.dependencies.store.openThread(input.threadId);
+  if (!threadSnapshot.ok) {
+    return threadSnapshot.issues;
+  }
+
+  const maintenance = {
+    ...(threadSnapshot.value.thread.status.maintenance ?? {}),
+    [maintenanceStatusKey(input.runMode)]: run,
+  };
+  const writeResult = await input.dependencies.store.updateThreadMetadata({
+    threadId: input.threadId,
+    expectedSourceRevision: threadSnapshot.value.thread.sourceRevision,
+    patch: {
+      status: {
+        ...threadSnapshot.value.thread.status,
+        maintenance,
+      },
+      updatedAt,
+    },
+  });
+
+  return writeResult.ok ? [] : writeResult.issues;
+}
+
 export async function maintainAsyncThread(
   input: MaintainAsyncThreadInput,
   dependencies?: AsyncThreadRunDependencies,
@@ -2134,6 +2534,7 @@ export async function maintainAsyncThread(
     };
   }
 
+  const initialMaintenance = await readThreadMaintenanceSnapshot(input.threadId, dependencies);
   let stepStartedAt = Date.now();
   const artifactIssues = await repairMissingArtifacts(
     {
@@ -2177,7 +2578,25 @@ export async function maintainAsyncThread(
     issues: tokenCountingIssues,
   });
   statusMs = Date.now() - stepStartedAt;
-  const blockers = [...artifactIssues, ...tokenCountingIssues, ...persistedStatusIssues].map((issue) => createStewardIssue(issue));
+  const maintenanceBlockers = [...artifactIssues, ...tokenCountingIssues, ...persistedStatusIssues].map((issue) => createStewardIssue(issue));
+  const finalMaintenance = await readThreadMaintenanceSnapshot(input.threadId, dependencies);
+  const persistedMaintenanceIssues = finalMaintenance.ok
+    ? await persistThreadMaintenanceRunStatus({
+        threadId: input.threadId,
+        runMode: "background",
+        scope: "bounded",
+        fixedCount: countResolvedMaintenanceDebt(
+          initialMaintenance.ok ? initialMaintenance.value : undefined,
+          finalMaintenance.value,
+        ),
+        skippedCount: finalMaintenance.value.debt.length,
+        failedCount: maintenanceBlockers.length,
+        blockers: maintenanceBlockers,
+        dependencies,
+        maintenanceSnapshot: finalMaintenance.value,
+      })
+    : finalMaintenance.issues;
+  const blockers = [...maintenanceBlockers, ...persistedMaintenanceIssues].map((issue) => createStewardIssue(issue));
   logAsyncMaintenanceTiming(input.threadId, "maintainAsyncThread", startedAt, {
     result: "ok",
     artifactsMs,
@@ -2188,6 +2607,7 @@ export async function maintainAsyncThread(
     degradedRawIssues: degradedRawIssues.length,
     tokenCountIssues: tokenCountIssues.length,
     persistedStatusIssues: persistedStatusIssues.length,
+    persistedMaintenanceIssues: persistedMaintenanceIssues.length,
     blockers: blockers.length,
   });
 
@@ -2217,6 +2637,11 @@ export async function prepareAsyncThread(
     return readReadiness(input, dependencies);
   }
 
+  const initialMaintenance = await readThreadMaintenanceSnapshot(input.threadId, dependencies);
+  if (!initialMaintenance.ok) {
+    return blockedReadiness(input.threadId, initialMaintenance.issues);
+  }
+
   const initialReadiness = await readReadiness(input, dependencies);
   if (initialReadiness.blockers.some((issue) => issue.code === "THREAD_VIEW_STATE_CONFLICT")) {
     return initialReadiness;
@@ -2234,13 +2659,45 @@ export async function prepareAsyncThread(
     },
   );
   if (repairIssues.length > 0) {
+    await persistThreadMaintenanceRunStatus({
+      threadId: input.threadId,
+      runMode: "prepare",
+      scope: "full",
+      fixedCount: 0,
+      skippedCount: initialMaintenance.value.debt.length,
+      failedCount: repairIssues.length,
+      blockers: repairIssues,
+      dependencies,
+    });
     return blockedReadiness(input.threadId, repairIssues);
   }
   const tokenCountRepairIssues = await repairOpenAITokenCounts(input.threadId, dependencies);
   if (tokenCountRepairIssues.length > 0) {
+    await persistThreadMaintenanceRunStatus({
+      threadId: input.threadId,
+      runMode: "prepare",
+      scope: "full",
+      fixedCount: 0,
+      skippedCount: initialMaintenance.value.debt.length,
+      failedCount: tokenCountRepairIssues.length,
+      blockers: tokenCountRepairIssues,
+      dependencies,
+    });
     return blockedReadiness(input.threadId, tokenCountRepairIssues);
   }
   const finalReadiness = await readReadiness(input, dependencies);
+  const finalMaintenance = await readThreadMaintenanceSnapshot(input.threadId, dependencies);
+  const finalDebtCount = finalMaintenance.ok ? finalMaintenance.value.debt.length : initialMaintenance.value.debt.length;
+  await persistThreadMaintenanceRunStatus({
+    threadId: input.threadId,
+    runMode: "prepare",
+    scope: "full",
+    fixedCount: Math.max(0, initialMaintenance.value.debt.length - finalDebtCount),
+    skippedCount: finalDebtCount,
+    failedCount: finalReadiness.blockers.length,
+    blockers: finalReadiness.blockers,
+    dependencies,
+  });
 
   return {
     ...finalReadiness,

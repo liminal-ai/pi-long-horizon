@@ -6,6 +6,7 @@ import type {
   MessageRecord,
   ProjectionRevisionRecord,
   SourceRange,
+  ThreadMaintenanceRunMode,
   ThreadRecord,
   ThreadTargetMetadata,
   TurnRecord,
@@ -72,6 +73,32 @@ export interface WriteChunksInput {
   chunks: ChunkState[];
 }
 
+export interface WriteTurnRowsInput {
+  threadId: string;
+  expectedSourceRevision: number;
+  expectedMessageHighWatermark: number;
+  turns: TurnRecord[];
+  turnState?: ThreadRecord["status"]["turnState"];
+  updatedAt?: string;
+}
+
+export interface WriteChunkRowsInput {
+  threadId: string;
+  expectedSourceRevision: number;
+  expectedMessageHighWatermark: number;
+  expectedTurnsRevision?: number;
+  chunks: ChunkState[];
+  orderedChunkIds?: string[];
+  updatedAt?: string;
+}
+
+export interface PersistMaintenanceStatusInput {
+  threadId: string;
+  expectedSourceRevision?: number;
+  runMode: ThreadMaintenanceRunMode;
+  run: NonNullable<ThreadRecord["status"]["maintenance"]>[keyof NonNullable<ThreadRecord["status"]["maintenance"]>];
+}
+
 export interface CreateFixtureInput {
   fixture: FixtureRecord;
   snapshot: ThreadSnapshot;
@@ -98,6 +125,9 @@ export interface ThreadStore {
   writeTurns(input: WriteTurnsInput): Promise<StewardResult<TurnRecord[]>>;
   readChunks(threadId: string): Promise<StewardResult<ChunkState[]>>;
   writeChunks(input: WriteChunksInput): Promise<StewardResult<ChunkState[]>>;
+  writeTurnRows?(input: WriteTurnRowsInput): Promise<StewardResult<TurnRecord[]>>;
+  writeChunkRows?(input: WriteChunkRowsInput): Promise<StewardResult<ChunkState[]>>;
+  persistMaintenanceStatus?(input: PersistMaintenanceStatusInput): Promise<StewardResult<ThreadRecord>>;
 
   updateThreadMetadata(input: UpdateThreadMetadataInput): Promise<StewardResult<ThreadRecord>>;
   recordImport(threadId: string, record: ImportRecord): Promise<StewardResult<ThreadRecord>>;

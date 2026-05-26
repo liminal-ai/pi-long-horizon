@@ -24,6 +24,7 @@ import {
   type TurnRecord,
 } from "../domain/records.js";
 import type { ChunkState } from "../../thread/async-thread/domain/chunk-state.js";
+import type { TokenCountRecord, TokenCountSource, TokenCountTrustClass } from "../../token-accounting/token-count-metadata.js";
 import { assertSupportedThreadSchemaVersion } from "./schema-version.js";
 import { FileThreadStore } from "./file-thread-store.js";
 import type {
@@ -31,11 +32,14 @@ import type {
   CreateFixtureInput,
   CreateThreadInput,
   FixtureSnapshot,
+  PersistMaintenanceStatusInput,
   RecordThreadIdMapInput,
   ThreadSnapshot,
   ThreadStore,
   UpdateThreadMetadataInput,
+  WriteChunkRowsInput,
   WriteChunksInput,
+  WriteTurnRowsInput,
   WriteTurnsInput,
 } from "./thread-store.js";
 
@@ -58,10 +62,14 @@ interface MessageRow {
 }
 
 interface TurnRow {
+  turn_order?: number;
+  source_revision?: number | null;
   turn_json: string;
 }
 
 interface ChunkRow {
+  chunk_position?: number;
+  source_revision?: number | null;
   chunk_json: string;
 }
 
@@ -114,6 +122,12 @@ const THREAD_SQLITE_MIGRATIONS: readonly SqliteThreadMigration[] = [
   },
 ] as const;
 
+const THREAD_MAINTENANCE_STATUS_KEY = {
+  background: "background",
+  manual_repair: "manualRepair",
+  prepare: "prepare",
+} as const;
+
 type SerializedThreadRecord = Omit<ThreadRecord, "threadViewOutputSummary"> & {
   threadViewOutputSummary?: ThreadRecord["threadViewOutputSummary"];
 } & Record<string, unknown>;
@@ -147,6 +161,122 @@ function serializeThreadRecord(record: ThreadRecord): SerializedThreadRecord {
     ...thread,
     threadViewOutputSummary: structuredClone(threadViewOutputSummary),
   };
+}
+
+const TOKEN_SOURCE_PRECEDENCE: Record<TokenCountSource, number> = {
+  provider_input_count: 100,
+  local_tokenizer: 80,
+  pi_heuristic: 40,
+  provider_usage: 0,
+};
+
+const TOKEN_TRUST_PRECEDENCE: Record<TokenCountTrustClass, number> = {
+  provider_reported: 100,
+  exact: 90,
+  tokenizer_estimate: 70,
+  heuristic_estimate: 40,
+  unknown: 0,
+};
+
+function tokenRecordRank(record: TokenCountRecord | undefined): number {
+  if (!record) {
+    return -1;
+  }
+
+  return (TOKEN_SOURCE_PRECEDENCE[record.source] ?? 0) + (TOKEN_TRUST_PRECEDENCE[record.trustClass] ?? 0);
+}
+
+function selectPreferredTokenRecord<T extends TokenCountRecord | undefined>(
+  current: T,
+  incoming: T,
+): T {
+  if (!current || !incoming) {
+    return structuredClone((incoming ?? current) as T);
+  }
+
+  if (current.scope !== incoming.scope) {
+    return structuredClone(incoming);
+  }
+
+  const currentRank = tokenRecordRank(current);
+  const incomingRank = tokenRecordRank(incoming);
+  if (currentRank > incomingRank) {
+    return structuredClone(current);
+  }
+
+  if (incomingRank > currentRank) {
+    return structuredClone(incoming);
+  }
+
+  if ((current.createdAt ?? "") > (incoming.createdAt ?? "")) {
+    return structuredClone(current);
+  }
+
+  return structuredClone(incoming);
+}
+
+function mergeTurnRowDerivedState(current: TurnRecord, incoming: TurnRecord): TurnRecord {
+  const merged = structuredClone(incoming);
+  merged.rawTokenCountMetadata = selectPreferredTokenRecord(
+    current.rawTokenCountMetadata,
+    incoming.rawTokenCountMetadata,
+  );
+
+  if (current.smooth && merged.smooth) {
+    merged.smooth.tokenCountMetadata = selectPreferredTokenRecord(
+      current.smooth.tokenCountMetadata,
+      incoming.smooth?.tokenCountMetadata,
+    );
+
+    if (current.smooth.lowerBandProjection && !merged.smooth.lowerBandProjection) {
+      merged.smooth.lowerBandProjection = structuredClone(current.smooth.lowerBandProjection);
+    }
+
+    if (current.smooth.lowerBandProjection && merged.smooth.lowerBandProjection) {
+      merged.smooth.lowerBandProjection.tokenCountMetadata = selectPreferredTokenRecord(
+        current.smooth.lowerBandProjection.tokenCountMetadata,
+        incoming.smooth?.lowerBandProjection?.tokenCountMetadata,
+      );
+    }
+  }
+
+  return merged;
+}
+
+function mergeChunkRowDerivedState(current: ChunkState, incoming: ChunkState): ChunkState {
+  const merged = structuredClone(incoming);
+  merged.smoothTokenCountMetadata = selectPreferredTokenRecord(
+    current.smoothTokenCountMetadata,
+    incoming.smoothTokenCountMetadata,
+  );
+
+  if (current.lowerBand?.detailed || current.lowerBand?.brief) {
+    merged.lowerBand = {
+      ...(merged.lowerBand ?? {}),
+      detailed: merged.lowerBand?.detailed ?? (
+        current.lowerBand.detailed ? structuredClone(current.lowerBand.detailed) : undefined
+      ),
+      brief: merged.lowerBand?.brief ?? (
+        current.lowerBand.brief ? structuredClone(current.lowerBand.brief) : undefined
+      ),
+    };
+  }
+
+  if (current.lowerBand?.detailed && merged.lowerBand?.detailed) {
+    merged.lowerBand.detailed.tokenCountMetadata = selectPreferredTokenRecord(
+      current.lowerBand.detailed.tokenCountMetadata,
+      incoming.lowerBand?.detailed?.tokenCountMetadata,
+    );
+  }
+
+  if (current.lowerBand?.brief && merged.lowerBand?.brief) {
+    merged.lowerBand.brief.tokenCountMetadata = selectPreferredTokenRecord(
+      current.lowerBand.brief.tokenCountMetadata,
+      incoming.lowerBand?.brief?.tokenCountMetadata,
+    );
+  }
+
+  return merged;
 }
 
 function sqliteStoreUnavailableIssue(error: unknown, context: string, threadId?: string): StewardIssue {
@@ -1430,6 +1560,235 @@ export class SqliteThreadStore implements ThreadStore {
       } catch (error) {
         const issue = (error as { issue?: StewardIssue }).issue;
         return issue ? fail(issue) : fail(sqliteStoreUnavailableIssue(error, "writeChunks", input.threadId));
+      } finally {
+        closeDatabase(db);
+      }
+    });
+  }
+
+  async writeTurnRows(input: WriteTurnRowsInput): Promise<StewardResult<TurnRecord[]>> {
+    return this.withThreadMutation(input.threadId, () => {
+      let db: Database.Database | undefined;
+
+      try {
+        db = openDatabase({
+          dbPath: resolveThreadSqlitePath(this.rootDir, input.threadId),
+          createIfMissing: false,
+          threadId: input.threadId,
+        });
+        const turns = db.transaction(() => {
+          const thread = this.requireMutableThread(db!, input.threadId);
+          if (thread.sourceRevision !== input.expectedSourceRevision) {
+            throw Object.assign(new Error("stale source revision"), {
+              issue: staleSourceRevisionIssue(thread, input.expectedSourceRevision),
+            });
+          }
+
+          if (thread.messageHighWatermark !== input.expectedMessageHighWatermark) {
+            throw Object.assign(new Error("stale message watermark"), {
+              issue: <StewardIssue>{
+                code: "STALE_SOURCE_REVISION",
+                message:
+                  `Thread ${input.threadId} message high watermark ${thread.messageHighWatermark} does not match expected ${input.expectedMessageHighWatermark}.`,
+                threadId: input.threadId,
+              },
+            });
+          }
+
+          const readTurnRow = db!.prepare<[{ threadId: string; turnId: string }], TurnRow>(
+            "SELECT turn_order, source_revision, turn_json FROM turns WHERE thread_id = @threadId AND turn_id = @turnId",
+          );
+          for (const turn of input.turns) {
+            const currentRow = readTurnRow.get({ threadId: input.threadId, turnId: turn.turnId });
+            if (!currentRow) {
+              throw Object.assign(new Error("turn missing"), {
+                issue: <StewardIssue>{
+                  code: "TURN_STATE_MISSING",
+                  message: `Turn ${turn.turnId} was not found in thread ${input.threadId}.`,
+                  threadId: input.threadId,
+                },
+              });
+            }
+
+            const currentTurn = JSON.parse(currentRow.turn_json) as TurnRecord;
+            if (currentTurn.sourceRevision !== turn.sourceRevision) {
+              throw Object.assign(new Error("stale turn source revision"), {
+                issue: <StewardIssue>{
+                  code: "STALE_SOURCE_REVISION",
+                  message:
+                    `Turn ${turn.turnId} source revision ${currentTurn.sourceRevision} does not match expected ${turn.sourceRevision}.`,
+                  threadId: input.threadId,
+                  cause: "turn_source_revision",
+                },
+              });
+            }
+
+            const mergedTurn = mergeTurnRowDerivedState(currentTurn, turn);
+            const turnOrder = mergedTurn.turnOrder ?? currentRow.turn_order ?? currentTurn.turnOrder;
+            writeTurnRow(
+              db!,
+              {
+                ...mergedTurn,
+                turnOrder,
+              },
+              Math.max(0, (turnOrder ?? 1) - 1),
+            );
+          }
+
+          const nextThread = structuredClone(thread);
+          nextThread.turnsRevision = thread.turnsRevision + 1;
+          if (input.turnState !== undefined) {
+            nextThread.status.turnState = input.turnState;
+          }
+          nextThread.updatedAt = input.updatedAt ?? new Date().toISOString();
+          writeThreadRow(db!, nextThread);
+
+          return structuredClone(input.turns);
+        }).immediate();
+
+        return ok(turns);
+      } catch (error) {
+        const issue = (error as { issue?: StewardIssue }).issue;
+        return issue ? fail(issue) : fail(sqliteStoreUnavailableIssue(error, "writeTurnRows", input.threadId));
+      } finally {
+        closeDatabase(db);
+      }
+    });
+  }
+
+  async writeChunkRows(input: WriteChunkRowsInput): Promise<StewardResult<ChunkState[]>> {
+    return this.withThreadMutation(input.threadId, () => {
+      let db: Database.Database | undefined;
+
+      try {
+        db = openDatabase({
+          dbPath: resolveThreadSqlitePath(this.rootDir, input.threadId),
+          createIfMissing: false,
+          threadId: input.threadId,
+        });
+        const chunks = db.transaction(() => {
+          const thread = this.requireMutableThread(db!, input.threadId);
+          if (thread.sourceRevision !== input.expectedSourceRevision) {
+            throw Object.assign(new Error("stale source revision"), {
+              issue: staleSourceRevisionIssue(thread, input.expectedSourceRevision),
+            });
+          }
+
+          if (thread.messageHighWatermark !== input.expectedMessageHighWatermark) {
+            throw Object.assign(new Error("stale message watermark"), {
+              issue: <StewardIssue>{
+                code: "STALE_SOURCE_REVISION",
+                message:
+                  `Thread ${input.threadId} message high watermark ${thread.messageHighWatermark} does not match expected ${input.expectedMessageHighWatermark}.`,
+                threadId: input.threadId,
+              },
+            });
+          }
+
+          if (
+            input.expectedTurnsRevision !== undefined &&
+            thread.turnsRevision !== input.expectedTurnsRevision
+          ) {
+            throw Object.assign(new Error("stale turns revision"), {
+              issue: staleTurnsRevisionIssue(thread, input.expectedTurnsRevision),
+            });
+          }
+
+          const readChunkRow = db!.prepare<[{ threadId: string; chunkId: string }], ChunkRow>(
+            "SELECT chunk_position, source_revision, chunk_json FROM chunks WHERE thread_id = @threadId AND chunk_id = @chunkId",
+          );
+          const explicitPositions = new Map((input.orderedChunkIds ?? []).map((chunkId, index) => [chunkId, index] as const));
+          for (const chunk of input.chunks) {
+            const currentRow = readChunkRow.get({ threadId: input.threadId, chunkId: chunk.chunkId });
+            if (currentRow && input.expectedTurnsRevision === undefined) {
+              const currentChunk = JSON.parse(currentRow.chunk_json) as ChunkState;
+              const expectedSourceRevision = chunk.sourceRevision ?? null;
+              const currentSourceRevision = currentChunk.sourceRevision ?? null;
+              if (currentSourceRevision !== expectedSourceRevision) {
+                throw Object.assign(new Error("stale chunk source revision"), {
+                  issue: <StewardIssue>{
+                    code: "STALE_SOURCE_REVISION",
+                    message:
+                      `Chunk ${chunk.chunkId} source revision ${currentSourceRevision ?? "null"} does not match expected ${expectedSourceRevision ?? "null"}.`,
+                    threadId: input.threadId,
+                    cause: "chunk_source_revision",
+                  },
+                });
+              }
+            }
+
+            const currentChunk = currentRow ? JSON.parse(currentRow.chunk_json) as ChunkState : undefined;
+            const mergedChunk = currentChunk ? mergeChunkRowDerivedState(currentChunk, chunk) : structuredClone(chunk);
+            const chunkPosition = explicitPositions.get(chunk.chunkId) ?? currentRow?.chunk_position ?? 0;
+            writeChunkRow(
+              db!,
+              input.threadId,
+              mergedChunk,
+              chunkPosition,
+            );
+          }
+
+          const nextThread = structuredClone(thread);
+          nextThread.updatedAt = input.updatedAt ?? new Date().toISOString();
+          writeThreadRow(db!, nextThread);
+
+          return structuredClone(input.chunks);
+        }).immediate();
+
+        return ok(chunks);
+      } catch (error) {
+        const issue = (error as { issue?: StewardIssue }).issue;
+        return issue ? fail(issue) : fail(sqliteStoreUnavailableIssue(error, "writeChunkRows", input.threadId));
+      } finally {
+        closeDatabase(db);
+      }
+    });
+  }
+
+  async persistMaintenanceStatus(input: PersistMaintenanceStatusInput): Promise<StewardResult<ThreadRecord>> {
+    return this.withThreadMutation(input.threadId, () => {
+      let db: Database.Database | undefined;
+
+      try {
+        db = openDatabase({
+          dbPath: resolveThreadSqlitePath(this.rootDir, input.threadId),
+          createIfMissing: false,
+          threadId: input.threadId,
+        });
+        const updatedThread = db.transaction(() => {
+          const thread = this.requireMutableThread(db!, input.threadId);
+          const run = input.run;
+          if (!run) {
+            throw Object.assign(new Error("maintenance run missing"), {
+              issue: <StewardIssue>{
+                code: "SQLITE_STORE_UNAVAILABLE",
+                message: `Maintenance status update for thread ${input.threadId} is missing a run payload.`,
+                threadId: input.threadId,
+              },
+            });
+          }
+          if (
+            input.expectedSourceRevision !== undefined &&
+            thread.sourceRevision !== input.expectedSourceRevision
+          ) {
+            throw Object.assign(new Error("stale source revision"), {
+              issue: staleSourceRevisionIssue(thread, input.expectedSourceRevision),
+            });
+          }
+
+          const nextThread = structuredClone(thread);
+          const maintenance = structuredClone(nextThread.status.maintenance ?? {});
+          maintenance[THREAD_MAINTENANCE_STATUS_KEY[input.runMode]] = structuredClone(run);
+          nextThread.status.maintenance = maintenance;
+          nextThread.updatedAt = run.updatedAt;
+          writeThreadRow(db!, nextThread);
+          return nextThread;
+        }).immediate();
+
+        return ok(updatedThread);
+      } catch (error) {
+        const issue = (error as { issue?: StewardIssue }).issue;
+        return issue ? fail(issue) : fail(sqliteStoreUnavailableIssue(error, "persistMaintenanceStatus", input.threadId));
       } finally {
         closeDatabase(db);
       }

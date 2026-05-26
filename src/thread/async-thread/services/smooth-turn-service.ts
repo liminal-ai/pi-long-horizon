@@ -705,23 +705,30 @@ async function writeSmoothTurn(
   },
   store: ThreadStore,
 ): Promise<StewardResult<void>> {
-  const turns = input.snapshot.turns.map((turn) =>
-    turn.turnId === input.turn.turnId
-      ? {
-          ...structuredClone(turn),
-          smooth: toTurnSmoothRecord(input.smooth),
-        }
-      : structuredClone(turn),
-  );
+  const updatedTurn = {
+    ...structuredClone(input.turn),
+    smooth: toTurnSmoothRecord(input.smooth),
+  };
 
-  const writeResult = await store.writeTurns({
-    threadId: input.snapshot.thread.threadId,
-    expectedSourceRevision: input.snapshot.thread.sourceRevision,
-    expectedMessageHighWatermark: input.snapshot.thread.messageHighWatermark,
-    expectedTurnsRevision: input.snapshot.thread.turnsRevision,
-    turns,
-    turnState: input.snapshot.thread.status.turnState,
-  });
+  const writeResult = store.writeTurnRows
+    ? await store.writeTurnRows({
+        threadId: input.snapshot.thread.threadId,
+        expectedSourceRevision: input.snapshot.thread.sourceRevision,
+        expectedMessageHighWatermark: input.snapshot.thread.messageHighWatermark,
+        turns: [updatedTurn],
+        turnState: input.snapshot.thread.status.turnState,
+        updatedAt: input.smooth.generatedAt,
+      })
+    : await store.writeTurns({
+        threadId: input.snapshot.thread.threadId,
+        expectedSourceRevision: input.snapshot.thread.sourceRevision,
+        expectedMessageHighWatermark: input.snapshot.thread.messageHighWatermark,
+        expectedTurnsRevision: input.snapshot.thread.turnsRevision,
+        turns: input.snapshot.turns.map((turn) =>
+          turn.turnId === input.turn.turnId ? updatedTurn : structuredClone(turn),
+        ),
+        turnState: input.snapshot.thread.status.turnState,
+      });
 
   if (!writeResult.ok) {
     return fail(...writeResult.issues);
@@ -755,7 +762,10 @@ async function persistSmoothTurnStateWithinSerializedThreadOperation(
     });
   }
 
-  if (snapshotResult.value.thread.turnsRevision !== input.expectedTurnsRevision) {
+  if (
+    !store.writeTurnRows &&
+    snapshotResult.value.thread.turnsRevision !== input.expectedTurnsRevision
+  ) {
     return fail({
       code: "STALE_SOURCE_REVISION",
       message: `Thread ${input.threadId} turns revision ${snapshotResult.value.thread.turnsRevision} does not match expected ${input.expectedTurnsRevision}.`,

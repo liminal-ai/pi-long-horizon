@@ -10,6 +10,7 @@ import type { ChunkSemanticArtifactBand } from "../domain/lower-band-artifact-st
 import { updateChunkState } from "./chunk-service.js";
 import {
   persistTokenCountingMaintenanceStatus,
+  persistThreadMaintenanceRunStatus,
   repairOpenAITokenCounts,
   type AsyncThreadRunDependencies,
 } from "./async-thread-run-service.js";
@@ -91,17 +92,26 @@ export async function repairThreadMaintenance(
 
   const smoothIssues = await repairSmoothTurns(input.threadId, dependencies, phases.smoothTurns);
   if (smoothIssues.length > 0) {
-    return failWithReport(input.threadId, phases, warnings, smoothIssues);
+    return finalizeRepairResult(
+      failWithReport(input.threadId, phases, warnings, smoothIssues),
+      dependencies,
+    );
   }
 
   const projectionIssues = await repairLowerBandTurnProjections(input.threadId, dependencies, phases.lowerBandTurnProjections);
   if (projectionIssues.length > 0) {
-    return failWithReport(input.threadId, phases, warnings, projectionIssues);
+    return finalizeRepairResult(
+      failWithReport(input.threadId, phases, warnings, projectionIssues),
+      dependencies,
+    );
   }
 
   const chunkIssues = await repairChunkState(input.threadId, dependencies, phases.chunks);
   if (chunkIssues.length > 0) {
-    return failWithReport(input.threadId, phases, warnings, chunkIssues);
+    return finalizeRepairResult(
+      failWithReport(input.threadId, phases, warnings, chunkIssues),
+      dependencies,
+    );
   }
 
   const tokenDependencies: AsyncThreadRunDependencies = {
@@ -114,20 +124,29 @@ export async function repairThreadMaintenance(
 
   const tokenIssues = [...phases.chunks.blockers, ...phases.tokenCounts.blockers];
   if (tokenIssues.length > 0) {
-    return failWithReport(input.threadId, phases, warnings, tokenIssues);
+    return finalizeRepairResult(
+      failWithReport(input.threadId, phases, warnings, tokenIssues),
+      dependencies,
+    );
   }
 
   const lowerBandIssues = await repairLowerBandChunks(input.threadId, dependencies, phases.lowerBandChunks);
   if (lowerBandIssues.length > 0) {
-    return failWithReport(input.threadId, phases, warnings, lowerBandIssues);
+    return finalizeRepairResult(
+      failWithReport(input.threadId, phases, warnings, lowerBandIssues),
+      dependencies,
+    );
   }
 
   await runExactTokenRepair(input.threadId, tokenDependencies, phases.tokenCounts);
   if (phases.tokenCounts.blockers.length > 0) {
-    return failWithReport(input.threadId, phases, warnings, phases.tokenCounts.blockers);
+    return finalizeRepairResult(
+      failWithReport(input.threadId, phases, warnings, phases.tokenCounts.blockers),
+      dependencies,
+    );
   }
 
-  return ok(buildReport(input.threadId, phases, warnings));
+  return finalizeRepairResult(ok(buildReport(input.threadId, phases, warnings)), dependencies);
 }
 
 async function runExactTokenRepair(
@@ -334,6 +353,34 @@ function countExactTokenRecords(input: { turns: readonly TurnRecord[]; chunks: r
     if (chunk.lowerBand?.brief?.tokenCountMetadata?.source === "provider_input_count" && chunk.lowerBand.brief.tokenCountMetadata.trustClass === "exact") count += 1;
   }
   return count;
+}
+
+async function finalizeRepairResult(
+  result: StewardResult<ThreadMaintenanceRepairResult>,
+  dependencies: ThreadMaintenanceRepairDependencies,
+): Promise<StewardResult<ThreadMaintenanceRepairResult>> {
+  if (!dependencies.store) {
+    return result;
+  }
+
+  const report = (result as StewardResult<ThreadMaintenanceRepairResult> & { value: ThreadMaintenanceRepairResult }).value;
+  await persistThreadMaintenanceRunStatus({
+    threadId: report.threadId,
+    runMode: "manual_repair",
+    scope: "full",
+    fixedCount: report.summary.repaired,
+    skippedCount: report.summary.skipped,
+    failedCount: report.summary.failed,
+    blockers: result.ok ? [] : result.issues,
+    dependencies: {
+      store: dependencies.store,
+      openAIInputTokenCounter: dependencies.openAIInputTokenCounter,
+      tokenCountModel: dependencies.tokenCountModel,
+      now: dependencies.now,
+    },
+  });
+
+  return result;
 }
 
 function buildReport(
