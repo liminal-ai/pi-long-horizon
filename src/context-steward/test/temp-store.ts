@@ -3,6 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 
+import { FileThreadStore } from "../store/file-thread-store.js";
+import { SqliteThreadStore, resolveThreadSqlitePath } from "../store/sqlite-thread-store.js";
+import type { ThreadStore } from "../store/thread-store.js";
+
+export type ThreadStoreBacking = "file" | "sqlite";
+
 export interface TempThreadStoreContext {
   projectDir: string;
   storeRootDir: string;
@@ -53,4 +59,41 @@ export async function withTempThreadStore<T>(
   } finally {
     await context.cleanup();
   }
+}
+
+export interface TempManagedThreadStoreContext extends TempThreadStoreContext {
+  backing: ThreadStoreBacking;
+  createStore: () => ThreadStore;
+  resolveThreadSqlitePath: (threadId: string) => string;
+}
+
+export interface CreateTestThreadStoreInput {
+  backing: ThreadStoreBacking;
+  storeRootDir: string;
+}
+
+export function createTestThreadStore(input: CreateTestThreadStoreInput): ThreadStore {
+  return input.backing === "sqlite"
+    ? new SqliteThreadStore(input.storeRootDir)
+    : new FileThreadStore(input.storeRootDir);
+}
+
+export async function withTempManagedThreadStore<T>(
+  input: { backing: ThreadStoreBacking },
+  run: (context: TempManagedThreadStoreContext) => Promise<T> | T,
+): Promise<T> {
+  return withTempThreadStore(async (context) =>
+    run({
+      ...context,
+      backing: input.backing,
+      createStore: () => createTestThreadStore({ backing: input.backing, storeRootDir: context.storeRootDir }),
+      resolveThreadSqlitePath: (threadId: string) => resolveThreadSqlitePath(context.storeRootDir, threadId),
+    }),
+  );
+}
+
+export async function withTempSqliteThreadStore<T>(
+  run: (context: TempManagedThreadStoreContext) => Promise<T> | T,
+): Promise<T> {
+  return withTempManagedThreadStore({ backing: "sqlite" }, run);
 }
