@@ -13,9 +13,10 @@ export interface BuildPiLaunchPlanOptions {
   env?: NodeJS.ProcessEnv;
   piCliPath?: string;
   extensionPath?: string;
+  extensionPaths?: string[];
 }
 
-export const PI_LH_HELP_TEXT = `pi-lh - launch PI with the Long Horizon extension\n\nUsage:\n  pi-lh [pi args...]\n\nBehavior:\n  - runs PI from the current working directory\n  - loads the packaged Long Horizon PI extension\n  - sets PI_CODING_AGENT_DIR=<cwd>/.pi/agent for project-local PI state\n  - passes non-help args through to PI\n`;
+export const PI_LH_HELP_TEXT = `pi-lh - launch PI with the Long Horizon extension\n\nUsage:\n  pi-lh [pi args...]\n\nBehavior:\n  - runs PI from the current working directory\n  - loads the packaged Long Horizon PI extensions\n  - disables PI auto extension discovery to avoid duplicate registrations\n  - enables hosted Codex web search for supported GPT models\n  - sets PI_CODING_AGENT_DIR=<cwd>/.pi/agent for project-local PI state\n  - passes non-help args through to PI\n`;
 
 export function isLauncherHelpRequest(argv: string[]): boolean {
   return argv.includes("--help") || argv.includes("-h");
@@ -26,18 +27,30 @@ export function resolvePiCliPath(): string {
   return join(dirname(piMainPath), "cli.js");
 }
 
+export function resolvePackagedExtensionPaths(): string[] {
+  return [
+    fileURLToPath(new URL("./pi-extension/index.js", import.meta.url)),
+    fileURLToPath(new URL("./pi-extensions/codex-fast.js", import.meta.url)),
+    fileURLToPath(new URL("./pi-extensions/codex-web-search.js", import.meta.url)),
+  ];
+}
+
 export function resolvePackagedExtensionPath(): string {
-  return fileURLToPath(new URL("./pi-extension/index.js", import.meta.url));
+  return resolvePackagedExtensionPaths()[0] as string;
+}
+
+function extensionArgs(paths: string[]): string[] {
+  return paths.flatMap((path) => ["--extension", path]);
 }
 
 export function buildPiLaunchPlan(options: BuildPiLaunchPlanOptions): PiLaunchPlan {
   const cwd = options.cwd ?? process.cwd();
   const piCliPath = options.piCliPath ?? resolvePiCliPath();
-  const extensionPath = options.extensionPath ?? resolvePackagedExtensionPath();
+  const extensionPaths = options.extensionPaths ?? (options.extensionPath ? [options.extensionPath] : resolvePackagedExtensionPaths());
 
   return {
     command: process.execPath,
-    args: [piCliPath, "--extension", extensionPath, ...options.argv],
+    args: [piCliPath, "--no-extensions", ...extensionArgs(extensionPaths), "--codex-web-search", ...options.argv],
     cwd,
     env: {
       ...(options.env ?? process.env),
