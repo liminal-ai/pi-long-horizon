@@ -5,7 +5,7 @@ import { runCli } from "../../src/commands/run.js";
 const rootDir = path.resolve("test/fixtures/sample");
 
 describe("hierarchical inspect CLI routing", () => {
-  it("routes inspect summary/tokens/bands to existing primitive inspectors", async () => {
+  it("routes inspect summary/tokens/bands/readiness to existing primitive inspectors", async () => {
     const summary = await runCli(["inspect", "summary", "--root", rootDir, "--json"]);
     expect(summary.exitCode).toBe(0);
     expect(summary.stderr).toBe("");
@@ -21,9 +21,15 @@ describe("hierarchical inspect CLI routing", () => {
     const parsedBands = JSON.parse(bands.stdout);
     expect(parsedBands.bands.full_fidelity.turns.indices).toEqual([1, 2]);
     expect(parsedBands.generatedSessionTokenCount.count).toBe(1234);
+
+    const readiness = await runCli(["inspect", "readiness", "--root", rootDir, "--json"]);
+    expect(readiness.exitCode).toBe(0);
+    const parsedReadiness = JSON.parse(readiness.stdout);
+    expect(parsedReadiness.kind).toBe("readiness");
+    expect(parsedReadiness.compactModeRecommendation).toBe("prepare");
   });
 
-  it("keeps top-level summary/tokens/bands aliases compatible", async () => {
+  it("keeps top-level summary/tokens/bands/readiness aliases compatible", async () => {
     expect(JSON.parse((await runCli(["summary", "--root", rootDir, "--json"])).stdout).threadId).toBe("thread_alpha");
     expect(JSON.parse((await runCli(["tokens", "--root", rootDir, "--json"])).stdout).generatedThreadViewTokenCount.count).toBe(1234);
     expect(JSON.parse((await runCli(["bands", "--root", rootDir, "--json"])).stdout).selectedBandEntryCounts).toEqual({
@@ -32,5 +38,6 @@ describe("hierarchical inspect CLI routing", () => {
       detailed: 1,
       brief: 1,
     });
+    expect(JSON.parse((await runCli(["readiness", "--root", rootDir, "--json"])).stdout).kind).toBe("readiness");
   });
 });

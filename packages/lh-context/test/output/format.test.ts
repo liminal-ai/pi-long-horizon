@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { formatJson, formatSummaryHuman } from "../../src/output/format.js";
-import type { SummaryResult } from "../../src/index.js";
+
+import { formatJson, formatReadinessHuman, formatSummaryHuman, type ReadinessResult, type SummaryResult } from "../../src/index.js";
 
 const summary: SummaryResult = {
   kind: "summary",
@@ -30,5 +30,42 @@ describe("formatters", () => {
     expect(text).toContain("PI Long Horizon context summary");
     expect(text).toContain("Thread: thread_alpha");
     expect(text).toContain("Messages: 1");
+  });
+
+  it("renders missing maintenance sections without crashing", () => {
+    const readiness: ReadinessResult = {
+      kind: "readiness",
+      threadId: "thread-format-readiness-001",
+      overallStatus: "prepare_recommended",
+      compactModeRecommendation: "prepare",
+      turnState: "ready",
+      tokenCounting: {
+        status: "ready",
+        issueCount: 0,
+        issues: [],
+      },
+      projection: {
+        status: "degraded",
+        currentGeneratedFilePath: "/tmp/generated.jsonl",
+        issueCount: 1,
+        issues: [{ code: "RELOAD_FAILED", message: "Reload failed." }],
+      },
+      maintenance: {
+        background: undefined,
+        manualRepair: undefined,
+        prepare: undefined,
+      },
+      warnings: [],
+    };
+
+    expect(formatReadinessHuman(readiness)).toContain(
+      "Maintenance background: status=unknown scope=unknown fixed=0 skipped=0 failed=0 remainingDebt=0",
+    );
+    expect(formatReadinessHuman(readiness)).toContain(
+      "Maintenance manualRepair: status=unknown scope=unknown fixed=0 skipped=0 failed=0 remainingDebt=0",
+    );
+    expect(formatReadinessHuman(readiness)).toContain(
+      "Maintenance prepare: status=unknown scope=unknown fixed=0 skipped=0 failed=0 remainingDebt=0",
+    );
   });
 });

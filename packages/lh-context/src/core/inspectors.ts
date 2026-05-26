@@ -1,6 +1,17 @@
 import { loadThread } from "./io.js";
 import { estimateTokens, generatedSessionTokenCount, increment, latestAssistantUsageTotal, rollupTokenMetadata, threadViewMetadata, visibleTextOf } from "./util.js";
-import type { BandDetail, BandName, BandsResult, InspectInput, StatusSummary, SummaryResult, TokensResult } from "../types/public.js";
+import type {
+  BandDetail,
+  BandName,
+  BandsResult,
+  InspectInput,
+  MaintenanceReadinessEntry,
+  ReadinessEntry,
+  ReadinessResult,
+  StatusSummary,
+  SummaryResult,
+  TokensResult,
+} from "../types/public.js";
 
 const BAND_NAMES: BandName[] = ["full_fidelity", "smooth", "detailed", "brief"];
 
@@ -94,7 +105,7 @@ export async function inspectBands(input: InspectInput = {}): Promise<BandsResul
     selectedBandEntryCounts[band] = (selectedBandEntryCounts[band] ?? 0) + 1;
     bands[band].entries += 1;
     const ref = String(e?.metadata?.sourceReference ?? "");
-    const turnId = ref.match(/(turn_[A-Za-z0-9-]+)/)?.[1];
+    const turnId = ref.match(/(turn[-_][A-Za-z0-9-]+)/)?.[1];
     const chunkId = ref.match(/(chunk-[A-Za-z0-9-]+|chunk_[A-Za-z0-9-]+)/)?.[1];
     if (turnId) turnSets.get(band)!.add(turnId);
     if (chunkId) chunkSets.get(band)!.add(chunkId);
@@ -127,6 +138,29 @@ export async function inspectBands(input: InspectInput = {}): Promise<BandsResul
   };
 }
 
+export async function inspectReadiness(input: InspectInput = {}): Promise<ReadinessResult> {
+  const loaded = await loadThread(input, { preferGeneratedThreadView: !input.threadId && !input.threadDir && !input.threadViewPath });
+  const projection = projectionReadiness(loaded.thread, loaded.generatedFilePath, loaded.generatedRecords.length, loaded.warnings);
+  const tokenCounting = readinessEntry(loaded.thread?.status?.tokenCounting);
+  const overallStatus = determineOverallReadiness(loaded.thread?.status?.turnState, tokenCounting, projection);
+
+  return {
+    kind: "readiness",
+    threadId: loaded.threadId,
+    overallStatus,
+    compactModeRecommendation: overallStatus === "ready" ? "strict" : "prepare",
+    turnState: loaded.thread?.status?.turnState ?? "unknown",
+    tokenCounting,
+    projection,
+    maintenance: {
+      background: maintenanceEntry(loaded.thread?.status?.maintenance?.background),
+      manualRepair: maintenanceEntry(loaded.thread?.status?.maintenance?.manualRepair),
+      prepare: maintenanceEntry(loaded.thread?.status?.maintenance?.prepare),
+    },
+    warnings: loaded.warnings,
+  };
+}
+
 function countLifecycle(items: any[]): { total: number; closed: number; open: number } {
   return { total: items.length, closed: items.filter((i) => i?.lifecycleStatus === "closed").length, open: items.filter((i) => i?.lifecycleStatus === "open").length };
 }
@@ -146,6 +180,96 @@ function summarizeStatuses(status: any): SummaryResult["status"] {
   }
   walk(status, ["status"]);
   return { degraded, repairNeeded };
+}
+
+function readinessEntry(record: any): ReadinessEntry | undefined {
+  if (!record || typeof record !== "object") {
+    return undefined;
+  }
+
+  return {
+    status: typeof record.status === "string" ? record.status : undefined,
+    updatedAt: typeof record.updatedAt === "string" ? record.updatedAt : undefined,
+    sourceRevision: typeof record.sourceRevision === "number" ? record.sourceRevision : undefined,
+    issueCount: typeof record.issueCount === "number" ? record.issueCount : Array.isArray(record.issues) ? record.issues.length : 0,
+    issues: normalizeIssues(record.issues),
+  };
+}
+
+function maintenanceEntry(record: any): MaintenanceReadinessEntry | undefined {
+  if (!record || typeof record !== "object") {
+    return undefined;
+  }
+
+  return {
+    status: typeof record.status === "string" ? record.status : "unknown",
+    scope: typeof record.scope === "string" ? record.scope : "unknown",
+    updatedAt: typeof record.updatedAt === "string" ? record.updatedAt : "unknown",
+    sourceRevision: typeof record.sourceRevision === "number" ? record.sourceRevision : undefined,
+    fixedCount: typeof record.fixedCount === "number" ? record.fixedCount : 0,
+    skippedCount: typeof record.skippedCount === "number" ? record.skippedCount : 0,
+    failedCount: typeof record.failedCount === "number" ? record.failedCount : 0,
+    remainingDebtCount: typeof record.remainingDebtCount === "number" ? record.remainingDebtCount : 0,
+    blockerCount: Array.isArray(record.blockers) ? record.blockers.length : 0,
+    blockers: normalizeIssues(record.blockers),
+  };
+}
+
+function projectionReadiness(
+  thread: any,
+  generatedFilePath: string | undefined,
+  generatedRecordCount: number,
+  warnings: string[],
+): ReadinessResult["projection"] {
+  const generatedOutput = thread?.threadViewOutputSummary?.generatedOutput;
+  const issues = normalizeIssues(generatedOutput?.issues);
+  const recordedPath = generatedOutput?.generatedFilePath ?? thread?.threadViewOutputSummary?.currentGeneratedFilePath ?? thread?.target?.currentGeneratedFilePath;
+  const hasMissingGeneratedWarning = warnings.some((warning) => warning.includes("Generated thread-view file not found"));
+
+  let status: ReadinessResult["projection"]["status"] = "unknown";
+  if (hasMissingGeneratedWarning || generatedOutput?.status === "blocked" || generatedOutput?.status === "write_failed") {
+    status = "blocked";
+  } else if (issues.length > 0 || generatedOutput?.status === "degraded" || generatedOutput?.status === "reload_failed") {
+    status = "degraded";
+  } else if (generatedFilePath && generatedRecordCount > 0) {
+    status = "ready";
+  }
+
+  return {
+    status,
+    currentGeneratedFilePath: generatedFilePath ?? recordedPath,
+    currentProjectionRevisionId: thread?.threadViewOutputSummary?.currentProjectionRevisionId,
+    generatedOutputStatus: typeof generatedOutput?.status === "string" ? generatedOutput.status : undefined,
+    issueCount: issues.length,
+    issues,
+  };
+}
+
+function determineOverallReadiness(
+  turnState: unknown,
+  tokenCounting: ReadinessEntry | undefined,
+  projection: ReadinessResult["projection"],
+): ReadinessResult["overallStatus"] {
+  if (turnState === "repair_failed" || projection.status === "blocked") {
+    return "blocked";
+  }
+
+  if (turnState !== "ready" || tokenCounting?.status === "repair_needed" || projection.status === "degraded") {
+    return "prepare_recommended";
+  }
+
+  return "ready";
+}
+
+function normalizeIssues(issues: unknown): Array<{ code?: string; message?: string }> {
+  return Array.isArray(issues)
+    ? issues.flatMap((issue) => issue && typeof issue === "object"
+      ? [{
+          code: typeof (issue as { code?: unknown }).code === "string" ? (issue as { code: string }).code : undefined,
+          message: typeof (issue as { message?: unknown }).message === "string" ? (issue as { message: string }).message : undefined,
+        }]
+      : [])
+    : [];
 }
 
 function emptyBand(band: BandName): BandDetail {

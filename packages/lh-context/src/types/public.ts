@@ -3,6 +3,7 @@ export interface InspectInput {
   threadId?: string;
   threadDir?: string;
   threadViewPath?: string;
+  backing?: "auto" | "file" | "sqlite";
 }
 
 export type TrustClass = string;
@@ -100,6 +101,57 @@ export interface BandsResult {
   selectedBandEntryCounts?: Record<string, number>;
   bands: Record<BandName, BandDetail>;
   livePostCompactTailDetection: { supported: false; note: string };
+  warnings: string[];
+}
+
+export interface ReadinessIssueSummary {
+  code?: string;
+  message?: string;
+}
+
+export interface ReadinessEntry {
+  status?: string;
+  updatedAt?: string;
+  sourceRevision?: number;
+  issueCount: number;
+  issues: ReadinessIssueSummary[];
+}
+
+export interface ProjectionReadinessResult {
+  status: "ready" | "degraded" | "blocked" | "unknown";
+  currentGeneratedFilePath?: string;
+  currentProjectionRevisionId?: string;
+  generatedOutputStatus?: string;
+  issueCount: number;
+  issues: ReadinessIssueSummary[];
+}
+
+export interface MaintenanceReadinessEntry {
+  status: string;
+  scope: string;
+  updatedAt: string;
+  sourceRevision?: number;
+  fixedCount: number;
+  skippedCount: number;
+  failedCount: number;
+  remainingDebtCount: number;
+  blockerCount: number;
+  blockers: ReadinessIssueSummary[];
+}
+
+export interface ReadinessResult {
+  kind: "readiness";
+  threadId: string;
+  overallStatus: "ready" | "prepare_recommended" | "blocked";
+  compactModeRecommendation: "strict" | "prepare";
+  turnState: string;
+  tokenCounting?: ReadinessEntry;
+  projection: ProjectionReadinessResult;
+  maintenance: Partial<{
+    background: MaintenanceReadinessEntry;
+    manualRepair: MaintenanceReadinessEntry;
+    prepare: MaintenanceReadinessEntry;
+  }>;
   warnings: string[];
 }
 

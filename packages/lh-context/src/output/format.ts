@@ -1,6 +1,13 @@
 import { basename } from "node:path";
 
-import type { BandDetail, BandsResult, PostCompactReportResult, SummaryResult, TokensResult } from "../types/public.js";
+import type {
+  BandDetail,
+  BandsResult,
+  PostCompactReportResult,
+  ReadinessResult,
+  SummaryResult,
+  TokensResult,
+} from "../types/public.js";
 
 export function formatJson(value: unknown): string {
   return `${JSON.stringify(value, null, 2)}\n`;
@@ -80,6 +87,26 @@ export function formatBandsHuman(r: BandsResult): string {
   return [...lines, ...warnings(r.warnings)].join("\n") + "\n";
 }
 
+export function formatReadinessHuman(r: ReadinessResult): string {
+  const lines = [
+    `PI Long Horizon readiness inspection`,
+    `Thread: ${r.threadId}`,
+    `Overall: ${r.overallStatus}  recommendedCompactMode=${r.compactModeRecommendation}`,
+    `Turn state: ${r.turnState}`,
+    `Token counting: ${formatReadinessEntry(r.tokenCounting)}`,
+    `Projection: ${r.projection.status}  current=${r.projection.currentGeneratedFilePath ?? "none"}  issues=${r.projection.issueCount}`,
+  ];
+
+  for (const name of ["background", "manualRepair", "prepare"] as const) {
+    const entry = r.maintenance[name];
+    lines.push(
+      `Maintenance ${name}: status=${entry?.status ?? "unknown"} scope=${entry?.scope ?? "unknown"} fixed=${entry?.fixedCount ?? 0} skipped=${entry?.skippedCount ?? 0} failed=${entry?.failedCount ?? 0} remainingDebt=${entry?.remainingDebtCount ?? 0}`,
+    );
+  }
+
+  return [...lines, ...warnings(r.warnings)].join("\n") + "\n";
+}
+
 function formatReportBandLine(band: string, detail: BandDetail): string {
   const parts = [`  ${band}:`];
   if (detail.turns.count > 0) parts.push(`${detail.turns.count} turns${formatTurnRange(detail.turns.range)}`);
@@ -108,6 +135,14 @@ function kv(record: Record<string, number>): string {
 
 function warnings(items: string[]): string[] {
   return items.length ? [`Warnings:`, ...items.map((w) => `  - ${w}`)] : [];
+}
+
+function formatReadinessEntry(entry: ReadinessResult["tokenCounting"]): string {
+  if (!entry) {
+    return "unknown";
+  }
+
+  return `${entry.status ?? "unknown"} issues=${entry.issueCount}`;
 }
 
 function formatTurnRange(range: BandsResult["bands"]["full_fidelity"]["turns"]["range"]): string {

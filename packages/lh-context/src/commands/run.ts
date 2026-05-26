@@ -2,6 +2,7 @@ import { LhxError } from "../errors/errors.js";
 import type { InspectInput } from "../types/public.js";
 import { runBandsCommand } from "./bands.js";
 import { HELP_TEXT } from "./help.js";
+import { runReadinessCommand } from "./readiness.js";
 import { runPostCompactReportCommand } from "./report.js";
 import { runSummaryCommand } from "./summary.js";
 import { runTokensCommand } from "./tokens.js";
@@ -18,6 +19,7 @@ export async function runCli(argv: string[]): Promise<CliResult> {
     if (command === "summary") return { exitCode: 0, stdout: await runSummaryCommand(input, json), stderr: "" };
     if (command === "tokens") return { exitCode: 0, stdout: await runTokensCommand(input, json), stderr: "" };
     if (command === "bands") return { exitCode: 0, stdout: await runBandsCommand(input, json), stderr: "" };
+    if (command === "readiness") return { exitCode: 0, stdout: await runReadinessCommand(input, json), stderr: "" };
     return { exitCode: 1, stdout: HELP_TEXT, stderr: `Unknown command: ${command}\n` };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -53,6 +55,10 @@ async function runInspect(args: string[]): Promise<CliResult> {
     const { input, json } = parseOptions(rest);
     return { exitCode: 0, stdout: await runBandsCommand(input, json), stderr: "" };
   }
+  if (subcommand === "readiness") {
+    const { input, json } = parseOptions(rest);
+    return { exitCode: 0, stdout: await runReadinessCommand(input, json), stderr: "" };
+  }
   if (subcommand === "report") {
     const [reportName, ...reportRest] = rest;
     if (reportName === "post-compact") {
@@ -76,6 +82,12 @@ function parseOptions(args: string[]): { input: InspectInput; json: boolean } {
     else if (arg === "--thread") input.threadId = next;
     else if (arg === "--thread-dir") input.threadDir = next;
     else if (arg === "--thread-view") input.threadViewPath = next;
+    else if (arg === "--backing") {
+      if (next !== "auto" && next !== "file" && next !== "sqlite") {
+        throw new LhxError(`Unknown backing mode: ${next}`, "BAD_ARGS");
+      }
+      input.backing = next;
+    }
     else throw new LhxError(`Unknown option: ${arg}`, "BAD_ARGS");
   }
   return { input, json };
