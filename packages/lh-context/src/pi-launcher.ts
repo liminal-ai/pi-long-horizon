@@ -16,7 +16,7 @@ export interface BuildPiLaunchPlanOptions {
   extensionPaths?: string[];
 }
 
-export const PI_LH_HELP_TEXT = `pi-lh - launch PI with the Long Horizon extension\n\nUsage:\n  pi-lh [pi args...]\n\nBehavior:\n  - runs PI from the current working directory\n  - loads the packaged Long Horizon PI extensions\n  - disables PI auto extension discovery to avoid duplicate registrations\n  - enables hosted Codex web search for supported GPT models\n  - sets PI_CODING_AGENT_DIR=<cwd>/.pi/agent for project-local PI state\n  - passes non-help args through to PI\n`;
+export const PI_LH_HELP_TEXT = `pi-lh - launch PI with the Long Horizon extension\n\nUsage:\n  pi-lh [pi args...]\n\nBehavior:\n  - runs PI from the current working directory\n  - loads the packaged Long Horizon PI extensions\n  - disables PI auto extension discovery to avoid duplicate registrations\n  - enables hosted Codex web search for supported GPT models\n  - uses PI's default agent directory unless PI_CODING_AGENT_DIR is already set\n  - passes non-help args through to PI\n`;
 
 export function isLauncherHelpRequest(argv: string[]): boolean {
   return argv.includes("--help") || argv.includes("-h");
@@ -50,11 +50,16 @@ export function buildPiLaunchPlan(options: BuildPiLaunchPlanOptions): PiLaunchPl
 
   return {
     command: process.execPath,
-    args: [piCliPath, "--no-extensions", ...extensionArgs(extensionPaths), "--codex-web-search", ...options.argv],
+    args: [
+      piCliPath,
+      "--no-extensions",
+      ...extensionArgs(extensionPaths),
+      "--codex-web-search",
+      ...options.argv,
+    ],
     cwd,
     env: {
       ...(options.env ?? process.env),
-      PI_CODING_AGENT_DIR: join(cwd, ".pi", "agent"),
     },
   };
 }

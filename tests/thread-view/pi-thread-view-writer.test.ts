@@ -435,6 +435,59 @@ test("assistant tool calls without real IDs fail fast", async () => {
   });
 });
 
+test("assistant reasoning parts are omitted from generated PI replay entries", async () => {
+  await withTempFeature3Store(async (context) => {
+    const file = makePiThreadViewFile({
+      threadId: "thread-reasoning-omitted",
+      threadViewId: "thread-view-reasoning-omitted",
+      entries: [
+        {
+          entryType: "message",
+          role: "assistant",
+          content: {
+            parts: [
+              {
+                partType: "reasoning",
+                content: "private reasoning must not replay as generated text",
+              },
+              {
+                partType: "text",
+                content: "Visible answer survives.",
+              },
+            ],
+          },
+          generatedSource: "raw_turn_message",
+        },
+      ],
+      entryCount: 1,
+    });
+
+    const result = await writePiThreadViewFile(
+      { threadId: file.threadId, threadViewId: file.threadViewId, file },
+      { pathResolver: createPathResolver(context), now: () => new Date("2026-01-01T00:00:00.000Z") },
+    );
+
+    const lines = await readJsonLines(result.generatedFilePath);
+    const messageEntry = lines[2] as {
+      message: {
+        content: Array<{ type: string; text?: string; thinking?: string }>;
+      };
+    };
+    const sessionContext = buildSessionContext(lines.slice(1) as SessionEntry[]);
+    const assistantMessage = sessionContext.messages.find((message) => message.role === "assistant");
+
+    assert.deepEqual(messageEntry.message.content.map((block) => block.type), ["text"]);
+    assert.equal(messageEntry.message.content[0]?.text, "Visible answer survives.");
+    assert.equal(JSON.stringify(lines).includes("private reasoning must not replay"), false);
+    assert.deepEqual(
+      Array.isArray(assistantMessage?.content)
+        ? assistantMessage.content.map((block) => block.type)
+        : [],
+      ["text"],
+    );
+  });
+});
+
 test("model and thinking settings serialize before message entries and restore without defaults", async () => {
   await withTempFeature3Store(async (context) => {
     const file = makePiThreadViewFile({

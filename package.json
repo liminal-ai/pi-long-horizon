@@ -4,12 +4,15 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "agent": "PI_CODING_AGENT_DIR=.pi/agent pi --no-extensions --extension ./.pi/extensions/context-steward.ts --extension ./src/pi-extensions/codex-fast.ts --extension ./src/pi-extensions/codex-web-search.ts --codex-web-search --provider openai-codex --models openai-codex/gpt-5.4:high,openai-codex/gpt-5.4-mini:xhigh,openai-codex/gpt-5.5:medium,openai-codex/gpt-5.5:low,openai-codex/gpt-5.5:high",
-    "agent:print": "PI_CODING_AGENT_DIR=.pi/agent pi --no-extensions --extension ./.pi/extensions/context-steward.ts --extension ./src/pi-extensions/codex-fast.ts --extension ./src/pi-extensions/codex-web-search.ts --codex-web-search -p --provider openai-codex --models openai-codex/gpt-5.4:high,openai-codex/gpt-5.4-mini:xhigh,openai-codex/gpt-5.5:medium,openai-codex/gpt-5.5:low,openai-codex/gpt-5.5:high",
+    "agent": "pi-lh",
+    "agent:print": "pi-lh -p",
+    "lhx": "tsx packages/lh-context/src/cli.ts",
     "login": "PI_CODING_AGENT_DIR=.pi/agent tsx src/login-chatgpt.ts",
     "login:openai": "node scripts/login-openai-api-key.mjs",
+    "login:anthropic": "node scripts/login-anthropic-api-key.mjs",
     "poc:login:openrouter": "node scripts/login-openrouter-api-key.mjs",
     "models": "tsx src/list-models.ts",
+    "migrate:sqlite": "tsx scripts/migrate-thread-sqlite.ts",
     "smoke:openai-token-count": "tsx scripts/smoke-openai-input-token-count.ts",
     "poc:smoke:openrouter-user-prompt": "tsx scripts/smoke-openrouter-user-prompt-smoothing.ts",
     "poc:smoke:openrouter-ping": "tsx scripts/openrouter-ping.ts",
@@ -23,9 +26,9 @@
     "guard:no-test-changes": "node scripts/guard-no-test-changes.mjs"
   },
   "dependencies": {
-    "@earendil-works/pi-agent-core": "0.75.3",
-    "@earendil-works/pi-ai": "0.75.3",
-    "@earendil-works/pi-coding-agent": "0.75.3",
+    "@earendil-works/pi-agent-core": "^0.76.0",
+    "@earendil-works/pi-ai": "^0.76.0",
+    "@earendil-works/pi-coding-agent": "^0.76.0",
     "better-sqlite3": "^12.10.0"
   },
   "devDependencies": {

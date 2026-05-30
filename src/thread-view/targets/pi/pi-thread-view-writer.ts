@@ -6,7 +6,6 @@ import type {
   AssistantMessage,
   ImageContent,
   TextContent,
-  ThinkingContent,
   ToolCall,
   ToolResultMessage,
   Usage,
@@ -177,7 +176,7 @@ function extractToolCallId(partContent: unknown, fallback?: unknown): string | u
   return typeof fallback === "string" && fallback.length > 0 ? fallback : undefined;
 }
 
-function toAssistantBlocks(entry: PiThreadViewEntry): Array<TextContent | ThinkingContent | ToolCall> {
+function toAssistantBlocks(entry: PiThreadViewEntry): Array<TextContent | ToolCall> {
   const content = entry.content;
   if (typeof content === "string") {
     return [{ type: "text", text: content }];
@@ -188,7 +187,7 @@ function toAssistantBlocks(entry: PiThreadViewEntry): Array<TextContent | Thinki
     return [{ type: "text", text: JSON.stringify(content) }];
   }
 
-  return parts.map((part, index) => {
+  return parts.flatMap((part): Array<TextContent | ToolCall> => {
     const partType = typeof part.partType === "string" ? part.partType : "text";
     const partContent = part.content;
     const text =
@@ -199,11 +198,7 @@ function toAssistantBlocks(entry: PiThreadViewEntry): Array<TextContent | Thinki
           : JSON.stringify(partContent);
 
     if (partType === "reasoning") {
-      return {
-        type: "thinking",
-        thinking: text,
-        thinkingSignature: `generated-thinking-${index + 1}`,
-      } satisfies ThinkingContent;
+      return [];
     }
 
     if (partType === "tool_call" && partContent && typeof partContent === "object") {
@@ -223,18 +218,18 @@ function toAssistantBlocks(entry: PiThreadViewEntry): Array<TextContent | Thinki
         throw new Error("Assistant tool_call part is missing a tool call ID.");
       }
 
-      return {
+      return [{
         type: "toolCall",
         id: toolCallId,
         name: toolName,
         arguments: toolArguments,
-      } satisfies ToolCall;
+      } satisfies ToolCall];
     }
 
-    return {
+    return [{
       type: "text",
       text,
-    } satisfies TextContent;
+    } satisfies TextContent];
   });
 }
 

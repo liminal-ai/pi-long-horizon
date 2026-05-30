@@ -1,0 +1,19 @@
+{"timestamp":"2026-05-26T09:59:22.787Z","command":"story-verify","phase":"verifier-initial","event":"command-started","summary":"story-verify started."}
+{"timestamp":"2026-05-26T09:59:22.796Z","command":"story-verify","phase":"verifier-initial","event":"verifier-started","summary":"Story verifier started for 06-legacy-file-store-retirement."}
+{"timestamp":"2026-05-26T09:59:22.806Z","command":"story-verify","phase":"verifier-initial","event":"provider-spawned","summary":"Provider spawned with pid 62085.","metadata":{"pid":62085}}
+{"timestamp":"2026-05-26T09:59:22.900Z","command":"story-verify","phase":"verifier-initial","event":"first-output-received","summary":"First provider stderr output received.","metadata":{"stream":"stderr"}}
+{"timestamp":"2026-05-26T09:59:55.119Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-26T10:00:26.017Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-26T10:00:56.884Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-26T10:01:28.607Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-26T10:01:59.543Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-26T10:02:49.195Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-26T10:04:11.267Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stderr output continues.","metadata":{"stream":"stderr"}}
+{"timestamp":"2026-05-26T10:05:02.851Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-26T10:07:43.185Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-26T10:08:18.528Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-26T10:09:06.352Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-26T10:10:28.040Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-26T10:10:28.143Z","command":"story-verify","phase":"verifier-initial","event":"provider-exit","summary":"Provider exited with code 0.","metadata":{"exitCode":0,"signal":null,"elapsedMs":665338,"configuredTimeoutMs":3600000}}
+{"timestamp":"2026-05-26T10:10:28.147Z","command":"story-verify","phase":"verifier-initial","event":"verifier-completed","summary":"Story verifier completed for 06-legacy-file-store-retirement.","metadata":{"outcome":"block"}}
+{"timestamp":"2026-05-26T10:10:28.164Z","command":"story-verify","phase":"finalizing","event":"completed","summary":"story-verify completed for 06-legacy-file-store-retirement with outcome block.","metadata":{"outcome":"block","verifiersCompleted":1}}

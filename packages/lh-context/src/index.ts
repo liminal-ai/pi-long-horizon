@@ -1,6 +1,13 @@
 export { inspectBands, inspectReadiness, inspectSummary, inspectTokens } from "./core/inspectors.js";
 export { inspectPostCompactReport } from "./core/reports.js";
 export {
+  AmbiguousThreadCatalogReferenceError,
+  defaultThreadCatalogPath,
+  ThreadCatalog,
+  ThreadCatalogError,
+  ThreadCatalogNotFoundError,
+} from "./threads/catalog.js";
+export {
   formatBandsHuman,
   formatJson,
   formatPostCompactReportHuman,
@@ -25,3 +32,13 @@ export type {
   TokenScaleEntry,
   TokensResult,
 } from "./types/public.js";
+export type {
+  CatalogNameSource,
+  CatalogObservationSource,
+  CatalogObservationStatus,
+  GenerateThreadResumeCommandOptions,
+  ThreadCatalogOptions,
+  ThreadCatalogRow,
+  ThreadResumeCommand,
+  UpsertThreadCatalogInput,
+} from "./threads/catalog.js";

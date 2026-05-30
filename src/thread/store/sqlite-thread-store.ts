@@ -281,11 +281,12 @@ function mergeChunkRowDerivedState(current: ChunkState, incoming: ChunkState): C
 }
 
 function sqliteStoreUnavailableIssue(error: unknown, context: string, threadId?: string): StewardIssue {
+  const cause = error instanceof Error ? error.message : String(error);
   return {
     code: "SQLITE_STORE_UNAVAILABLE",
-    message: `${context} failed.`,
+    message: `${context} failed${cause ? `: ${cause}` : ""}.`,
     threadId,
-    cause: error instanceof Error ? error.message : String(error),
+    cause,
   };
 }
 
@@ -932,6 +933,10 @@ export class SqliteThreadStore implements ThreadStore {
     this.fixturesDelegate = new FileThreadStore(rootDir);
     this.indexPath = join(rootDir, "index.json");
     this.threadIdMapPath = join(rootDir, "threadId-map.json");
+  }
+
+  resolveThreadDbPath(threadId: string): string {
+    return resolveThreadSqlitePath(this.rootDir, threadId);
   }
 
   async createThread(input: CreateThreadInput): Promise<StewardResult<ThreadRecord>> {

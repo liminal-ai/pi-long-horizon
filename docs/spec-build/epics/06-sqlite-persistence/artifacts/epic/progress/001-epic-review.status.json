@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "command": "epic-review",
+  "status": "completed",
+  "phase": "finalizing",
+  "startedAt": "2026-05-26T10:44:23.959Z",
+  "updatedAt": "2026-05-26T10:57:06.450Z",
+  "lastOutputAt": "2026-05-26T10:57:06.360Z",
+  "providerLiveness": "completed",
+  "provider": "codex",
+  "pid": 99260,
+  "cwd": "/Users/leemoore/code/pi-long-horizon",
+  "timeoutMs": 3600000,
+  "configuredStartupTimeoutMs": 300000,
+  "configuredSilenceTimeoutMs": 600000,
+  "artifactPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/06-sqlite-persistence/artifacts/epic/001-epic-review.json",
+  "streamPaths": {
+    "stdoutPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/06-sqlite-persistence/artifacts/epic/streams/001-epic-review.stdout.log",
+    "stderrPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/06-sqlite-persistence/artifacts/epic/streams/001-epic-review.stderr.log"
+  },
+  "progressPaths": {
+    "statusPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/06-sqlite-persistence/artifacts/epic/progress/001-epic-review.status.json",
+    "progressPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/06-sqlite-persistence/artifacts/epic/progress/001-epic-review.progress.jsonl"
+  },
+  "lastEvent": "completed",
+  "lastEventSummary": "epic-review completed with outcome revise.",
+  "verifiersCompleted": 2,
+  "verifiersPlanned": 2,
+  "verifierLanes": [
+    {
+      "label": "epic-reviewer-1",
+      "provider": "codex",
+      "state": "completed",
+      "providerLiveness": "completed",
+      "lastOutputAt": "2026-05-26T10:51:50.726Z",
+      "lastEvent": "verifier-completed",
+      "lastEventSummary": "epic-reviewer-1 completed for epic review."
+    },
+    {
+      "label": "epic-reviewer-2",
+      "provider": "codex",
+      "state": "completed",
+      "providerLiveness": "completed",
+      "lastOutputAt": "2026-05-26T10:48:37.067Z",
+      "lastEvent": "verifier-completed",
+      "lastEventSummary": "epic-reviewer-2 completed for epic review."
+    }
+  ]
+}

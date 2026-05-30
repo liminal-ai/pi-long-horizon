@@ -3,7 +3,11 @@ import { readFile } from "node:fs/promises";
 import { basename } from "node:path";
 import test from "node:test";
 
-import { isOpenAIInputTokenCountProvider, runSmartCompact } from "../../src/commands/smart-compact.js";
+import {
+  isOpenAIInputTokenCountProvider,
+  resolveOpenAIInputTokenCountModel,
+  runSmartCompact,
+} from "../../src/commands/smart-compact.js";
 import { createPiCliHarnessAdapter } from "../../src/harness-adapter/pi-cli-ha/pi-cli-ha.js";
 import { OpenAIInputTokenCounter, type TokenCountRecord } from "../../src/token-accounting/index.js";
 import { withTempFeature3Store } from "../../src/thread-view/test/fixtures.js";
@@ -40,6 +44,14 @@ test("openai-codex provider is eligible for OpenAI input token counting", () => 
   assert.equal(isOpenAIInputTokenCountProvider("openai-codex"), true);
   assert.equal(isOpenAIInputTokenCountProvider("anthropic"), false);
   assert.equal(isOpenAIInputTokenCountProvider(undefined), false);
+});
+
+test("Anthropic models use the OpenAI proxy token counter model", () => {
+  assert.equal(resolveOpenAIInputTokenCountModel({ provider: "openai", modelId: "gpt-5.5" }), "gpt-5.5");
+  assert.equal(resolveOpenAIInputTokenCountModel({ provider: "openai-codex", modelId: "gpt-5.4" }), "gpt-5.4");
+  assert.equal(resolveOpenAIInputTokenCountModel({ provider: "anthropic", modelId: "claude-opus-4-6" }), "gpt-5.5");
+  assert.equal(resolveOpenAIInputTokenCountModel({ provider: "anthropic-dario", modelId: "claude-opus-4-7" }), "gpt-5.5");
+  assert.equal(resolveOpenAIInputTokenCountModel({ provider: "unknown", modelId: "x" }), undefined);
 });
 
 function createRetryingGeneratedSessionCounter(counts: number[]): OpenAIInputTokenCounter {

@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "command": "epic-reverify",
+  "status": "completed",
+  "phase": "finalizing",
+  "startedAt": "2026-05-26T11:41:09.444Z",
+  "updatedAt": "2026-05-26T11:45:03.461Z",
+  "lastOutputAt": "2026-05-26T11:45:03.395Z",
+  "providerLiveness": "completed",
+  "provider": "codex",
+  "pid": 30404,
+  "cwd": "/Users/leemoore/code/pi-long-horizon",
+  "timeoutMs": 3600000,
+  "configuredStartupTimeoutMs": 300000,
+  "configuredSilenceTimeoutMs": 600000,
+  "artifactPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/06-sqlite-persistence/artifacts/epic/003-epic-reverify.json",
+  "streamPaths": {
+    "stdoutPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/06-sqlite-persistence/artifacts/epic/streams/003-epic-reverify.stdout.log",
+    "stderrPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/06-sqlite-persistence/artifacts/epic/streams/003-epic-reverify.stderr.log"
+  },
+  "progressPaths": {
+    "statusPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/06-sqlite-persistence/artifacts/epic/progress/003-epic-reverify.status.json",
+    "progressPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/06-sqlite-persistence/artifacts/epic/progress/003-epic-reverify.progress.jsonl"
+  },
+  "lastEvent": "completed",
+  "lastEventSummary": "epic-reverify completed with outcome needs-fixes."
+}

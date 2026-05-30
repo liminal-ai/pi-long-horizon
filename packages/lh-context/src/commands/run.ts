@@ -5,16 +5,19 @@ import { HELP_TEXT } from "./help.js";
 import { runReadinessCommand } from "./readiness.js";
 import { runPostCompactReportCommand } from "./report.js";
 import { runSummaryCommand } from "./summary.js";
+import { runThreadsCommand } from "./threads.js";
 import { runTokensCommand } from "./tokens.js";
 
 export interface CliResult { exitCode: number; stdout: string; stderr: string }
 
 export async function runCli(argv: string[]): Promise<CliResult> {
   const wantsJson = argv.includes("--json");
-  if (argv.length === 0 || argv.includes("--help") || argv.includes("-h")) return { exitCode: 0, stdout: HELP_TEXT, stderr: "" };
+  if (argv.length === 0) return { exitCode: 0, stdout: HELP_TEXT, stderr: "" };
   const [command, ...rest] = argv;
   try {
     if (command === "inspect") return await runInspect(rest);
+    if (command === "threads") return await runThreadsCommand(rest);
+    if (argv.includes("--help") || argv.includes("-h")) return { exitCode: 0, stdout: HELP_TEXT, stderr: "" };
     const { input, json } = parseOptions(rest);
     if (command === "summary") return { exitCode: 0, stdout: await runSummaryCommand(input, json), stderr: "" };
     if (command === "tokens") return { exitCode: 0, stdout: await runTokensCommand(input, json), stderr: "" };

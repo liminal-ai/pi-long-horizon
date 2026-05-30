@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "command": "story-implement",
+  "status": "completed",
+  "phase": "finalizing",
+  "startedAt": "2026-05-26T05:58:39.469Z",
+  "updatedAt": "2026-05-26T06:51:54.087Z",
+  "lastOutputAt": "2026-05-26T06:51:53.994Z",
+  "providerLiveness": "completed",
+  "provider": "codex",
+  "pid": 31761,
+  "cwd": "/Users/leemoore/code/pi-long-horizon",
+  "timeoutMs": 7200000,
+  "configuredStartupTimeoutMs": 300000,
+  "configuredSilenceTimeoutMs": 600000,
+  "artifactPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/06-sqlite-persistence/artifacts/03-derived-maintenance-row-level-adaptation/003-implementor.json",
+  "streamPaths": {
+    "stdoutPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/06-sqlite-persistence/artifacts/03-derived-maintenance-row-level-adaptation/streams/003-implementor.stdout.log",
+    "stderrPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/06-sqlite-persistence/artifacts/03-derived-maintenance-row-level-adaptation/streams/003-implementor.stderr.log"
+  },
+  "progressPaths": {
+    "statusPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/06-sqlite-persistence/artifacts/03-derived-maintenance-row-level-adaptation/progress/003-implementor.status.json",
+    "progressPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/06-sqlite-persistence/artifacts/03-derived-maintenance-row-level-adaptation/progress/003-implementor.progress.jsonl"
+  },
+  "lastEvent": "completed",
+  "lastEventSummary": "story-implement completed for 03-derived-maintenance-row-level-adaptation with outcome ready-for-verification.",
+  "selfReviewPassesCompleted": 0,
+  "selfReviewPassesPlanned": 0
+}

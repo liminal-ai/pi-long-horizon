@@ -28,6 +28,18 @@ try {
     onPrompt: async (prompt) => {
       return rl.question(`${prompt.message} `);
     },
+    onDeviceCode: ({ userCode, verificationUri }) => {
+      console.log(`Open ${verificationUri} and enter code ${userCode}`);
+      openBrowser(verificationUri);
+    },
+    onSelect: async (prompt) => {
+      console.log(prompt.message);
+      for (const option of prompt.options) {
+        console.log(`${option.id}: ${option.label}`);
+      }
+      const selected = await rl.question("Select option id: ");
+      return selected.trim() || undefined;
+    },
   });
 
   console.log("ChatGPT Codex OAuth saved for provider: openai-codex");

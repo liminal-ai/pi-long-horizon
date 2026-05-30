@@ -1,0 +1,16 @@
+{"timestamp":"2026-05-26T08:28:56.170Z","command":"story-verify","phase":"verifier-initial","event":"command-started","summary":"story-verify started."}
+{"timestamp":"2026-05-26T08:28:56.178Z","command":"story-verify","phase":"verifier-initial","event":"verifier-started","summary":"Story verifier started for 04-smart-compact-snapshot-and-rollout-regeneration."}
+{"timestamp":"2026-05-26T08:28:56.187Z","command":"story-verify","phase":"verifier-initial","event":"provider-spawned","summary":"Provider spawned with pid 3450.","metadata":{"pid":3450}}
+{"timestamp":"2026-05-26T08:28:56.284Z","command":"story-verify","phase":"verifier-initial","event":"first-output-received","summary":"First provider stderr output received.","metadata":{"stream":"stderr"}}
+{"timestamp":"2026-05-26T08:29:32.918Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-26T08:30:11.406Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-26T08:30:52.276Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-26T08:31:32.990Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-26T08:33:50.534Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stderr output continues.","metadata":{"stream":"stderr"}}
+{"timestamp":"2026-05-26T08:34:22.994Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-26T08:34:53.165Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-26T08:35:28.177Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-26T08:37:21.087Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-05-26T08:37:21.178Z","command":"story-verify","phase":"verifier-initial","event":"provider-exit","summary":"Provider exited with code 0.","metadata":{"exitCode":0,"signal":null,"elapsedMs":504991,"configuredTimeoutMs":3600000}}
+{"timestamp":"2026-05-26T08:37:21.182Z","command":"story-verify","phase":"verifier-initial","event":"verifier-completed","summary":"Story verifier completed for 04-smart-compact-snapshot-and-rollout-regeneration.","metadata":{"outcome":"revise"}}
+{"timestamp":"2026-05-26T08:37:21.198Z","command":"story-verify","phase":"finalizing","event":"completed","summary":"story-verify completed for 04-smart-compact-snapshot-and-rollout-regeneration with outcome revise.","metadata":{"outcome":"revise","verifiersCompleted":1}}

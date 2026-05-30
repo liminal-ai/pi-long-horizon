@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "command": "epic-fix",
+  "status": "completed",
+  "phase": "finalizing",
+  "startedAt": "2026-05-26T10:58:09.204Z",
+  "updatedAt": "2026-05-26T11:11:29.097Z",
+  "lastOutputAt": "2026-05-26T11:11:28.977Z",
+  "providerLiveness": "completed",
+  "provider": "codex",
+  "pid": 4418,
+  "cwd": "/Users/leemoore/code/pi-long-horizon",
+  "timeoutMs": 3600000,
+  "configuredStartupTimeoutMs": 300000,
+  "configuredSilenceTimeoutMs": 480000,
+  "artifactPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/06-sqlite-persistence/artifacts/fix/001-fix-result.json",
+  "streamPaths": {
+    "stdoutPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/06-sqlite-persistence/artifacts/fix/streams/001-fix-result.stdout.log",
+    "stderrPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/06-sqlite-persistence/artifacts/fix/streams/001-fix-result.stderr.log"
+  },
+  "progressPaths": {
+    "statusPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/06-sqlite-persistence/artifacts/fix/progress/001-fix-result.status.json",
+    "progressPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/06-sqlite-persistence/artifacts/fix/progress/001-fix-result.progress.jsonl"
+  },
+  "lastEvent": "completed",
+  "lastEventSummary": "epic-fix completed with outcome needs-more-fix."
+}

@@ -78,8 +78,23 @@ function countDegradedSmoothingIssues(issues: readonly { code: string }[]): numb
   return issues.filter((issue) => issue.code === "SMOOTH_DEGRADED").length;
 }
 
+export const OPENAI_PROXY_TOKEN_COUNT_MODEL = "gpt-5.5" as const;
+
 export function isOpenAIInputTokenCountProvider(provider: string | undefined): boolean {
   return provider === "openai" || provider === "openai-codex";
+}
+
+export function resolveOpenAIInputTokenCountModel(input: {
+  provider?: string;
+  modelId?: string;
+}): string | undefined {
+  if (isOpenAIInputTokenCountProvider(input.provider)) {
+    return input.modelId;
+  }
+  if (input.provider === "anthropic" || input.provider === "anthropic-dario") {
+    return OPENAI_PROXY_TOKEN_COUNT_MODEL;
+  }
+  return undefined;
 }
 
 function buildGeneratedOutputMetadata(input: {
@@ -255,7 +270,7 @@ async function countFinalGeneratedSessionUntilUnderTarget(input: {
           threadViewId: input.threadViewId,
           file: piFile,
         },
-        model: isOpenAIInputTokenCountProvider(piFile.modelProvider) ? piFile.modelId : undefined,
+        model: resolveOpenAIInputTokenCountModel({ provider: piFile.modelProvider, modelId: piFile.modelId }),
         createdAt: input.writeTimestamp,
         sourceRevision: input.sourceRevision,
         now: () => new Date(input.writeTimestamp),
@@ -384,20 +399,18 @@ export async function runSmartCompact(
     threadId: input.threadId,
     expectedSourceRevision: leaseRevision.expectedSourceRevision,
   });
+  const resolvedTokenCountModel = resolveOpenAIInputTokenCountModel({
+    provider: input.modelProvider,
+    modelId: input.modelId,
+  });
   const openAIInputTokenCounterForReadiness =
     dependencies.openAIInputTokenCounter ??
     dependencies.asyncThreadDependencies?.openAIInputTokenCounter ??
-    (isOpenAIInputTokenCountProvider(input.modelProvider) && input.modelId
-      ? new OpenAIInputTokenCounter(undefined, input.modelId)
-      : undefined);
+    (resolvedTokenCountModel ? new OpenAIInputTokenCounter(undefined, resolvedTokenCountModel) : undefined);
   const openAIInputTokenCounterForFinalCount =
     dependencies.openAIInputTokenCounter ??
-    (isOpenAIInputTokenCountProvider(input.modelProvider) && input.modelId
-      ? new OpenAIInputTokenCounter(undefined, input.modelId)
-      : undefined);
-  const tokenCountModel =
-    dependencies.asyncThreadDependencies?.tokenCountModel ??
-    (isOpenAIInputTokenCountProvider(input.modelProvider) ? input.modelId : undefined);
+    (resolvedTokenCountModel ? new OpenAIInputTokenCounter(undefined, resolvedTokenCountModel) : undefined);
+  const tokenCountModel = dependencies.asyncThreadDependencies?.tokenCountModel ?? resolvedTokenCountModel;
 
   try {
     const readiness = await prepareAsyncThread(

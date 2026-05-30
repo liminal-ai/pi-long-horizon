@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "command": "story-verify",
+  "status": "completed",
+  "phase": "finalizing",
+  "startedAt": "2026-05-26T03:20:55.171Z",
+  "updatedAt": "2026-05-26T03:31:13.827Z",
+  "lastOutputAt": "2026-05-26T03:31:13.697Z",
+  "providerLiveness": "completed",
+  "provider": "codex",
+  "pid": 43887,
+  "cwd": "/Users/leemoore/code/pi-long-horizon",
+  "timeoutMs": 3600000,
+  "configuredStartupTimeoutMs": 300000,
+  "configuredSilenceTimeoutMs": 360000,
+  "artifactPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/06-sqlite-persistence/artifacts/00-sqlite-store-foundation/004-verify.json",
+  "streamPaths": {
+    "stdoutPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/06-sqlite-persistence/artifacts/00-sqlite-store-foundation/streams/004-verify.stdout.log",
+    "stderrPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/06-sqlite-persistence/artifacts/00-sqlite-store-foundation/streams/004-verify.stderr.log"
+  },
+  "progressPaths": {
+    "statusPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/06-sqlite-persistence/artifacts/00-sqlite-store-foundation/progress/004-verify.status.json",
+    "progressPath": "/Users/leemoore/code/pi-long-horizon/docs/spec-build/epics/06-sqlite-persistence/artifacts/00-sqlite-store-foundation/progress/004-verify.progress.jsonl"
+  },
+  "lastEvent": "completed",
+  "lastEventSummary": "story-verify completed for 00-sqlite-store-foundation with outcome pass.",
+  "verifiersCompleted": 1,
+  "verifiersPlanned": 1
+}

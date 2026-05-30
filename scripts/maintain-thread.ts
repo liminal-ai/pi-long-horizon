@@ -1,7 +1,7 @@
 #!/usr/bin/env tsx
 import { join, resolve } from "node:path";
 
-import { FileThreadStore } from "../src/context-steward/store/file-thread-store.js";
+import { SqliteThreadStore } from "../src/context-steward/store/sqlite-thread-store.js";
 import { repairThreadMaintenance } from "../src/thread/async-thread/services/thread-maintenance-repair-service.js";
 import { PiCodexLowerBandCompressionProvider } from "../src/thread/async-thread/services/pi-codex-lower-band-compression-provider.js";
 import { OpenAIInputTokenCounter } from "../src/token-accounting/index.js";
@@ -19,7 +19,7 @@ if (!args.threadId) {
   process.stderr.write(help());
   process.exitCode = 1;
 } else {
-  const store = new FileThreadStore(join(resolve(args.root), ".context-steward"));
+  const store = new SqliteThreadStore(join(resolve(args.root), ".context-steward"));
   const result = await repairThreadMaintenance(
     { threadId: args.threadId },
     {

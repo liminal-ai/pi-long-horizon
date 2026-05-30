@@ -14,7 +14,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { join, resolve } from "node:path";
 
 import {
-  isOpenAIInputTokenCountProvider,
+  resolveOpenAIInputTokenCountModel,
   runSmartCompact,
   type SmartCompactCommandDependencies,
 } from "../../commands/smart-compact.js";
@@ -34,6 +34,7 @@ import { captureFinalizedActivity, type CaptureActivityInput } from "../services
 import { createRealSessionFixture } from "../services/fixture-service.js";
 import { attachExistingPiSession } from "../services/import-service.js";
 import { repairTurnState } from "../services/repair-service.js";
+import { ThreadCatalogRefreshScheduler } from "../services/thread-catalog-refresh-service.js";
 import { openOrCreateManagedThread } from "../services/thread-service.js";
 import { checkTurnHealth, finalizeOpenTurnOnTurnEnd, writeCapturedMessageTurns } from "../services/turn-service.js";
 import { maintainAsyncThread } from "../../thread/async-thread/services/async-thread-run-service.js";
@@ -110,6 +111,11 @@ export interface ContextStewardExtensionOptions {
     enabled?: boolean;
     provider?: UserPromptSmoothingProvider;
     logger?: UserPromptSmoothingLogger;
+  };
+  threadCatalogRefresh?: {
+    enabled?: boolean;
+    catalogDbPath?: string;
+    debounceMs?: number;
   };
 }
 
@@ -626,11 +632,15 @@ function createDefaultOpenAIInputTokenCounter(input: {
   modelProvider?: string;
   modelId?: string;
 }): SmartCompactCommandDependencies["openAIInputTokenCounter"] | undefined {
-  if (!isOpenAIInputTokenCountProvider(input.modelProvider) || !input.modelId) {
+  const tokenCountModel = resolveOpenAIInputTokenCountModel({
+    provider: input.modelProvider,
+    modelId: input.modelId,
+  });
+  if (!tokenCountModel) {
     return undefined;
   }
 
-  return new OpenAIInputTokenCounter(undefined, input.modelId);
+  return new OpenAIInputTokenCounter(undefined, tokenCountModel);
 }
 
 async function resolveManagedThreadForCommand(
@@ -1649,6 +1659,8 @@ export function registerContextStewardExtension(
     options.userPromptSmoothing?.provider ?? new PiCodexUserPromptSmoothingProvider();
   const liveTruncationOptions = options.liveToolResultTruncation ?? {};
   const liveTruncationEnabled = liveTruncationOptions.enabled !== false;
+  const threadCatalogRefreshEnabled =
+    options.threadCatalogRefresh?.enabled ?? process.env.LH_THREAD_CATALOG_REFRESH_ENABLED !== "0";
   const promptProjection = new PromptVisibleToolResultProjection(liveTruncationOptions);
   const originalToolResults = new Map<string, OriginalToolResultContent>();
   let activeThread: ThreadRecord | undefined;
@@ -1682,6 +1694,12 @@ export function registerContextStewardExtension(
       .then(() => appendFile(logPath, `${JSON.stringify(record)}\n`, "utf8"))
       .catch(() => undefined);
   }
+
+  const threadCatalogRefreshScheduler = new ThreadCatalogRefreshScheduler({
+    catalogDbPath: options.threadCatalogRefresh?.catalogDbPath,
+    debounceMs: options.threadCatalogRefresh?.debounceMs,
+    logger: logTiming,
+  });
 
   function promptProjectionScopeKeyFromContext(ctx: PiExtensionCaptureContext): string | undefined {
     try {
@@ -2193,6 +2211,7 @@ export function registerContextStewardExtension(
     let finalizeMs = 0;
     let maintenanceDelayMs = 0;
     let maintenanceScheduleMs = 0;
+    let catalogRefreshScheduleMs = 0;
     let refreshMs = 0;
     let threadId = "none";
     try {
@@ -2245,6 +2264,24 @@ export function registerContextStewardExtension(
         tokenCountModel: backgroundTokenCountModel,
       });
       maintenanceScheduleMs = Date.now() - stepStartedAt;
+
+      if (threadCatalogRefreshEnabled) {
+        stepStartedAt = Date.now();
+        const threadDbPath = store.resolveThreadDbPath?.(thread.threadId);
+        if (threadDbPath) {
+          threadCatalogRefreshScheduler.schedule({
+            threadId: thread.threadId,
+            threadDbPath,
+          });
+        } else {
+          logTiming("threadCatalogRefreshSchedule", stepStartedAt, {
+            threadId: thread.threadId,
+            result: "skipped",
+            cause: "threadDbPathUnavailable",
+          });
+        }
+        catalogRefreshScheduleMs = Date.now() - stepStartedAt;
+      }
     } finally {
       logTiming("turn_end", startedAt, {
         resolve: `${resolveMs}ms`,
@@ -2252,6 +2289,7 @@ export function registerContextStewardExtension(
         refresh: `${refreshMs}ms`,
         maintenanceDelay: `${maintenanceDelayMs}ms`,
         maintenanceSchedule: `${maintenanceScheduleMs}ms`,
+        catalogRefreshSchedule: `${catalogRefreshScheduleMs}ms`,
         threadId,
       });
     }
