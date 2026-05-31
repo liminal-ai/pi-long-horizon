@@ -9,13 +9,20 @@ export {
 } from "./threads/catalog.js";
 export {
   appendThreadEvent,
+  appendThreadEvents,
+  createThread,
   listThreadEvents,
+  listThreads,
+  readThread,
   ThreadEventStore,
+  ThreadEventStoreError,
 } from "./thread-events/store.js";
 export {
   THREAD_EVENT_SCHEMA_VERSION,
   ThreadEventValidationError,
+  decodeAppendThreadEventsInput,
   decodePersistedThreadEvent,
+  decodeThreadCreateInput,
   decodeThreadEventAppendInput,
   normalizePayload,
 } from "./thread-events/schema.js";
@@ -55,12 +62,27 @@ export type {
   UpsertThreadCatalogInput,
 } from "./threads/catalog.js";
 export type {
+  AppendThreadEventsFailure,
+  AppendThreadEventsItemResult,
+  AppendThreadEventsResult,
+  AppendThreadEventsSuccess,
   AppendThreadEventResult,
+  CreateThreadResult,
+  MessageBlockKind,
+  MessageKind,
+  MessageStatus,
+  ProjectedMessage,
+  ProjectedMessageBlock,
+  ProjectedMessageWithBlocks,
+  ProjectedThread,
+  ProjectedThreadRead,
   ThreadEventStoreOptions,
 } from "./thread-events/store.js";
 export type {
   ActorKind,
   ActorRef,
+  AppendThreadEventKind,
+  AppendThreadEventsInput,
   AssistantTextPayload,
   AssistantThinkingPayload,
   HarnessRef,
@@ -68,13 +90,15 @@ export type {
   JsonValue,
   NormalizedThreadEventAppendInput,
   PersistedThreadEvent,
+  RuntimeNotePayload,
+  SystemKind,
+  ThreadCreateInput,
+  ThreadCreatedPayload,
   ThreadEventAppendInput,
   ThreadEventKind,
   ThreadEventOrigin,
   ThreadEventPayload,
   ToolCallPayload,
   ToolResultPayload,
-  RuntimeNotePayload,
-  UnknownActivityPayload,
   UserPromptPayload,
 } from "./thread-events/schema.js";

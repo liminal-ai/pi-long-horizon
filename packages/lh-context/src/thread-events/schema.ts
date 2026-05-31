@@ -3,15 +3,25 @@ import { ParseResult, Schema } from "effect";
 export const THREAD_EVENT_SCHEMA_VERSION = "thread_event.v1" as const;
 
 export const ThreadEventKindSchema = Schema.Literal(
+  "thread_created",
   "user_prompt",
   "assistant_text",
   "assistant_thinking",
   "tool_call",
   "tool_result",
   "runtime_note",
-  "unknown_activity",
 );
 export type ThreadEventKind = Schema.Schema.Type<typeof ThreadEventKindSchema>;
+
+export const AppendThreadEventKindSchema = Schema.Literal(
+  "user_prompt",
+  "assistant_text",
+  "assistant_thinking",
+  "tool_call",
+  "tool_result",
+  "runtime_note",
+);
+export type AppendThreadEventKind = Schema.Schema.Type<typeof AppendThreadEventKindSchema>;
 
 export const ActorKindSchema = Schema.Literal("user", "assistant", "tool", "runtime", "system");
 export type ActorKind = Schema.Schema.Type<typeof ActorKindSchema>;
@@ -26,7 +36,7 @@ export const ActorRefSchema = Schema.Struct({
 export type ActorRef = Schema.Schema.Type<typeof ActorRefSchema>;
 
 export const HarnessRefSchema = Schema.Struct({
-  runtime: Schema.Literal("pi", "codex", "claude_code"),
+  runtime: Schema.Literal("pi", "codex", "claude_code", "lh_context"),
   externalThreadId: Schema.optional(Schema.String),
 });
 export type HarnessRef = Schema.Schema.Type<typeof HarnessRefSchema>;
@@ -52,14 +62,39 @@ export type JsonValue = null | boolean | number | string | readonly JsonValue[] 
 const JsonObjectSchema = Schema.Record({ key: Schema.String, value: JsonValueSchema });
 export type JsonObject = Schema.Schema.Type<typeof JsonObjectSchema>;
 
+export const SystemKindSchema = Schema.Literal(
+  "session",
+  "instruction",
+  "configuration",
+  "lifecycle",
+  "runtime_error",
+  "context_change",
+  "attachment",
+);
+export type SystemKind = Schema.Schema.Type<typeof SystemKindSchema>;
+
 const BaseAppendInputFields = {
-  threadId: NonEmptyStringSchema,
   idempotencyKey: NonEmptyStringSchema,
   actor: ActorRefSchema,
   harness: HarnessRefSchema,
   origin: Schema.optional(ThreadEventOriginSchema),
   occurredAt: Schema.optional(Schema.String),
 } as const;
+
+export const ThreadCreateInputSchema = Schema.Struct({
+  clientThreadId: Schema.optional(NonEmptyStringSchema),
+  title: Schema.optional(Schema.String),
+  harness: Schema.optional(HarnessRefSchema),
+  occurredAt: Schema.optional(Schema.String),
+});
+export type ThreadCreateInput = Schema.Schema.Type<typeof ThreadCreateInputSchema>;
+
+export const ThreadCreatedPayloadSchema = Schema.Struct({
+  _tag: Schema.Literal("thread_created"),
+  clientThreadId: NonEmptyStringSchema,
+  title: Schema.optional(Schema.String),
+});
+export type ThreadCreatedPayload = Schema.Schema.Type<typeof ThreadCreatedPayloadSchema>;
 
 const UserPromptPayloadInputSchema = Schema.Struct({
   text: Schema.String,
@@ -81,8 +116,8 @@ export const AssistantTextPayloadSchema = Schema.Struct({
 });
 export type AssistantTextPayload = Schema.Schema.Type<typeof AssistantTextPayloadSchema>;
 
-const ReasoningTextPayloadFields = {
-  thinkingKind: Schema.Literal("reasoning_text"),
+const ReasoningPayloadFields = {
+  thinkingKind: Schema.Literal("reasoning"),
   text: Schema.String,
   signature: Schema.optional(Schema.String),
 } as const;
@@ -99,22 +134,16 @@ const EncryptedReasoningPayloadFields = {
   signature: Schema.optional(Schema.String),
 } as const;
 
-const RedactedReasoningPayloadFields = {
-  thinkingKind: Schema.Literal("redacted_reasoning"),
-  signature: Schema.optional(Schema.String),
-} as const;
-
 const AssistantThinkingPayloadInputSchema = Schema.Union(
-  Schema.Struct(ReasoningTextPayloadFields),
+  Schema.Struct(ReasoningPayloadFields),
   Schema.Struct(ReasoningSummaryPayloadFields),
   Schema.Struct(EncryptedReasoningPayloadFields),
-  Schema.Struct(RedactedReasoningPayloadFields),
 );
 
 export const AssistantThinkingPayloadSchema = Schema.Union(
   Schema.Struct({
     _tag: Schema.Literal("assistant_thinking"),
-    ...ReasoningTextPayloadFields,
+    ...ReasoningPayloadFields,
   }),
   Schema.Struct({
     _tag: Schema.Literal("assistant_thinking"),
@@ -123,10 +152,6 @@ export const AssistantThinkingPayloadSchema = Schema.Union(
   Schema.Struct({
     _tag: Schema.Literal("assistant_thinking"),
     ...EncryptedReasoningPayloadFields,
-  }),
-  Schema.Struct({
-    _tag: Schema.Literal("assistant_thinking"),
-    ...RedactedReasoningPayloadFields,
   }),
 );
 export type AssistantThinkingPayload = Schema.Schema.Type<typeof AssistantThinkingPayloadSchema>;
@@ -163,34 +188,24 @@ export type ToolResultPayload = Schema.Schema.Type<typeof ToolResultPayloadSchem
 
 const RuntimeNotePayloadInputSchema = Schema.Struct({
   text: Schema.String,
-  noteKind: Schema.optional(Schema.String),
+  systemKind: Schema.optional(SystemKindSchema),
 });
 
 export const RuntimeNotePayloadSchema = Schema.Struct({
   _tag: Schema.Literal("runtime_note"),
   text: Schema.String,
-  noteKind: Schema.optional(Schema.String),
+  systemKind: Schema.optional(SystemKindSchema),
 });
 export type RuntimeNotePayload = Schema.Schema.Type<typeof RuntimeNotePayloadSchema>;
 
-const UnknownActivityPayloadInputSchema = Schema.Struct({
-  summary: Schema.optional(Schema.String),
-});
-
-export const UnknownActivityPayloadSchema = Schema.Struct({
-  _tag: Schema.Literal("unknown_activity"),
-  summary: Schema.optional(Schema.String),
-});
-export type UnknownActivityPayload = Schema.Schema.Type<typeof UnknownActivityPayloadSchema>;
-
 export const ThreadEventPayloadSchema = Schema.Union(
+  ThreadCreatedPayloadSchema,
   UserPromptPayloadSchema,
   AssistantTextPayloadSchema,
   AssistantThinkingPayloadSchema,
   ToolCallPayloadSchema,
   ToolResultPayloadSchema,
   RuntimeNotePayloadSchema,
-  UnknownActivityPayloadSchema,
 );
 export type ThreadEventPayload = Schema.Schema.Type<typeof ThreadEventPayloadSchema>;
 
@@ -225,19 +240,20 @@ export const ThreadEventAppendInputSchema = Schema.Union(
     eventKind: Schema.Literal("runtime_note"),
     payload: RuntimeNotePayloadInputSchema,
   }),
-  Schema.Struct({
-    ...BaseAppendInputFields,
-    eventKind: Schema.Literal("unknown_activity"),
-    payload: UnknownActivityPayloadInputSchema,
-  }),
 );
 export type ThreadEventAppendInput = Schema.Schema.Type<typeof ThreadEventAppendInputSchema>;
 
 const ThreadEventAppendEnvelopeSchema = Schema.Struct({
   ...BaseAppendInputFields,
-  eventKind: ThreadEventKindSchema,
+  eventKind: AppendThreadEventKindSchema,
   payload: JsonObjectSchema,
 });
+
+export const AppendThreadEventsInputSchema = Schema.Struct({
+  clientThreadId: NonEmptyStringSchema,
+  events: Schema.Array(ThreadEventAppendInputSchema),
+});
+export type AppendThreadEventsInput = Schema.Schema.Type<typeof AppendThreadEventsInputSchema>;
 
 export const PersistedThreadEventSchema = Schema.Struct({
   schemaVersion: Schema.Literal(THREAD_EVENT_SCHEMA_VERSION),
@@ -260,7 +276,7 @@ export type PersistedThreadEvent = Schema.Schema.Type<typeof PersistedThreadEven
  * carry `_tag` for discriminated decoding.
  */
 export type NormalizedThreadEventAppendInput = Omit<ThreadEventAppendInput, "payload"> & {
-  payload: ThreadEventPayload;
+  payload: Exclude<ThreadEventPayload, ThreadCreatedPayload>;
 };
 
 export class ThreadEventValidationError extends Error {
@@ -269,25 +285,35 @@ export class ThreadEventValidationError extends Error {
   }
 }
 
+export function decodeThreadCreateInput(value: unknown): ThreadCreateInput {
+  assertInputDoesNotProvideGeneratedFields(value);
+  return decodeOrThrow(ThreadCreateInputSchema, value ?? {}, "Invalid thread create input");
+}
+
+export function decodeAppendThreadEventsInput(value: unknown): AppendThreadEventsInput {
+  assertInputDoesNotProvideGeneratedFields(value);
+  return decodeOrThrow(AppendThreadEventsInputSchema, value, "Invalid thread events append input");
+}
+
 export function decodeThreadEventAppendInput(value: unknown): NormalizedThreadEventAppendInput {
-  assertAppendInputDoesNotProvideGeneratedFields(value);
+  assertInputDoesNotProvideGeneratedFields(value);
   const input = decodeOrThrow(ThreadEventAppendEnvelopeSchema, value, "Invalid thread event append input");
   return {
     ...input,
-    payload: normalizePayload(input.eventKind, input.payload),
+    payload: normalizePayload(input.eventKind, input.payload) as Exclude<ThreadEventPayload, ThreadCreatedPayload>,
   };
 }
 
-function assertAppendInputDoesNotProvideGeneratedFields(value: unknown): void {
+function assertInputDoesNotProvideGeneratedFields(value: unknown): void {
   if (!isJsonObject(value)) {
     return;
   }
 
-  const generatedFields = ["schemaVersion", "threadEventId", "eventOrder", "recordedAt"]
+  const generatedFields = ["schemaVersion", "threadEventId", "threadId", "eventOrder", "recordedAt"]
     .filter((field) => field in value);
   if (generatedFields.length > 0) {
     throw new ThreadEventValidationError(
-      `Thread event append input must not include generated field(s): ${generatedFields.join(", ")}`,
+      `Thread event input must not include generated field(s): ${generatedFields.join(", ")}`,
       value,
     );
   }
@@ -304,6 +330,8 @@ export function normalizePayload(eventKind: ThreadEventKind, payload: JsonObject
 
   const normalized = { ...payload, _tag: eventKind };
   switch (eventKind) {
+    case "thread_created":
+      return decodeOrThrow(ThreadCreatedPayloadSchema, normalized, "Invalid thread_created payload");
     case "user_prompt":
       return decodeOrThrow(UserPromptPayloadSchema, normalized, "Invalid user_prompt payload");
     case "assistant_text":
@@ -316,16 +344,10 @@ export function normalizePayload(eventKind: ThreadEventKind, payload: JsonObject
       return decodeOrThrow(ToolResultPayloadSchema, normalized, "Invalid tool_result payload");
     case "runtime_note":
       return decodeOrThrow(RuntimeNotePayloadSchema, normalized, "Invalid runtime_note payload");
-    case "unknown_activity":
-      return decodeOrThrow(UnknownActivityPayloadSchema, normalized, "Invalid unknown_activity payload");
   }
 
   const unreachable: never = eventKind;
-  return decodeOrThrow(
-    UnknownActivityPayloadSchema,
-    { _tag: "unknown_activity", summary: `Unsupported event kind: ${unreachable}` },
-    "Invalid unknown_activity payload",
-  );
+  throw new ThreadEventValidationError(`Unsupported event kind: ${unreachable}`, payload);
 }
 
 function decodeOrThrow<A, I>(schema: Schema.Schema<A, I, never>, value: unknown, message: string): A {
