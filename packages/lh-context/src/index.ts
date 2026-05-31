@@ -8,6 +8,18 @@ export {
   ThreadCatalogNotFoundError,
 } from "./threads/catalog.js";
 export {
+  appendThreadEvent,
+  listThreadEvents,
+  ThreadEventStore,
+} from "./thread-events/store.js";
+export {
+  THREAD_EVENT_SCHEMA_VERSION,
+  ThreadEventValidationError,
+  decodePersistedThreadEvent,
+  decodeThreadEventAppendInput,
+  normalizePayload,
+} from "./thread-events/schema.js";
+export {
   formatBandsHuman,
   formatJson,
   formatPostCompactReportHuman,
@@ -42,3 +54,27 @@ export type {
   ThreadResumeCommand,
   UpsertThreadCatalogInput,
 } from "./threads/catalog.js";
+export type {
+  AppendThreadEventResult,
+  ThreadEventStoreOptions,
+} from "./thread-events/store.js";
+export type {
+  ActorKind,
+  ActorRef,
+  AssistantTextPayload,
+  AssistantThinkingPayload,
+  HarnessRef,
+  JsonObject,
+  JsonValue,
+  NormalizedThreadEventAppendInput,
+  PersistedThreadEvent,
+  ThreadEventAppendInput,
+  ThreadEventKind,
+  ThreadEventOrigin,
+  ThreadEventPayload,
+  ToolCallPayload,
+  ToolResultPayload,
+  RuntimeNotePayload,
+  UnknownActivityPayload,
+  UserPromptPayload,
+} from "./thread-events/schema.js";

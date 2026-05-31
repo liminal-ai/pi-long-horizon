@@ -5,6 +5,7 @@ Read-only inspector for .context-steward thread state, token rollups, and genera
 USAGE
   lhx inspect <command> [options]
   lhx threads <command> [options]
+  lhx thread-events <command> [options]
   lhx <alias> [options]
 
 INSPECT COMMANDS
@@ -21,6 +22,10 @@ THREAD COMMANDS
   lhx threads refresh <id-or-name>                      Refresh cached facts from stored thread.sqlite path
   lhx threads refresh --all                             Refresh every known catalog row
   lhx threads resume <id-or-name>                        Print a pi-lh command for resuming a cataloged thread session
+
+THREAD EVENT COMMANDS
+  lhx thread-events append --thread-db <path> --file <event.json>  Append caller-provided event input
+  lhx thread-events list --thread-db <path> [--json]               List persisted thread events
 
 ALIASES
   summary, tokens, bands, readiness  Convenience aliases for lhx inspect summary/tokens/bands/readiness
@@ -41,6 +46,7 @@ OPTIONS
   --json                Stable structured output for agents
   --catalog-db <file>   Thread catalog SQLite path for lhx threads commands
   --thread-db <file>    Canonical thread.sqlite path for lhx threads upsert
+  --file <event.json>   Append input file for lhx thread-events append
   --name <name>         User-managed catalog name for lhx threads upsert
 
 EXAMPLES
@@ -52,4 +58,6 @@ EXAMPLES
   lhx threads upsert --thread-db .context-steward/threads/thread_abc/thread.sqlite --name "My thread"
   lhx threads list
   lhx threads resume thread_abc
+  lhx thread-events append --thread-db .context-steward/threads/thread_abc/thread.sqlite --file event.json
+  lhx thread-events list --thread-db .context-steward/threads/thread_abc/thread.sqlite --json
 `;

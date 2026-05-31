@@ -14,6 +14,8 @@ describe("CLI", () => {
     expect(result.stdout).toContain("lhx threads upsert --thread-db <path>");
     expect(result.stdout).toContain("lhx threads refresh --all");
     expect(result.stdout).toContain("lhx threads resume <id-or-name>");
+    expect(result.stdout).toContain("lhx thread-events append --thread-db <path> --file <event.json>");
+    expect(result.stdout).toContain("lhx thread-events list --thread-db <path> [--json]");
     expect(result.stdout).toContain("ALIASES");
     expect(result.stdout).toContain("--json");
     expect(result.stdout).toContain("--root");
@@ -22,6 +24,7 @@ describe("CLI", () => {
     expect(result.stdout).toContain("--thread-view");
     expect(result.stdout).toContain("--catalog-db");
     expect(result.stdout).toContain("--thread-db");
+    expect(result.stdout).toContain("--file");
   });
 
   it("prints command-specific help for threads", async () => {
@@ -32,5 +35,13 @@ describe("CLI", () => {
     expect(result.stdout).toContain("lhx threads refresh --all");
     expect(result.stdout).toContain("lhx threads resume <id-or-name>");
     expect(result.stdout).toContain("catalog-local integer ID");
+  });
+
+  it("prints command-specific help for thread events", async () => {
+    const result = await runCli(["thread-events", "--help"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("lhx thread-events - Append and list schema-backed thread events");
+    expect(result.stdout).toContain("lhx thread-events append --thread-db <path> --file <event.json>");
+    expect(result.stdout).toContain("The service generates");
   });
 });

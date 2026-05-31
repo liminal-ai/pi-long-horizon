@@ -17,9 +17,11 @@
     "poc:smoke:openrouter-user-prompt": "tsx scripts/smoke-openrouter-user-prompt-smoothing.ts",
     "poc:smoke:openrouter-ping": "tsx scripts/openrouter-ping.ts",
     "typecheck": "tsc --noEmit",
+    "typecheck:lh-context": "npm --prefix packages/lh-context run typecheck",
     "test": "node scripts/run-node-tests.mjs service",
-    "red-verify": "npm run typecheck",
-    "verify": "npm run typecheck && npm run test",
+    "test:lh-context": "npm --prefix packages/lh-context test",
+    "red-verify": "npm run typecheck && npm run typecheck:lh-context",
+    "verify": "npm run typecheck && npm run typecheck:lh-context && npm run test && npm run test:lh-context",
     "green-verify": "npm run verify && npm run guard:no-test-changes",
     "verify-all": "npm run verify && npm run test:e2e",
     "test:e2e": "node scripts/run-node-tests.mjs e2e",
@@ -29,7 +31,8 @@
     "@earendil-works/pi-agent-core": "^0.76.0",
     "@earendil-works/pi-ai": "^0.76.0",
     "@earendil-works/pi-coding-agent": "^0.76.0",
-    "better-sqlite3": "^12.10.0"
+    "better-sqlite3": "^12.10.0",
+    "effect": "^3.21.2"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",

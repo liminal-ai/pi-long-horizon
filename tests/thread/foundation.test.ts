@@ -188,7 +188,12 @@ test("verification command truth stays on verify plus verify-all without an inte
   const runner = await readFile(resolve(projectRoot, "scripts/run-node-tests.mjs"), "utf8");
 
   assert.equal(packageJson.scripts["test"], "node scripts/run-node-tests.mjs service");
-  assert.equal(packageJson.scripts["verify"], "npm run typecheck && npm run test");
+  assert.equal(packageJson.scripts["typecheck:lh-context"], "npm --prefix packages/lh-context run typecheck");
+  assert.equal(packageJson.scripts["test:lh-context"], "npm --prefix packages/lh-context test");
+  assert.equal(
+    packageJson.scripts["verify"],
+    "npm run typecheck && npm run typecheck:lh-context && npm run test && npm run test:lh-context",
+  );
   assert.equal(packageJson.scripts["verify-all"], "npm run verify && npm run test:e2e");
   assert.equal("test:integration" in packageJson.scripts, false);
   assert.match(runner, /supportedModes = new Set\(\["service", "e2e"\]\)/);

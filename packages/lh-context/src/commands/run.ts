@@ -17,6 +17,10 @@ export async function runCli(argv: string[]): Promise<CliResult> {
   try {
     if (command === "inspect") return await runInspect(rest);
     if (command === "threads") return await runThreadsCommand(rest);
+    if (command === "thread-events") {
+      const { runThreadEventsCommand } = await import("./thread-events.js");
+      return await runThreadEventsCommand(rest);
+    }
     if (argv.includes("--help") || argv.includes("-h")) return { exitCode: 0, stdout: HELP_TEXT, stderr: "" };
     const { input, json } = parseOptions(rest);
     if (command === "summary") return { exitCode: 0, stdout: await runSummaryCommand(input, json), stderr: "" };
