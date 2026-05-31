@@ -2203,6 +2203,87 @@ function maintenanceStatusKey(mode: ThreadMaintenanceRunMode): "background" | "m
   }
 }
 
+function supersedesStaleMaintenanceDebt(run: ThreadMaintenanceRunRecord): boolean {
+  return (
+    run.mode === "manual_repair" &&
+    run.scope === "full" &&
+    run.status === "ready" &&
+    run.remainingDebtCount === 0
+  );
+}
+
+function isSupersededMaintenanceRecord(
+  record: ThreadMaintenanceRunRecord | undefined,
+  supersedingRun: ThreadMaintenanceRunRecord,
+): boolean {
+  if (!record || record.status === "ready") {
+    return false;
+  }
+
+  if (isMaintenanceRecordNewer(record, supersedingRun)) {
+    return false;
+  }
+
+  if (typeof record.sourceRevision === "number" && typeof supersedingRun.sourceRevision === "number") {
+    return record.sourceRevision <= supersedingRun.sourceRevision;
+  }
+
+  return true;
+}
+
+function isMaintenanceRecordNewer(
+  record: ThreadMaintenanceRunRecord,
+  supersedingRun: ThreadMaintenanceRunRecord,
+): boolean {
+  const recordUpdatedAt = Date.parse(record.updatedAt);
+  const supersedingUpdatedAt = Date.parse(supersedingRun.updatedAt);
+  return (
+    Number.isFinite(recordUpdatedAt) &&
+    Number.isFinite(supersedingUpdatedAt) &&
+    recordUpdatedAt > supersedingUpdatedAt
+  );
+}
+
+async function persistSupersedingThreadMaintenanceRunStatus(input: {
+  threadId: string;
+  run: ThreadMaintenanceRunRecord;
+  dependencies: AsyncThreadRunDependencies;
+}): Promise<StewardIssue[]> {
+  const threadSnapshot = await input.dependencies.store.openThread(input.threadId);
+  if (!threadSnapshot.ok) {
+    return threadSnapshot.issues;
+  }
+
+  const existing = threadSnapshot.value.thread.status.maintenance ?? {};
+  const maintenance = {
+    ...existing,
+    [maintenanceStatusKey(input.run.mode)]: input.run,
+  };
+
+  if (supersedesStaleMaintenanceDebt(input.run)) {
+    if (isSupersededMaintenanceRecord(maintenance.background, input.run)) {
+      delete maintenance.background;
+    }
+    if (isSupersededMaintenanceRecord(maintenance.prepare, input.run)) {
+      delete maintenance.prepare;
+    }
+  }
+
+  const writeResult = await input.dependencies.store.updateThreadMetadata({
+    threadId: input.threadId,
+    expectedSourceRevision: input.run.sourceRevision,
+    patch: {
+      status: {
+        ...threadSnapshot.value.thread.status,
+        maintenance,
+      },
+      updatedAt: input.run.updatedAt,
+    },
+  });
+
+  return writeResult.ok ? [] : writeResult.issues;
+}
+
 function isExpectedMaintenanceBacklogIssue(issue: StewardIssue): boolean {
   return (
     issue.code === "TOKEN_COUNT_BLOCKED" &&
@@ -2502,6 +2583,14 @@ export async function persistThreadMaintenanceRunStatus(input: {
     blockers: input.blockers.map((issue) => createStewardIssue(issue)),
     remainingDebt: snapshot.value.debt,
   };
+
+  if (supersedesStaleMaintenanceDebt(run)) {
+    return persistSupersedingThreadMaintenanceRunStatus({
+      threadId: input.threadId,
+      run,
+      dependencies: input.dependencies,
+    });
+  }
 
   if (input.dependencies.store.persistMaintenanceStatus) {
     const persisted = await input.dependencies.store.persistMaintenanceStatus({

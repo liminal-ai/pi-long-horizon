@@ -9,7 +9,10 @@ import type { StewardResult } from "../../src/context-steward/domain/errors.js";
 import { mapPiMessageEnd } from "../../src/context-steward/pi/pi-message-mapper.js";
 import { captureFinalizedActivity } from "../../src/context-steward/services/capture-service.js";
 import registerContextStewardExtension from "../../src/context-steward/pi/pi-extension.js";
-import { commandResultFromSmartCompact } from "../../src/context-steward/pi/pi-extension.js";
+import {
+  commandResultFromSmartCompact,
+  resolvePiBackgroundOpenAIInputTokenCountModel,
+} from "../../src/context-steward/pi/pi-extension.js";
 import { OpenAIInputTokenCounter } from "../../src/token-accounting/index.js";
 import type { SmartCompactCommandResult } from "../../src/thread-view/domain/pi-thread-view-file.js";
 import { openOrCreateManagedThread } from "../../src/context-steward/services/thread-service.js";
@@ -413,6 +416,23 @@ test("/lh-fixture renders created fixture id and failure code", async () => {
       "Fixture failed: No managed thread exists for the current PI session. [FIXTURE_CREATE_FAILED]",
     );
   });
+});
+
+test("PI background maintenance resolves Anthropic active models to an OpenAI token-count model", () => {
+  assert.equal(
+    resolvePiBackgroundOpenAIInputTokenCountModel({
+      modelProvider: "anthropic",
+      activeModelId: "claude-opus-4-8",
+    }),
+    "gpt-5.5",
+  );
+  assert.equal(
+    resolvePiBackgroundOpenAIInputTokenCountModel({
+      modelProvider: "openai-codex",
+      activeModelId: "gpt-5.4-mini",
+    }),
+    "gpt-5.4-mini",
+  );
 });
 
 test("session_start switches an older resumed PI session to the latest generated rollout for the same thread", async () => {

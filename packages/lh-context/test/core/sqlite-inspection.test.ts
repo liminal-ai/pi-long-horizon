@@ -374,4 +374,98 @@ describe("sqlite-backed inspection", () => {
       }
     });
   });
+
+  it("ignores older failed generated-output attempts after a newer clean full repair with a previous projection available", async () => {
+    await withTempSqliteThreadStore(async ({ projectDir, storeRootDir, resolveProjectPath }) => {
+      const previousGeneratedFilePath = resolveProjectPath("generated", "thread-sqlite-readiness-previous.jsonl");
+      const currentFailedGeneratedFilePath = resolveProjectPath("generated", "thread-sqlite-readiness-current-failed.jsonl");
+      await mkdir(dirname(previousGeneratedFilePath), { recursive: true });
+      await writeFile(
+        previousGeneratedFilePath,
+        `${JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "output_text", text: "previous rollout" }] } })}\n`,
+        "utf8",
+      );
+      await writeFile(
+        currentFailedGeneratedFilePath,
+        `${JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "output_text", text: "current failed attempt file" }] } })}\n`,
+        "utf8",
+      );
+
+      for (const [threadId, generatedFilePath, generatedAt, expectedStatus, expectedOverallStatus] of [
+        [
+          "thread-sqlite-readiness-stale-blocked-after-repair",
+          resolveProjectPath("generated", "missing-failed-attempt.jsonl"),
+          "2026-02-01T00:00:00.000Z",
+          "ready",
+          "ready",
+        ],
+        [
+          "thread-sqlite-readiness-current-blocked-after-repair",
+          currentFailedGeneratedFilePath,
+          "2026-02-03T00:00:00.000Z",
+          "blocked",
+          "blocked",
+        ],
+      ] as const) {
+        await seedSqliteThreadSnapshot({
+          rootDir: storeRootDir,
+          thread: makeThreadRecord({
+            threadId,
+            sourceRevision: 7,
+            updatedAt: "2026-02-02T00:00:00.000Z",
+            target: makeThreadTarget({
+              sessionId: `session-${threadId}`,
+              sessionFilePath: `${projectDir}/pi/${threadId}.jsonl`,
+              cwd: projectDir,
+              currentGeneratedFilePath: previousGeneratedFilePath,
+            }),
+            threadViewOutputSummary: {
+              count: 1,
+              currentGeneratedFilePath: previousGeneratedFilePath,
+              currentProjectionRevisionId: `projection-${threadId}`,
+              generatedOutput: {
+                threadId,
+                generatedSource: "thread_view",
+                generatedFilePath,
+                generatedAt,
+                placeholderExplicit: false,
+                status: "blocked",
+                issues: [{ code: "GENERATED_WRITE_FAILED", message: "failed generated-output attempt" }],
+              },
+            },
+            status: {
+              turnState: "ready",
+              tokenCounting: {
+                status: "ready",
+                updatedAt: "2026-02-02T00:00:00.000Z",
+                sourceRevision: 7,
+                issueCount: 0,
+                issues: [],
+              },
+              maintenance: {
+                manualRepair: {
+                  mode: "manual_repair",
+                  scope: "full",
+                  status: "ready",
+                  updatedAt: "2026-02-02T00:00:00.000Z",
+                  sourceRevision: 7,
+                  fixedCount: 12,
+                  skippedCount: 0,
+                  failedCount: 0,
+                  remainingDebtCount: 0,
+                  blockers: [],
+                  remainingDebt: [],
+                },
+              },
+            },
+          }),
+        });
+
+        const readiness = await inspectReadiness({ rootDir: projectDir, threadId });
+        expect(readiness.projection.status).toBe(expectedStatus);
+        expect(readiness.projection.generatedOutputStatus).toBe("blocked");
+        expect(readiness.overallStatus).toBe(expectedOverallStatus);
+      }
+    });
+  });
 });

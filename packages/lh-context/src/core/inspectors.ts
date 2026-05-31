@@ -226,14 +226,26 @@ function projectionReadiness(
   warnings: string[],
 ): ReadinessResult["projection"] {
   const generatedOutput = thread?.threadViewOutputSummary?.generatedOutput;
-  const issues = normalizeIssues(generatedOutput?.issues);
+  const staleGeneratedFailure = isStaleGeneratedOutputFailureAfterFullRepair(
+    thread,
+    generatedOutput,
+    generatedFilePath,
+    generatedRecordCount,
+  );
+  const issues = staleGeneratedFailure ? [] : normalizeIssues(generatedOutput?.issues);
   const recordedPath = generatedOutput?.generatedFilePath ?? thread?.threadViewOutputSummary?.currentGeneratedFilePath ?? thread?.target?.currentGeneratedFilePath;
   const hasMissingGeneratedWarning = warnings.some((warning) => warning.includes("Generated thread-view file not found"));
 
   let status: ReadinessResult["projection"]["status"] = "unknown";
-  if (hasMissingGeneratedWarning || generatedOutput?.status === "blocked" || generatedOutput?.status === "write_failed") {
+  if (
+    hasMissingGeneratedWarning ||
+    (!staleGeneratedFailure && (generatedOutput?.status === "blocked" || generatedOutput?.status === "write_failed"))
+  ) {
     status = "blocked";
-  } else if (issues.length > 0 || generatedOutput?.status === "degraded" || generatedOutput?.status === "reload_failed") {
+  } else if (
+    issues.length > 0 ||
+    (!staleGeneratedFailure && (generatedOutput?.status === "degraded" || generatedOutput?.status === "reload_failed"))
+  ) {
     status = "degraded";
   } else if (generatedFilePath && generatedRecordCount > 0) {
     status = "ready";
@@ -247,6 +259,48 @@ function projectionReadiness(
     issueCount: issues.length,
     issues,
   };
+}
+
+function isStaleGeneratedOutputFailureAfterFullRepair(
+  thread: any,
+  generatedOutput: any,
+  generatedFilePath: string | undefined,
+  generatedRecordCount: number,
+): boolean {
+  const generatedStatus = generatedOutput?.status;
+  if (
+    generatedStatus !== "blocked" &&
+    generatedStatus !== "write_failed" &&
+    generatedStatus !== "degraded" &&
+    generatedStatus !== "reload_failed"
+  ) {
+    return false;
+  }
+
+  if (!generatedFilePath || generatedRecordCount <= 0) {
+    return false;
+  }
+
+  const manualRepair = thread?.status?.maintenance?.manualRepair;
+  if (
+    manualRepair?.scope !== "full" ||
+    manualRepair?.status !== "ready" ||
+    manualRepair?.remainingDebtCount !== 0
+  ) {
+    return false;
+  }
+
+  return isAfter(manualRepair.updatedAt, generatedOutput?.generatedAt);
+}
+
+function isAfter(left: unknown, right: unknown): boolean {
+  if (typeof left !== "string" || typeof right !== "string") {
+    return false;
+  }
+
+  const leftTime = Date.parse(left);
+  const rightTime = Date.parse(right);
+  return Number.isFinite(leftTime) && Number.isFinite(rightTime) && leftTime > rightTime;
 }
 
 function determineOverallReadiness(

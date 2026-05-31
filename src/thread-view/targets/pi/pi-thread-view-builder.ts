@@ -152,6 +152,146 @@ function buildEntryMetadata(message: ThreadViewMessageRecord): Record<string, un
   return metadata;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function structuredParts(content: ThreadViewMessageRecord["content"]): Array<Record<string, unknown>> | undefined {
+  if (!isRecord(content) || !Array.isArray(content.parts)) {
+    return undefined;
+  }
+
+  return content.parts.filter(isRecord);
+}
+
+function extractToolCallId(partContent: unknown, metadata?: Record<string, unknown>): string | undefined {
+  if (isRecord(partContent)) {
+    const id = partContent.toolCallId ?? partContent.callId ?? partContent.call_id ?? partContent.id;
+    if (typeof id === "string" && id.length > 0) {
+      return id;
+    }
+  }
+
+  return typeof metadata?.toolCallId === "string" && metadata.toolCallId.length > 0
+    ? metadata.toolCallId
+    : undefined;
+}
+
+function extractToolName(partContent: unknown, metadata?: Record<string, unknown>): string | undefined {
+  if (isRecord(partContent)) {
+    if (typeof partContent.toolName === "string" && partContent.toolName.length > 0) {
+      return partContent.toolName;
+    }
+
+    if (typeof partContent.name === "string" && partContent.name.length > 0) {
+      return partContent.name;
+    }
+  }
+
+  return typeof metadata?.toolName === "string" && metadata.toolName.length > 0
+    ? metadata.toolName
+    : undefined;
+}
+
+function extractToolArguments(partContent: unknown): unknown {
+  if (!isRecord(partContent) || !("arguments" in partContent)) {
+    return {};
+  }
+
+  return partContent.arguments;
+}
+
+function collectGeneratedToolResultIds(entries: readonly PiThreadViewEntry[]): Set<string> {
+  const ids = new Set<string>();
+  for (const entry of entries) {
+    if (entry.role !== "toolResult") {
+      continue;
+    }
+
+    if (typeof entry.metadata?.toolCallId === "string" && entry.metadata.toolCallId.length > 0) {
+      ids.add(entry.metadata.toolCallId);
+      continue;
+    }
+
+    for (const part of structuredParts(entry.content) ?? []) {
+      if (part.partType !== "tool_result") {
+        continue;
+      }
+      const toolCallId = extractToolCallId(part.content, entry.metadata);
+      if (toolCallId) {
+        ids.add(toolCallId);
+      }
+    }
+  }
+
+  return ids;
+}
+
+function renderInertToolCall(partContent: unknown, metadata?: Record<string, unknown>): string {
+  const record: Record<string, unknown> = {
+    type: "unpaired_tool_call",
+    name: extractToolName(partContent, metadata) ?? "generated_tool_call",
+    arguments: extractToolArguments(partContent),
+  };
+  const toolCallId = extractToolCallId(partContent, metadata);
+  if (toolCallId) {
+    record.toolCallId = toolCallId;
+  }
+
+  return JSON.stringify(record);
+}
+
+function inertUnmatchedToolCalls(
+  entry: PiThreadViewEntry,
+  generatedToolResultIds: ReadonlySet<string>,
+): PiThreadViewEntry {
+  if (entry.generatedSource !== "raw_turn_message" || entry.role !== "assistant" || typeof entry.content === "string") {
+    return entry;
+  }
+
+  const parts = Array.isArray(entry.content.parts) ? entry.content.parts : undefined;
+  if (!parts) {
+    return entry;
+  }
+
+  let changed = false;
+  const nextParts = parts.map((part) => {
+    if (!isRecord(part)) {
+      return part;
+    }
+
+    if (part.partType !== "tool_call") {
+      return part;
+    }
+
+    const toolCallId = extractToolCallId(part.content, entry.metadata);
+    if (toolCallId && generatedToolResultIds.has(toolCallId)) {
+      return part;
+    }
+
+    changed = true;
+    return {
+      ...part,
+      partType: "text",
+      content: renderInertToolCall(part.content, entry.metadata),
+      metadata: {
+        ...(isRecord(part.metadata) ? part.metadata : {}),
+        inertReason: "unmatched_tool_result",
+      },
+    };
+  });
+
+  return changed
+    ? {
+        ...entry,
+        content: {
+          ...entry.content,
+          parts: nextParts,
+        },
+      }
+    : entry;
+}
+
 function toPiThreadViewEntry(message: ThreadViewMessageRecord): PiThreadViewEntry {
   return {
     entryType: "message",
@@ -165,9 +305,11 @@ function toPiThreadViewEntry(message: ThreadViewMessageRecord): PiThreadViewEntr
 export async function buildPiThreadViewFile(
   input: BuildPiThreadViewFileInput,
 ): Promise<PiThreadViewFile> {
-  const entries = input.emittedMessages
+  const rawEntries = input.emittedMessages
     .filter((message) => !isSystemSourceRecord(message))
     .map(toPiThreadViewEntry);
+  const generatedToolResultIds = collectGeneratedToolResultIds(rawEntries);
+  const entries = rawEntries.map((entry) => inertUnmatchedToolCalls(entry, generatedToolResultIds));
 
   return {
     threadId: input.threadId,

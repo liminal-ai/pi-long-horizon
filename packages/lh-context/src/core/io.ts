@@ -323,7 +323,8 @@ async function resolveGeneratedThreadView(
 ): Promise<Pick<LoadedThread, "generatedFilePath" | "generatedRecords" | "warnings">> {
   const warnings: string[] = [];
   const explicitPath = input.input.threadViewPath ? path.resolve(input.input.threadViewPath) : undefined;
-  const recordedPath = firstGeneratedThreadViewPath(input.thread, input.rootDir);
+  const recordedPaths = generatedThreadViewPathCandidates(input.thread, input.rootDir);
+  const recordedPath = recordedPaths[0];
 
   if (explicitPath) {
     if (await exists(explicitPath)) {
@@ -334,13 +335,16 @@ async function resolveGeneratedThreadView(
     return { generatedFilePath: undefined, generatedRecords: [], warnings };
   }
 
-  if (recordedPath) {
-    if (await exists(recordedPath)) {
-      return { generatedFilePath: recordedPath, generatedRecords: await readJsonl(recordedPath), warnings };
+  for (const candidate of recordedPaths) {
+    if (await exists(candidate)) {
+      if (candidate !== recordedPath) {
+        warnings.push(`Using generated thread-view file at ${candidate} because the preferred recorded path is unavailable.`);
+      }
+      return { generatedFilePath: candidate, generatedRecords: await readJsonl(candidate), warnings };
     }
-
-    warnings.push(`Generated thread-view file not found: ${recordedPath}`);
   }
+
+  if (recordedPath) warnings.push(`Generated thread-view file not found: ${recordedPath}`);
 
   const bundledPath = await findBundledGeneratedThreadView(input.threadDir, recordedPath ?? explicitPath);
   if (bundledPath) {
@@ -357,22 +361,26 @@ async function resolveGeneratedThreadView(
   return { generatedFilePath: undefined, generatedRecords: [], warnings };
 }
 
-function firstGeneratedThreadViewPath(thread: any, rootDir: string): string | undefined {
+function generatedThreadViewPathCandidates(thread: any, rootDir: string): string[] {
   const candidates = [
     thread?.threadViewOutputSummary?.generatedOutput?.generatedFilePath,
     thread?.threadViewOutputSummary?.currentGeneratedFilePath,
     thread?.target?.currentGeneratedFilePath,
   ];
 
+  const paths: string[] = [];
   for (const candidate of candidates) {
     if (typeof candidate !== "string" || candidate.length === 0) {
       continue;
     }
 
-    return path.isAbsolute(candidate) ? candidate : path.resolve(rootDir, candidate);
+    const resolved = path.isAbsolute(candidate) ? candidate : path.resolve(rootDir, candidate);
+    if (!paths.includes(resolved)) {
+      paths.push(resolved);
+    }
   }
 
-  return undefined;
+  return paths;
 }
 
 async function findBundledGeneratedThreadView(threadDir: string, preferredPath: string | undefined): Promise<string | undefined> {

@@ -5,6 +5,7 @@ import { makeThreadViewMessage } from "../../src/thread-view/test/fixtures.js";
 import { buildDraftThreadView } from "../../src/thread-view/services/thread-view-builder.js";
 import { buildPiThreadViewFile } from "../../src/thread-view/targets/pi/pi-thread-view-builder.js";
 import { withTempFeature3Store } from "../../src/thread-view/test/fixtures.js";
+import { convertGeneratedSessionToOpenAIResponsesInput } from "../../src/token-accounting/openai-generated-session-converter.js";
 import { seedDeterministicRebuildThread } from "./helpers.js";
 
 test("legacy placeholder lower-band outputs are blocked from PI-target output", async () => {
@@ -142,6 +143,101 @@ test("raw tool-result metadata is preserved in PI-target entries", async () => {
   assert.equal(file.entries[0]?.role, "toolResult");
   assert.equal(file.entries[0]?.metadata?.toolCallId, "call-production-001");
   assert.equal(file.entries[0]?.metadata?.toolName, "bash");
+});
+
+test("unmatched assistant tool calls are inert in generated PI-target entries", async () => {
+  const threadViewId = "thread-view-unmatched-tool-call";
+  const file = await buildPiThreadViewFile({
+    threadId: "thread-unmatched-tool-call",
+    threadViewId,
+    modelId: "gpt-5.4-mini",
+    emittedMessages: [
+      makeThreadViewMessage({
+        threadViewId,
+        bandType: "full_fidelity",
+        sourceKind: "raw_turn_message",
+        sourceReference: "turn-tool/message-assistant",
+        content: {
+          actorType: "agent",
+          messageKind: "response",
+          parts: [
+            {
+              partOrder: 1,
+              partType: "tool_call",
+              content: {
+                toolCallId: "call-matched",
+                toolName: "read",
+                arguments: { path: "README.md" },
+              },
+            },
+            {
+              partOrder: 2,
+              partType: "tool_call",
+              content: {
+                id: "toolu_01AEfPpXeRoguggpH5EscL42",
+                toolName: "bash",
+                arguments: { cmd: "npm test" },
+              },
+            },
+          ],
+          targetMetadata: {
+            piRole: "assistant",
+          },
+        },
+      }),
+      makeThreadViewMessage({
+        threadViewId,
+        bandType: "full_fidelity",
+        sourceKind: "raw_turn_message",
+        sourceReference: "turn-tool/message-tool-result",
+        content: {
+          actorType: "tool",
+          messageKind: "tool_result",
+          parts: [
+            {
+              partOrder: 1,
+              partType: "tool_result",
+              content: {
+                output: "matched output",
+                toolCallId: "call-matched",
+                toolName: "read",
+              },
+            },
+          ],
+          targetMetadata: {
+            piRole: "toolResult",
+            toolCallId: "call-matched",
+            toolName: "read",
+          },
+        },
+      }),
+    ],
+    sessionId: "projection-session-unmatched-tool-call",
+    cwd: "/tmp/project",
+    generatedAt: "2026-01-01T00:00:00.000Z",
+  });
+
+  const assistantEntry = file.entries[0]!;
+  assert.equal(typeof assistantEntry.content, "object");
+  const assistantParts = (assistantEntry.content as { parts: Array<{ partType: string; content: unknown }> }).parts;
+  assert.equal(assistantParts[0]?.partType, "tool_call");
+  assert.equal(assistantParts[1]?.partType, "text");
+  assert.match(String(assistantParts[1]?.content), /"type":"unpaired_tool_call"/);
+  assert.match(String(assistantParts[1]?.content), /toolu_01AEfPpXeRoguggpH5EscL42/);
+
+  const conversion = convertGeneratedSessionToOpenAIResponsesInput({
+    threadId: file.threadId,
+    threadViewId: file.threadViewId,
+    file,
+  });
+  assert.deepEqual(
+    conversion.request.input.map((item) => item.type),
+    ["message", "function_call", "function_call_output"],
+  );
+  assert.equal(
+    conversion.request.input.filter((item) => item.type === "function_call").length,
+    1,
+  );
 });
 
 test("system-origin raw messages are excluded from PI-target entries", async () => {

@@ -628,14 +628,19 @@ function safeContextModelProvider(ctx: ExtensionContext): string | undefined {
   }
 }
 
-function createDefaultOpenAIInputTokenCounter(input: {
+export function resolvePiBackgroundOpenAIInputTokenCountModel(input: {
   modelProvider?: string;
-  modelId?: string;
-}): SmartCompactCommandDependencies["openAIInputTokenCounter"] | undefined {
-  const tokenCountModel = resolveOpenAIInputTokenCountModel({
+  activeModelId?: string;
+}): string | undefined {
+  return resolveOpenAIInputTokenCountModel({
     provider: input.modelProvider,
-    modelId: input.modelId,
+    modelId: input.activeModelId,
   });
+}
+
+function createDefaultOpenAIInputTokenCounter(
+  tokenCountModel: string | undefined,
+): SmartCompactCommandDependencies["openAIInputTokenCounter"] | undefined {
   if (!tokenCountModel) {
     return undefined;
   }
@@ -1670,7 +1675,7 @@ export function registerContextStewardExtension(
     threadId: string;
     ctx: PiExtensionCaptureContext;
     modelProvider?: string;
-    tokenCountModel?: string;
+    activeModelId?: string;
   };
   type BackgroundMaintenanceState = {
     running: boolean;
@@ -2015,19 +2020,20 @@ export function registerContextStewardExtension(
   async function runBackgroundMaintenance(input: BackgroundMaintenanceInput): Promise<void> {
     const startedAt = Date.now();
     let result = "completed";
+    const tokenCountModel = resolvePiBackgroundOpenAIInputTokenCountModel({
+      modelProvider: input.modelProvider,
+      activeModelId: input.activeModelId,
+    });
     const openAIInputTokenCounter =
       options.openAIInputTokenCounter ??
-      createDefaultOpenAIInputTokenCounter({
-        modelProvider: input.modelProvider,
-        modelId: input.tokenCountModel,
-      });
+      createDefaultOpenAIInputTokenCounter(tokenCountModel);
     try {
       await maintainAsyncThread(
         { threadId: input.threadId },
         {
           store: createStore(input.ctx),
           openAIInputTokenCounter,
-          tokenCountModel: input.tokenCountModel,
+          tokenCountModel,
         },
       );
     } catch (error) {
@@ -2052,7 +2058,7 @@ export function registerContextStewardExtension(
       state.latest = {
         ...input,
         modelProvider: input.modelProvider ?? state.latest.modelProvider,
-        tokenCountModel: input.tokenCountModel ?? state.latest.tokenCountModel,
+        activeModelId: input.activeModelId ?? state.latest.activeModelId,
       };
       logTiming("backgroundMaintenanceSchedule", startedAt, {
         threadId: input.threadId,
@@ -2206,7 +2212,7 @@ export function registerContextStewardExtension(
   pi.on("turn_end", async (event, ctx) => {
     const startedAt = Date.now();
     const backgroundModelProvider = safeContextModelProvider(ctx as ExtensionContext);
-    const backgroundTokenCountModel = safeContextModelId(ctx as ExtensionContext);
+    const backgroundActiveModelId = safeContextModelId(ctx as ExtensionContext);
     let resolveMs = 0;
     let finalizeMs = 0;
     let maintenanceDelayMs = 0;
@@ -2261,7 +2267,7 @@ export function registerContextStewardExtension(
         threadId: thread.threadId,
         ctx: snapshotCaptureContext(resolvedContext) ?? resolvedContext,
         modelProvider: backgroundModelProvider,
-        tokenCountModel: backgroundTokenCountModel,
+        activeModelId: backgroundActiveModelId,
       });
       maintenanceScheduleMs = Date.now() - stepStartedAt;
 
