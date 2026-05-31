@@ -24,8 +24,10 @@ THREAD COMMANDS
   lhx threads resume <id-or-name>                        Print a pi-lh command for resuming a cataloged thread session
 
 THREAD EVENT COMMANDS
-  lhx thread-events append --thread-db <path> --file <event.json>  Append caller-provided event input
-  lhx thread-events list --thread-db <path> [--json]               List persisted thread events
+  lhx thread-events create --event-db <path> [--client-thread-id <id>]  Create or return a projected thread
+  lhx thread-events append --event-db <path> --client-thread-id <id> --file <event.json>  Append caller-provided event input
+  lhx thread-events list --event-db <path> [--json]                      List persisted source events
+  lhx thread-events read --event-db <path> --client-thread-id <id> [--json]  Read projected messages and blocks
 
 ALIASES
   summary, tokens, bands, readiness  Convenience aliases for lhx inspect summary/tokens/bands/readiness
@@ -46,7 +48,9 @@ OPTIONS
   --json                Stable structured output for agents
   --catalog-db <file>   Thread catalog SQLite path for lhx threads commands
   --thread-db <file>    Canonical thread.sqlite path for lhx threads upsert
+  --event-db <file>     Dedicated SQLite path for lhx thread-events commands
   --file <event.json>   Append input file for lhx thread-events append
+  --client-thread-id <id>  Caller/harness thread id for lhx thread-events
   --name <name>         User-managed catalog name for lhx threads upsert
 
 EXAMPLES
@@ -58,6 +62,7 @@ EXAMPLES
   lhx threads upsert --thread-db .context-steward/threads/thread_abc/thread.sqlite --name "My thread"
   lhx threads list
   lhx threads resume thread_abc
-  lhx thread-events append --thread-db .context-steward/threads/thread_abc/thread.sqlite --file event.json
-  lhx thread-events list --thread-db .context-steward/threads/thread_abc/thread.sqlite --json
+  lhx thread-events create --event-db .context-steward/thread-events.sqlite --client-thread-id pi-session-123
+  lhx thread-events append --event-db .context-steward/thread-events.sqlite --client-thread-id pi-session-123 --file event.json
+  lhx thread-events list --event-db .context-steward/thread-events.sqlite --json
 `;

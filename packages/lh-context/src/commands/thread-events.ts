@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 
 import type { CliResult } from "./run.js";
-import { ThreadEventStore } from "../thread-events/store.js";
+import { ThreadEventStore, type ProjectedThreadRead } from "../thread-events/store.js";
 import { ThreadEventValidationError, type PersistedThreadEvent } from "../thread-events/schema.js";
 
 interface ParsedThreadEventArgs {
@@ -15,14 +15,20 @@ export async function runThreadEventsCommand(args: string[]): Promise<CliResult>
     return { exitCode: 0, stdout: THREAD_EVENTS_HELP_TEXT, stderr: "" };
   }
 
-  const threadDbPath = stringOption(parsed, "thread-db");
-  if (!threadDbPath) {
-    return { exitCode: 1, stdout: "", stderr: "lhx thread-events requires --thread-db <path>.\n" };
+  const eventDbPath = stringOption(parsed, "event-db") ?? stringOption(parsed, "thread-db");
+  if (!eventDbPath) {
+    return { exitCode: 1, stdout: "", stderr: "lhx thread-events requires --event-db <path>.\n" };
   }
 
-  const store = new ThreadEventStore({ threadDbPath });
+  const store = new ThreadEventStore({ eventDbPath });
   try {
     const [command] = parsed.positional;
+    if (command === "create") {
+      const clientThreadId = stringOption(parsed, "client-thread-id");
+      const title = stringOption(parsed, "title");
+      return jsonResult(await store.createThread({ clientThreadId, title }));
+    }
+
     if (command === "append") {
       const filePath = stringOption(parsed, "file");
       if (!filePath) {
@@ -30,12 +36,35 @@ export async function runThreadEventsCommand(args: string[]): Promise<CliResult>
       }
 
       const input = JSON.parse(readFileSync(filePath, "utf8"));
-      return jsonResult(store.append(input));
+      const result = await appendFromCliInput(store, input, stringOption(parsed, "client-thread-id"));
+      return {
+        exitCode: result.ok ? 0 : 1,
+        stdout: `${JSON.stringify(result, null, 2)}\n`,
+        stderr: "",
+      };
     }
 
     if (command === "list") {
-      const events = store.list();
+      const events = await store.list();
       return parsed.options.has("json") ? jsonResult(events) : ok(printThreadEvents(events));
+    }
+
+    if (command === "threads") {
+      const threads = await store.listThreads();
+      return parsed.options.has("json") ? jsonResult(threads) : ok(printThreads(threads));
+    }
+
+    if (command === "read") {
+      const clientThreadId = stringOption(parsed, "client-thread-id");
+      if (!clientThreadId) {
+        throw new Error("lhx thread-events read requires --client-thread-id <id>.");
+      }
+
+      const thread = await store.readThread(clientThreadId);
+      if (!thread) {
+        return { exitCode: 1, stdout: "", stderr: `Thread not found for clientThreadId: ${clientThreadId}\n` };
+      }
+      return parsed.options.has("json") ? jsonResult(thread) : ok(printThreadRead(thread));
     }
 
     return { exitCode: 1, stdout: THREAD_EVENTS_HELP_TEXT, stderr: `Unknown thread-events command: ${command ?? ""}\n` };
@@ -72,6 +101,35 @@ function parseThreadEventArgs(argv: string[]): ParsedThreadEventArgs {
   }
 
   return { positional, options };
+}
+
+async function appendFromCliInput(
+  store: ThreadEventStore,
+  input: unknown,
+  clientThreadIdOption: string | undefined,
+) {
+  if (isObject(input) && typeof input.clientThreadId === "string" && Array.isArray(input.events)) {
+    return await store.appendMany(input);
+  }
+
+  if (isObject(input) && Array.isArray(input.events)) {
+    if (!clientThreadIdOption) {
+      throw new Error("lhx thread-events append requires --client-thread-id <id> or clientThreadId in the input file.");
+    }
+    return await store.appendMany(clientThreadIdOption, input.events);
+  }
+
+  const clientThreadId = clientThreadIdOption ?? (isObject(input) && typeof input.clientThreadId === "string"
+    ? input.clientThreadId
+    : undefined);
+  if (!clientThreadId) {
+    throw new Error("lhx thread-events append requires --client-thread-id <id> or clientThreadId in the input file.");
+  }
+
+  const eventInput = isObject(input) && "clientThreadId" in input
+    ? Object.fromEntries(Object.entries(input).filter(([key]) => key !== "clientThreadId"))
+    : input;
+  return await store.appendMany(clientThreadId, [eventInput]);
 }
 
 function stringOption(parsed: ParsedThreadEventArgs, name: string): string | undefined {
@@ -130,6 +188,57 @@ function printThreadEvents(events: readonly PersistedThreadEvent[]): string {
   ].join("\n")}\n`;
 }
 
+function printThreads(threads: readonly { threadId: string; clientThreadId: string; title?: string; updatedAt: string }[]): string {
+  if (threads.length === 0) {
+    return "No projected threads.\n";
+  }
+
+  const rows = threads.map((thread) => ({
+    thread: thread.threadId,
+    client: thread.clientThreadId,
+    title: thread.title ?? "",
+    updated: thread.updatedAt,
+  }));
+  const widths = {
+    thread: Math.min(28, Math.max("THREAD".length, ...rows.map((row) => row.thread.length))),
+    client: Math.min(28, Math.max("CLIENT".length, ...rows.map((row) => row.client.length))),
+    title: Math.min(32, Math.max("TITLE".length, ...rows.map((row) => row.title.length))),
+    updated: Math.max("UPDATED".length, ...rows.map((row) => row.updated.length)),
+  };
+
+  return `${[
+    [
+      pad("THREAD", widths.thread),
+      pad("CLIENT", widths.client),
+      pad("TITLE", widths.title),
+      pad("UPDATED", widths.updated),
+    ].join("  "),
+    ...rows.map((row) =>
+      [
+        pad(truncate(row.thread, widths.thread), widths.thread),
+        pad(truncate(row.client, widths.client), widths.client),
+        pad(truncate(row.title, widths.title), widths.title),
+        pad(row.updated, widths.updated),
+      ].join("  "),
+    ),
+  ].join("\n")}\n`;
+}
+
+function printThreadRead(read: ProjectedThreadRead): string {
+  if (read.messages.length === 0) {
+    return `Thread ${read.thread.clientThreadId} has no projected messages.\n`;
+  }
+
+  return `${read.messages.map((message) =>
+    [
+      message.messageOrder.toString().padStart(3),
+      message.messageKind.padEnd(11),
+      message.status.padEnd(10),
+      `${message.blocks.length} block${message.blocks.length === 1 ? "" : "s"}`,
+    ].join("  "),
+  ).join("\n")}\n`;
+}
+
 function formatThreadEventError(error: unknown): string {
   if (error instanceof ThreadEventValidationError || error instanceof Error) {
     return `${error.message}\n`;
@@ -148,18 +257,29 @@ function truncate(value: string, width: number): string {
   return width <= 3 ? value.slice(0, width) : `${value.slice(0, width - 3)}...`;
 }
 
-export const THREAD_EVENTS_HELP_TEXT = `lhx thread-events - Append and list schema-backed thread events
+function isObject(value: unknown): value is { [key: string]: unknown } {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export const THREAD_EVENTS_HELP_TEXT = `lhx thread-events - Create, append, and inspect schema-backed thread events
 
 USAGE
-  lhx thread-events append --thread-db <path> --file <event.json>
-  lhx thread-events list --thread-db <path> [--json]
+  lhx thread-events create --event-db <path> [--client-thread-id <id>] [--title "..."]
+  lhx thread-events append --event-db <path> --client-thread-id <id> --file <event.json>
+  lhx thread-events list --event-db <path> [--json]
+  lhx thread-events threads --event-db <path> [--json]
+  lhx thread-events read --event-db <path> --client-thread-id <id> [--json]
 
 APPEND INPUT
-  The JSON file contains caller-provided append input. The service generates
-  schemaVersion, threadEventId, eventOrder, and recordedAt.
+  Append requires an existing clientThreadId. The JSON file may contain one
+  event, or { "clientThreadId": "...", "events": [...] }. The service
+  generates schemaVersion, threadEventId, canonical threadId, eventOrder, and
+  recordedAt.
 
 OPTIONS
-  --thread-db <path>    Per-thread SQLite database path
+  --event-db <path>     Dedicated thread-event/projection SQLite database path
   --file <event.json>   Thread event append input JSON
+  --client-thread-id    Caller/harness thread id
+  --title <title>       Optional projected thread title for create
   --json                Stable structured output for list
 `;
