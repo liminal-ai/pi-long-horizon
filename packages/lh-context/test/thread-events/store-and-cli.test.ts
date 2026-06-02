@@ -142,6 +142,26 @@ function appendInput(overrides: Partial<ThreadEventAppendInput> = {}): ThreadEve
   };
 }
 
+function turnEndInput(overrides: Partial<ThreadEventAppendInput> = {}): ThreadEventAppendInput {
+  return appendInput({
+    idempotencyKey: "turn-end-1",
+    eventKind: "turn_end",
+    actor: { actorKind: "runtime", actorId: "codex-cli" },
+    payload: {},
+    ...overrides,
+  });
+}
+
+async function waitFor(predicate: () => boolean | Promise<boolean>, attempts = 50): Promise<void> {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (await predicate()) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("Timed out waiting for condition.");
+}
+
 describe("ThreadEventStore", () => {
   it("stores wrapped causes on ThreadEventStoreError using the standard Error cause", () => {
     const cause = new Error("underlying failure");
@@ -555,6 +575,516 @@ describe("ThreadEventStore", () => {
           eventOrder: 99,
         }),
       ).rejects.toThrow(/must not include generated field/);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("persists turn_end without message projection and atomically writes a deterministic trigger", async () => {
+    const store = new ThreadEventStore({ threadDbPath: tempThreadDbPath() });
+
+    try {
+      await store.createThread({ clientThreadId: "client-alpha" });
+      const result = await store.appendMany("client-alpha", [
+        appendInput({ idempotencyKey: "prompt-1", payload: { text: "Hello" } }),
+        appendInput({
+          idempotencyKey: "assistant-1",
+          eventKind: "assistant_text",
+          actor: { actorKind: "assistant", actorId: "assistant-main" },
+          payload: { text: "Hi" },
+        }),
+        turnEndInput(),
+      ]);
+
+      expect(result.ok).toBe(true);
+      expect(result.results[2]).toMatchObject({
+        ok: true,
+        duplicate: false,
+        triggered: true,
+        event: { eventKind: "turn_end", payload: { _tag: "turn_end" } },
+        messages: [],
+        blocks: [],
+      });
+      const triggers = await store.listTurnProcessingTriggers();
+      expect(triggers).toHaveLength(1);
+      expect(triggers[0]).toMatchObject({
+        threadId: result.thread?.threadId,
+        turnEndEventOrder: 4,
+        status: "pending",
+      });
+      expect(triggers[0]?.triggerId).toContain("_4");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("skips events after first turn_end until the next user_prompt", async () => {
+    const store = new ThreadEventStore({ threadDbPath: tempThreadDbPath() });
+
+    try {
+      await store.createThread({ clientThreadId: "client-alpha" });
+      const result = await store.appendMany("client-alpha", [
+        appendInput({ idempotencyKey: "prompt-1", payload: { text: "first" } }),
+        turnEndInput(),
+        appendInput({
+          idempotencyKey: "skipped-assistant",
+          eventKind: "assistant_text",
+          actor: { actorKind: "assistant", actorId: "assistant-main" },
+          payload: { text: "skipped" },
+        }),
+        turnEndInput({ idempotencyKey: "skipped-turn-end" }),
+        appendInput({ idempotencyKey: "prompt-2", payload: { text: "second" } }),
+      ]);
+
+      expect(result.ok).toBe(true);
+      expect(result.results).toHaveLength(5);
+      expect(result.results[2]).toEqual({
+        ok: true,
+        inputIndex: 2,
+        skipped: true,
+        reason: "ignored_after_turn_end",
+      });
+      expect(result.results[3]).toEqual({
+        ok: true,
+        inputIndex: 3,
+        skipped: true,
+        reason: "ignored_after_turn_end",
+      });
+      expect((await store.list()).map((event) => event.idempotencyKey)).toEqual([
+        "thread_created:client-alpha",
+        "prompt-1",
+        "turn-end-1",
+        "prompt-2",
+      ]);
+      expect((await store.readThread("client-alpha"))?.messages.map((message) => message.blocks[0]?.payload)).toEqual([
+        { text: "first" },
+        { text: "second" },
+      ]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("re-enters skip mode when a retried batch hits a duplicate winning turn_end", async () => {
+    const store = new ThreadEventStore({ threadDbPath: tempThreadDbPath() });
+
+    try {
+      await store.createThread({ clientThreadId: "client-alpha" });
+      const batch = [
+        appendInput({ idempotencyKey: "prompt-1", payload: { text: "first" } }),
+        turnEndInput(),
+        appendInput({
+          idempotencyKey: "skipped-assistant",
+          eventKind: "assistant_text",
+          actor: { actorKind: "assistant", actorId: "assistant-main" },
+          payload: { text: "skipped" },
+        }),
+      ];
+      await store.appendMany("client-alpha", batch);
+      const retry = await store.appendMany("client-alpha", batch);
+
+      expect(retry.results[1]).toMatchObject({
+        ok: true,
+        duplicate: true,
+        event: { eventKind: "turn_end" },
+        triggered: true,
+      });
+      expect(retry.results[2]).toEqual({
+        ok: true,
+        inputIndex: 2,
+        skipped: true,
+        reason: "ignored_after_turn_end",
+      });
+      expect(await store.listTurnProcessingTriggers()).toHaveLength(1);
+      expect((await store.list()).map((event) => event.idempotencyKey)).toEqual([
+        "thread_created:client-alpha",
+        "prompt-1",
+        "turn-end-1",
+      ]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("persists turn_end with no open span without creating a trigger", async () => {
+    const store = new ThreadEventStore({ threadDbPath: tempThreadDbPath() });
+
+    try {
+      await store.createThread({ clientThreadId: "client-alpha" });
+      const result = await store.append("client-alpha", turnEndInput());
+
+      expect(result).toMatchObject({
+        event: { eventKind: "turn_end" },
+        triggered: false,
+        reason: "no_open_turn_span",
+        messages: [],
+        blocks: [],
+      });
+      expect(await store.listTurnProcessingTriggers()).toEqual([]);
+      expect((await store.list()).map((event) => event.eventKind)).toEqual(["thread_created", "turn_end"]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("rejects turn_end payloads with extra fields", async () => {
+    const store = new ThreadEventStore({ threadDbPath: tempThreadDbPath() });
+
+    try {
+      await store.createThread({ clientThreadId: "client-alpha" });
+      const result = await store.appendMany("client-alpha", [
+        turnEndInput({ payload: { reason: "unexpected" } as ThreadEventAppendInput["payload"] }),
+      ]);
+
+      expect(result.ok).toBe(false);
+      expect(result.results[0]).toMatchObject({
+        ok: false,
+        inputIndex: 0,
+        error: { code: "validation_failed" },
+      });
+      expect(await store.listTurnProcessingTriggers()).toEqual([]);
+      expect((await store.list()).map((event) => event.eventKind)).toEqual(["thread_created"]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("worker persists deterministic non-ready turn state and blocks chunking without exact projection count", async () => {
+    const store = new ThreadEventStore({ threadDbPath: tempThreadDbPath() });
+
+    try {
+      const created = await store.createThread({ clientThreadId: "client-alpha" });
+      await store.appendMany("client-alpha", [
+        appendInput({ idempotencyKey: "prompt-1", payload: { text: "Hello" } }),
+        appendInput({
+          idempotencyKey: "assistant-1",
+          eventKind: "assistant_text",
+          actor: { actorKind: "assistant", actorId: "assistant-main" },
+          payload: { text: "Hi" },
+        }),
+        turnEndInput(),
+      ]);
+
+      const processed = await store.processNextTurnEndTrigger();
+      expect(processed).toMatchObject({
+        completed: true,
+        retryable: false,
+        reason: "turn_not_ready",
+        turn: {
+          turnId: `turn_${Buffer.from(created.thread.threadId, "utf8").toString("base64url")}_1`,
+          turnOrder: 1,
+          processingStatus: "non_ready",
+          messageIds: [
+            `msg_${Buffer.from(created.thread.threadId, "utf8").toString("base64url")}_1`,
+            `msg_${Buffer.from(created.thread.threadId, "utf8").toString("base64url")}_2`,
+          ],
+        },
+      });
+      expect((await store.listTurnProcessingTriggers())[0]?.status).toBe("complete");
+      expect(await store.readChunks("client-alpha")).toEqual([]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("does not claim another trigger for the same thread while one worker is running", async () => {
+    let countCalls = 0;
+    let releaseCount!: () => void;
+    const countBlocker = new Promise<void>((resolve) => {
+      releaseCount = resolve;
+    });
+    const store = new ThreadEventStore({
+      threadDbPath: tempThreadDbPath(),
+      worker: {
+        lowerBandProjectionTokenCounter: {
+          async countTurnLowerBandProjection() {
+            countCalls += 1;
+            await countBlocker;
+            return { count: 5 };
+          },
+        },
+      },
+    });
+
+    try {
+      await store.createThread({ clientThreadId: "client-alpha" });
+      await store.appendMany("client-alpha", [
+        appendInput({ idempotencyKey: "prompt-1", payload: { text: "first" } }),
+        appendInput({
+          idempotencyKey: "assistant-1",
+          eventKind: "assistant_text",
+          actor: { actorKind: "assistant", actorId: "assistant-main" },
+          payload: { text: "one" },
+        }),
+        turnEndInput({ idempotencyKey: "turn-end-1" }),
+        appendInput({ idempotencyKey: "prompt-2", payload: { text: "second" } }),
+        appendInput({
+          idempotencyKey: "assistant-2",
+          eventKind: "assistant_text",
+          actor: { actorKind: "assistant", actorId: "assistant-main" },
+          payload: { text: "two" },
+        }),
+        turnEndInput({ idempotencyKey: "turn-end-2" }),
+      ]);
+
+      const firstRun = store.processNextTurnEndTrigger();
+      await waitFor(async () => {
+        const triggers = await store.listTurnProcessingTriggers();
+        return countCalls === 1 && triggers[0]?.status === "claimed" && triggers[1]?.status === "pending";
+      });
+
+      expect(await store.processNextTurnEndTrigger()).toMatchObject({
+        completed: false,
+        retryable: false,
+        reason: "no_pending_trigger",
+      });
+      expect(countCalls).toBe(1);
+
+      releaseCount();
+      expect(await firstRun).toMatchObject({ completed: true, retryable: false });
+      expect((await store.listTurnProcessingTriggers()).map((trigger) => trigger.status)).toEqual([
+        "complete",
+        "pending",
+      ]);
+    } finally {
+      releaseCount?.();
+      store.close();
+    }
+  });
+
+  it("does not process a later same-thread trigger before earlier triggers are complete", async () => {
+    const store = new ThreadEventStore({
+      threadDbPath: tempThreadDbPath(),
+      worker: {
+        lowerBandProjectionTokenCounter: {
+          async countTurnLowerBandProjection() {
+            return { count: 5 };
+          },
+        },
+      },
+    });
+
+    try {
+      await store.createThread({ clientThreadId: "client-alpha" });
+      await store.appendMany("client-alpha", [
+        appendInput({ idempotencyKey: "prompt-1", payload: { text: "first" } }),
+        appendInput({
+          idempotencyKey: "assistant-1",
+          eventKind: "assistant_text",
+          actor: { actorKind: "assistant", actorId: "assistant-main" },
+          payload: { text: "one" },
+        }),
+        turnEndInput({ idempotencyKey: "turn-end-1" }),
+        appendInput({ idempotencyKey: "prompt-2", payload: { text: "second" } }),
+        appendInput({
+          idempotencyKey: "assistant-2",
+          eventKind: "assistant_text",
+          actor: { actorKind: "assistant", actorId: "assistant-main" },
+          payload: { text: "two" },
+        }),
+        turnEndInput({ idempotencyKey: "turn-end-2" }),
+      ]);
+
+      const triggers = await store.listTurnProcessingTriggers();
+      expect(triggers).toHaveLength(2);
+
+      expect(await store.processTurnEndTrigger(triggers[1]!.triggerId)).toMatchObject({
+        completed: false,
+        retryable: false,
+        reason: "no_pending_trigger",
+      });
+      expect(await store.readTurns("client-alpha")).toEqual([]);
+
+      expect(await store.processTurnEndTrigger(triggers[0]!.triggerId)).toMatchObject({
+        completed: true,
+        retryable: false,
+      });
+      expect(await store.processTurnEndTrigger(triggers[1]!.triggerId)).toMatchObject({
+        completed: true,
+        retryable: false,
+      });
+
+      const turns = await store.readTurns("client-alpha");
+      expect(turns.map((turn) => [turn.turnOrder, turn.turnEndEventOrder])).toEqual([[1, 4], [2, 7]]);
+      expect(new Set(turns.map((turn) => turn.turnId)).size).toBe(2);
+      expect((await store.listTurnProcessingTriggers()).map((trigger) => trigger.status)).toEqual([
+        "complete",
+        "complete",
+      ]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("worker chunks an eligible current turn incrementally and is idempotent on rerun", async () => {
+    const store = new ThreadEventStore({
+      threadDbPath: tempThreadDbPath(),
+      worker: {
+        lowerBandProjectionTokenCounter: {
+          async countTurnLowerBandProjection(input) {
+            expect(input.text).toContain("Hello");
+            return { count: 5 };
+          },
+        },
+      },
+    });
+
+    try {
+      await store.createThread({ clientThreadId: "client-alpha" });
+      await store.appendMany("client-alpha", [
+        appendInput({ idempotencyKey: "prompt-1", payload: { text: "Hello" } }),
+        appendInput({
+          idempotencyKey: "assistant-1",
+          eventKind: "assistant_text",
+          actor: { actorKind: "assistant", actorId: "assistant-main" },
+          payload: { text: "Hi" },
+        }),
+        turnEndInput(),
+      ]);
+
+      const processed = await store.processNextTurnEndTrigger();
+      expect(processed.completed).toBe(true);
+      expect(processed.updatedChunkIds).toHaveLength(1);
+      expect((await store.readTurns("client-alpha"))[0]).toMatchObject({
+        turnOrder: 1,
+        processingStatus: "ready",
+      });
+      const chunks = await store.readChunks("client-alpha");
+      expect(chunks).toHaveLength(1);
+      expect(chunks[0]).toMatchObject({
+        chunkOrder: 1,
+        lifecycleStatus: "open",
+        sourceTurnIds: [(await store.readTurns("client-alpha"))[0]?.turnId],
+      });
+      expect(await store.processNextTurnEndTrigger()).toMatchObject({
+        completed: false,
+        reason: "no_pending_trigger",
+      });
+      expect(await store.readChunks("client-alpha")).toHaveLength(1);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("worker writes ready detailed and brief artifacts inline when a chunk closes", async () => {
+    const store = new ThreadEventStore({
+      threadDbPath: tempThreadDbPath(),
+      worker: {
+        chunkSettings: { hardMaxSmoothTokens: 1 },
+        lowerBandProjectionTokenCounter: {
+          async countTurnLowerBandProjection() {
+            return { count: 5 };
+          },
+        },
+        chunkCompressionProvider: {
+          async compressChunk(input) {
+            return { text: `${input.band}:${input.transcript.slice(0, 10)}` };
+          },
+        },
+      },
+    });
+
+    try {
+      await store.createThread({ clientThreadId: "client-alpha" });
+      await store.appendMany("client-alpha", [
+        appendInput({ idempotencyKey: "prompt-1", payload: { text: "Hello" } }),
+        appendInput({
+          idempotencyKey: "assistant-1",
+          eventKind: "assistant_text",
+          actor: { actorKind: "assistant", actorId: "assistant-main" },
+          payload: { text: "Hi" },
+        }),
+        turnEndInput(),
+      ]);
+
+      await store.processNextTurnEndTrigger();
+      const chunks = await store.readChunks("client-alpha");
+      expect(chunks).toHaveLength(2);
+      expect(chunks[0]).toMatchObject({
+        lifecycleStatus: "closed",
+        closeReason: "hard_max",
+        lowerBand: {
+          detailed: { status: "ready" },
+          brief: { status: "ready" },
+        },
+      });
+      expect(chunks[1]).toMatchObject({
+        lifecycleStatus: "open",
+        sourceTurnIds: [],
+      });
+    } finally {
+      store.close();
+    }
+  });
+
+  it("retry fills missing artifacts on an already-closed chunk before completing the trigger", async () => {
+    const dbPath = tempThreadDbPath();
+    const store = new ThreadEventStore({
+      threadDbPath: dbPath,
+      worker: {
+        chunkSettings: { hardMaxSmoothTokens: 1 },
+        lowerBandProjectionTokenCounter: {
+          async countTurnLowerBandProjection() {
+            return { count: 5 };
+          },
+        },
+        chunkCompressionProvider: {
+          async compressChunk(input) {
+            return { text: `${input.band}:retry:${input.transcript.slice(0, 10)}` };
+          },
+        },
+      },
+    });
+
+    try {
+      await store.createThread({ clientThreadId: "client-alpha" });
+      await store.appendMany("client-alpha", [
+        appendInput({ idempotencyKey: "prompt-1", payload: { text: "Hello" } }),
+        appendInput({
+          idempotencyKey: "assistant-1",
+          eventKind: "assistant_text",
+          actor: { actorKind: "assistant", actorId: "assistant-main" },
+          payload: { text: "Hi" },
+        }),
+        turnEndInput(),
+      ]);
+
+      await store.processNextTurnEndTrigger();
+      const trigger = (await store.listTurnProcessingTriggers())[0]!;
+      const closedChunk = (await store.readChunks("client-alpha")).find((chunk) => chunk.lifecycleStatus === "closed")!;
+      expect(closedChunk.lowerBand).toMatchObject({
+        detailed: { status: "ready" },
+        brief: { status: "ready" },
+      });
+
+      const db = new Database(dbPath);
+      try {
+        db.prepare("UPDATE chunks SET lower_band_json = NULL WHERE chunk_id = ?").run(closedChunk.chunkId);
+        db.prepare(`
+          UPDATE turn_processing_triggers
+          SET status = 'failed',
+              completed_at = NULL,
+              claimed_at = NULL,
+              last_error = 'simulated transient artifact persistence failure'
+          WHERE trigger_id = ?
+        `).run(trigger.triggerId);
+      } finally {
+        db.close();
+      }
+
+      const retry = await store.processTurnEndTrigger(trigger.triggerId);
+      expect(retry).toMatchObject({ completed: true, retryable: false });
+
+      const repairedClosedChunk = (await store.readChunks("client-alpha"))
+        .find((chunk) => chunk.chunkId === closedChunk.chunkId)!;
+      expect(repairedClosedChunk.lowerBand).toMatchObject({
+        detailed: { status: "ready", text: expect.stringContaining("detailed:retry") },
+        brief: { status: "ready", text: expect.stringContaining("brief:retry") },
+      });
+      expect((await store.listTurnProcessingTriggers())[0]).toMatchObject({
+        triggerId: trigger.triggerId,
+        status: "complete",
+      });
     } finally {
       store.close();
     }

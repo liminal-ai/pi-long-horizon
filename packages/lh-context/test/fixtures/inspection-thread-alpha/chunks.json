@@ -1,0 +1,57 @@
+[
+  {
+    "chunkId": "chunk-001",
+    "lifecycleStatus": "closed",
+    "sourceTurnIds": [
+      "turn_zzz"
+    ],
+    "smoothTokenCountMetadata": {
+      "count": 7,
+      "source": "pi_heuristic",
+      "trustClass": "pi_heuristic"
+    },
+    "lowerBand": {
+      "detailed": {
+        "text": "Detailed summary",
+        "tokenCountMetadata": {
+          "count": 50,
+          "source": "provider",
+          "trustClass": "exact"
+        }
+      },
+      "brief": {
+        "text": "Brief summary",
+        "tokenCountMetadata": {
+          "count": 20,
+          "source": "pi_heuristic",
+          "trustClass": "pi_heuristic"
+        }
+      }
+    },
+    "placeholders": {
+      "detailed": {
+        "text": "Legacy detailed",
+        "tokenCountMetadata": {
+          "count": 5,
+          "source": "provider",
+          "trustClass": "exact"
+        }
+      },
+      "brief": {
+        "text": "Legacy brief",
+        "tokenCountMetadata": {
+          "count": 2,
+          "source": "pi_heuristic",
+          "trustClass": "pi_heuristic"
+        }
+      }
+    }
+  },
+  {
+    "chunkId": "chunk-002",
+    "lifecycleStatus": "open",
+    "sourceTurnIds": [
+      "turn_aaa"
+    ]
+  }
+]

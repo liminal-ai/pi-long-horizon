@@ -1,0 +1,52 @@
+[
+  {
+    "turnId": "turn_zzz",
+    "turnOrder": 1,
+    "lifecycleStatus": "closed",
+    "rawTokenCountMetadata": {
+      "count": 12,
+      "source": "provider_input_count",
+      "trustClass": "provider_input_count"
+    },
+    "smooth": {
+      "text": "User asks. Agent answers.",
+      "tokenCountMetadata": {
+        "count": 7,
+        "source": "pi_heuristic",
+        "trustClass": "pi_heuristic"
+      },
+      "lowerBandProjection": {
+        "tokenCountMetadata": {
+          "count": 4,
+          "source": "pi_heuristic",
+          "trustClass": "pi_heuristic"
+        }
+      }
+    }
+  },
+  {
+    "turnId": "turn_aaa",
+    "turnOrder": 2,
+    "lifecycleStatus": "open",
+    "rawTokenCountMetadata": {
+      "count": 20,
+      "source": "provider_input_count",
+      "trustClass": "provider_input_count"
+    },
+    "smooth": {
+      "text": "Open work.",
+      "tokenCountMetadata": {
+        "count": 3,
+        "source": "pi_heuristic",
+        "trustClass": "pi_heuristic"
+      },
+      "lowerBandProjection": {
+        "tokenCountMetadata": {
+          "count": 6,
+          "source": "pi_heuristic",
+          "trustClass": "pi_heuristic"
+        }
+      }
+    }
+  }
+]

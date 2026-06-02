@@ -1,8 +1,6 @@
 import { describe, expect, it } from "vitest";
-import path from "node:path";
 import { inspectPostCompactReport } from "../../src/index.js";
-
-const rootDir = path.resolve("test/fixtures/sample");
+import { inspectionFixtureDir } from "../fixture-paths.js";
 
 function bucketTotal(buckets: Array<{ label: string; count: number }>, label: string): number {
   return buckets.filter((bucket) => bucket.label === label).reduce((sum, bucket) => sum + bucket.count, 0);
@@ -10,7 +8,7 @@ function bucketTotal(buckets: Array<{ label: string; count: number }>, label: st
 
 describe("post-compact report", () => {
   it("composes canonical, generated, band, status, and token-scale facts without message bodies", async () => {
-    const report = await inspectPostCompactReport({ rootDir });
+    const report = await inspectPostCompactReport({ rootDir: inspectionFixtureDir, threadDir: inspectionFixtureDir });
 
     expect(report.kind).toBe("post_compact_report");
     expect(report.threadId).toBe("thread_alpha");
@@ -46,7 +44,11 @@ describe("post-compact report", () => {
   });
 
   it("returns a partial report with warnings when the generated thread-view file is missing", async () => {
-    const report = await inspectPostCompactReport({ rootDir, threadViewPath: "does-not-exist.jsonl" });
+    const report = await inspectPostCompactReport({
+      rootDir: inspectionFixtureDir,
+      threadDir: inspectionFixtureDir,
+      threadViewPath: "does-not-exist.jsonl",
+    });
 
     expect(report.canonical.messages.total).toBe(3);
     expect(report.generatedThreadView.recordCount).toBe(0);

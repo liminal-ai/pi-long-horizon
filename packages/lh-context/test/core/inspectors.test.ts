@@ -1,13 +1,11 @@
 import { describe, expect, it } from "vitest";
-import path from "node:path";
 import { inspectBands, inspectSummary, inspectTokens } from "../../src/index.js";
 import { formatBandsHuman } from "../../src/output/format.js";
-
-const rootDir = path.resolve("test/fixtures/sample");
+import { inspectionFixtureDir } from "../fixture-paths.js";
 
 describe("core inspectors", () => {
   it("summarizes canonical thread state without large message bodies", async () => {
-    const result = await inspectSummary({ rootDir });
+    const result = await inspectSummary({ rootDir: inspectionFixtureDir, threadDir: inspectionFixtureDir });
     expect(result.threadId).toBe("thread_alpha");
     expect(result.messages.total).toBe(3);
     expect(result.messages.byKind.prompt).toBe(1);
@@ -21,7 +19,7 @@ describe("core inspectors", () => {
   });
 
   it("rolls token metadata and distinguishes provider exact from heuristic", async () => {
-    const result = await inspectTokens({ rootDir });
+    const result = await inspectTokens({ rootDir: inspectionFixtureDir, threadDir: inspectionFixtureDir });
     expect(result.estimates.canonicalVisibleTextRaw.label).toBe("estimate");
     expect(result.generatedThreadViewTokenCount?.count).toBe(1234);
     expect(result.generatedThreadViewTokenCount?.source).toBe("thread_view_output_summary.generatedSessionTokenCountMetadata");
@@ -33,7 +31,7 @@ describe("core inspectors", () => {
   });
 
   it("reports generated thread-view band layout", async () => {
-    const result = await inspectBands({ rootDir });
+    const result = await inspectBands({ rootDir: inspectionFixtureDir, threadDir: inspectionFixtureDir });
     expect(result.recordCount).toBe(4);
     expect(result.messageCount).toBe(2);
     expect(result.latestAssistantUsageTotalTokens).toBe(0);
@@ -51,14 +49,18 @@ describe("core inspectors", () => {
   });
 
   it("formats band human output with turn order ranges, not lexical UUID ranges", async () => {
-    const result = await inspectBands({ rootDir });
+    const result = await inspectBands({ rootDir: inspectionFixtureDir, threadDir: inspectionFixtureDir });
     const text = formatBandsHuman(result);
     expect(text).toContain("full_fidelity: entries=2 turns=2 (turns 1-2)");
     expect(text).not.toContain("turn_aaa..turn_zzz");
   });
 
   it("handles a missing generated thread-view gracefully", async () => {
-    const result = await inspectBands({ rootDir, threadViewPath: "does-not-exist.jsonl" });
+    const result = await inspectBands({
+      rootDir: inspectionFixtureDir,
+      threadDir: inspectionFixtureDir,
+      threadViewPath: "does-not-exist.jsonl",
+    });
     expect(result.recordCount).toBe(0);
     expect(result.warnings.join("\n")).toContain("not found");
   });

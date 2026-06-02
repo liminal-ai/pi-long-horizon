@@ -10,6 +10,7 @@ export const ThreadEventKindSchema = Schema.Literal(
   "tool_call",
   "tool_result",
   "runtime_note",
+  "turn_end",
 );
 export type ThreadEventKind = Schema.Schema.Type<typeof ThreadEventKindSchema>;
 
@@ -20,6 +21,7 @@ export const AppendThreadEventKindSchema = Schema.Literal(
   "tool_call",
   "tool_result",
   "runtime_note",
+  "turn_end",
 );
 export type AppendThreadEventKind = Schema.Schema.Type<typeof AppendThreadEventKindSchema>;
 
@@ -198,6 +200,13 @@ export const RuntimeNotePayloadSchema = Schema.Struct({
 });
 export type RuntimeNotePayload = Schema.Schema.Type<typeof RuntimeNotePayloadSchema>;
 
+const TurnEndPayloadInputSchema = Schema.Struct({});
+
+export const TurnEndPayloadSchema = Schema.Struct({
+  _tag: Schema.Literal("turn_end"),
+});
+export type TurnEndPayload = Schema.Schema.Type<typeof TurnEndPayloadSchema>;
+
 export const ThreadEventPayloadSchema = Schema.Union(
   ThreadCreatedPayloadSchema,
   UserPromptPayloadSchema,
@@ -206,6 +215,7 @@ export const ThreadEventPayloadSchema = Schema.Union(
   ToolCallPayloadSchema,
   ToolResultPayloadSchema,
   RuntimeNotePayloadSchema,
+  TurnEndPayloadSchema,
 );
 export type ThreadEventPayload = Schema.Schema.Type<typeof ThreadEventPayloadSchema>;
 
@@ -239,6 +249,11 @@ export const ThreadEventAppendInputSchema = Schema.Union(
     ...BaseAppendInputFields,
     eventKind: Schema.Literal("runtime_note"),
     payload: RuntimeNotePayloadInputSchema,
+  }),
+  Schema.Struct({
+    ...BaseAppendInputFields,
+    eventKind: Schema.Literal("turn_end"),
+    payload: TurnEndPayloadInputSchema,
   }),
 );
 export type ThreadEventAppendInput = Schema.Schema.Type<typeof ThreadEventAppendInputSchema>;
@@ -344,6 +359,8 @@ export function normalizePayload(eventKind: ThreadEventKind, payload: JsonObject
       return decodeOrThrow(ToolResultPayloadSchema, normalized, "Invalid tool_result payload");
     case "runtime_note":
       return decodeOrThrow(RuntimeNotePayloadSchema, normalized, "Invalid runtime_note payload");
+    case "turn_end":
+      return decodeOrThrow(TurnEndPayloadSchema, normalized, "Invalid turn_end payload");
   }
 
   const unreachable: never = eventKind;

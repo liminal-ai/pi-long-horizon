@@ -1,0 +1,4 @@
+{"type":"session","id":"s1"}
+{"type":"custom","customType":"pi-long-horizon.thread-view.output","data":{"threadId":"thread_alpha","entries":[{"index":0,"metadata":{"bandType":"full_fidelity","sourceReference":"turn_aaa/message_m2"}},{"index":1,"metadata":{"bandType":"full_fidelity","sourceReference":"turn_zzz/message_m1"}},{"index":2,"metadata":{"bandType":"smooth","sourceReference":"turn_aaa"}},{"index":3,"metadata":{"bandType":"detailed","sourceReference":"chunk-001"}},{"index":4,"metadata":{"bandType":"brief","sourceReference":"chunk-001"}}]}}
+{"type":"message","message":{"role":"user","content":[{"type":"text","text":"hello"}]}}
+{"type":"message","message":{"role":"assistant","usage":{"totalTokens":0},"content":[{"type":"text","text":"answer"}]}}

@@ -1,0 +1,37 @@
+{
+  "threadId": "thread_alpha",
+  "updatedAt": "2026-05-01T00:00:00.000Z",
+  "sourceRevision": 3,
+  "messageHighWatermark": 3,
+  "target": {
+    "runtime": "pi",
+    "currentGeneratedFilePath": "generated/view.jsonl"
+  },
+  "threadViewOutputSummary": {
+    "generatedOutput": {
+      "generatedSessionTokenCount": 1234,
+      "generatedSessionTokenCountMetadata": {
+        "count": 1234,
+        "scope": "generated_session",
+        "source": "provider_input_count",
+        "trustClass": "exact"
+      }
+    }
+  },
+  "status": {
+    "maintenance": {
+      "status": "degraded",
+      "issueCount": 1,
+      "issues": [
+        {
+          "code": "summary_missing",
+          "message": "brief pending"
+        }
+      ]
+    },
+    "repair": {
+      "status": "repair_needed",
+      "issueCount": 1
+    }
+  }
+}

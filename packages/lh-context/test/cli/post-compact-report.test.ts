@@ -1,12 +1,10 @@
 import { describe, expect, it } from "vitest";
-import path from "node:path";
 import { runCli } from "../../src/commands/run.js";
-
-const rootDir = path.resolve("test/fixtures/sample");
+import { inspectionFixtureArgs } from "../fixture-paths.js";
 
 describe("inspect report post-compact CLI", () => {
   it("returns stable structured JSON", async () => {
-    const result = await runCli(["inspect", "report", "post-compact", "--root", rootDir, "--json"]);
+    const result = await runCli(["inspect", "report", "post-compact", ...inspectionFixtureArgs, "--json"]);
 
     expect(result.exitCode).toBe(0);
     expect(result.stderr).toBe("");
@@ -19,7 +17,7 @@ describe("inspect report post-compact CLI", () => {
   });
 
   it("formats a human post-compact report by sections and stable facts", async () => {
-    const result = await runCli(["inspect", "report", "post-compact", "--root", rootDir]);
+    const result = await runCli(["inspect", "report", "post-compact", ...inspectionFixtureArgs]);
 
     expect(result.exitCode).toBe(0);
     const text = result.stdout;

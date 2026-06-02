@@ -1,0 +1,3 @@
+{"messageId":"m1","actorType":"human","messageKind":"prompt","parts":[{"partType":"text","content":"hello there"}]}
+{"messageId":"m2","actorType":"agent","messageKind":"response","parts":[{"partType":"text","content":{"text":"hi"}}]}
+{"messageId":"m3","actorType":"tool","messageKind":"tool_result","parts":[{"partType":"tool_result","content":{"output":"tool output payload"}}]}

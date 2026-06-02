@@ -1,5 +1,5 @@
 import { mkdirSync } from "node:fs";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { dirname, resolve } from "node:path";
 
 import * as SqlClient from "@effect/sql/SqlClient";
@@ -28,6 +28,7 @@ export interface ThreadEventStoreOptions {
   threadDbPath?: string;
   now?: () => Date;
   idGenerator?: () => string;
+  worker?: TurnEndWorkerDependencies;
 }
 
 export interface ProjectedThread {
@@ -84,11 +85,21 @@ export interface AppendThreadEventResult {
   duplicate: boolean;
   messages: ProjectedMessage[];
   blocks: ProjectedMessageBlock[];
+  trigger?: TurnProcessingTrigger;
+  triggered?: boolean;
+  reason?: "no_open_turn_span";
 }
 
 export interface AppendThreadEventsSuccess extends AppendThreadEventResult {
   ok: true;
   inputIndex: number;
+}
+
+export interface AppendThreadEventsSkipped {
+  ok: true;
+  inputIndex: number;
+  skipped: true;
+  reason: "ignored_after_turn_end";
 }
 
 export interface AppendThreadEventsFailure {
@@ -100,7 +111,10 @@ export interface AppendThreadEventsFailure {
   };
 }
 
-export type AppendThreadEventsItemResult = AppendThreadEventsSuccess | AppendThreadEventsFailure;
+export type AppendThreadEventsItemResult =
+  | AppendThreadEventsSuccess
+  | AppendThreadEventsSkipped
+  | AppendThreadEventsFailure;
 
 export interface AppendThreadEventsResult {
   ok: boolean;
@@ -158,6 +172,177 @@ interface MessageBlockSqlRow {
   source_thread_event_id: string;
 }
 
+export type TurnProcessingTriggerStatus = "pending" | "claimed" | "complete" | "failed";
+export type TurnLifecycleStatus = "closed";
+export type TurnProcessingStatus = "ready" | "non_ready" | "failed";
+export type ChunkLifecycleStatus = "open" | "closed";
+
+export interface TurnProcessingTrigger {
+  triggerId: string;
+  threadId: string;
+  turnEndEventOrder: number;
+  status: TurnProcessingTriggerStatus;
+  createdAt: string;
+  updatedAt: string;
+  claimedAt?: string;
+  completedAt?: string;
+  attemptCount: number;
+  lastError?: string;
+}
+
+export interface CanonicalTurn {
+  turnId: string;
+  threadId: string;
+  turnOrder: number;
+  lifecycleStatus: TurnLifecycleStatus;
+  processingStatus: TurnProcessingStatus;
+  initiatingMessageId: string;
+  messageIds: string[];
+  fromMessageOrder: number;
+  toMessageOrder: number;
+  fromEventOrder: number;
+  turnEndEventOrder: number;
+  openedAt: string;
+  closedAt: string;
+  sourceRevision: number;
+  rawTokenCountMetadata?: JsonObject;
+  smooth?: JsonObject;
+  lowerBandProjection?: JsonObject;
+  repairMetadata?: JsonObject;
+}
+
+export interface CanonicalChunk {
+  chunkId: string;
+  threadId: string;
+  chunkOrder: number;
+  lifecycleStatus: ChunkLifecycleStatus;
+  openedAt: string;
+  closedAt?: string;
+  closeReason?: "soft_threshold" | "hard_max";
+  sourceRevision?: number;
+  sourceTurnIds: string[];
+  smoothText?: string;
+  smoothTokenCountMetadata?: JsonObject;
+  conversationTranscript?: JsonObject;
+  lowerBand?: JsonObject;
+}
+
+export interface TurnSmoothingProvider {
+  smoothUserPrompt(input: {
+    threadId: string;
+    turnId: string;
+    text: string;
+  }): Promise<{ text: string; metadata?: JsonObject }>;
+}
+
+export interface TurnLowerBandProjectionTokenCounter {
+  countTurnLowerBandProjection(input: {
+    threadId: string;
+    turnId: string;
+    text: string;
+  }): Promise<{ count: number; metadata?: JsonObject }>;
+}
+
+export interface ChunkLowerBandCompressionProvider {
+  compressChunk(input: {
+    threadId: string;
+    chunkId: string;
+    band: "detailed" | "brief";
+    transcript: string;
+  }): Promise<{ text: string; metadata?: JsonObject }>;
+}
+
+export interface TurnEndWorkerDependencies {
+  smoothingProvider?: TurnSmoothingProvider;
+  lowerBandProjectionTokenCounter?: TurnLowerBandProjectionTokenCounter;
+  chunkCompressionProvider?: ChunkLowerBandCompressionProvider;
+  chunkSettings?: Partial<ChunkCloseSettings>;
+}
+
+export interface ChunkCloseSettings {
+  targetMinSmoothTokens: number;
+  targetSoftMaxSmoothTokens: number;
+  hardMaxSmoothTokens: number;
+}
+
+export interface ProcessTurnEndTriggerResult {
+  trigger?: TurnProcessingTrigger;
+  turn?: CanonicalTurn;
+  updatedChunkIds: string[];
+  completed: boolean;
+  retryable: boolean;
+  reason?: "no_pending_trigger" | "turn_not_ready";
+}
+
+interface TriggerSqlRow {
+  trigger_id: string;
+  thread_id: string;
+  turn_end_event_order: number;
+  status: TurnProcessingTriggerStatus;
+  created_at: string;
+  updated_at: string;
+  claimed_at: string | null;
+  completed_at: string | null;
+  attempt_count: number;
+  last_error: string | null;
+}
+
+interface TurnSqlRow {
+  turn_id: string;
+  thread_id: string;
+  turn_order: number;
+  lifecycle_status: TurnLifecycleStatus;
+  processing_status: TurnProcessingStatus;
+  initiating_message_id: string;
+  message_ids_json: string;
+  from_message_order: number;
+  to_message_order: number;
+  from_event_order: number;
+  turn_end_event_order: number;
+  opened_at: string;
+  closed_at: string;
+  source_revision: number;
+  raw_token_count_metadata_json: string | null;
+  smooth_json: string | null;
+  lower_band_projection_json: string | null;
+  repair_metadata_json: string | null;
+}
+
+interface ChunkSqlRow {
+  chunk_id: string;
+  thread_id: string;
+  chunk_order: number;
+  lifecycle_status: ChunkLifecycleStatus;
+  opened_at: string;
+  closed_at: string | null;
+  close_reason: "soft_threshold" | "hard_max" | null;
+  source_revision: number | null;
+  source_turn_ids_json: string;
+  smooth_text: string | null;
+  smooth_token_count_metadata_json: string | null;
+  conversation_transcript_json: string | null;
+  lower_band_json: string | null;
+}
+
+interface TurnWorkerInput {
+  trigger: TurnProcessingTrigger;
+  turnEndEvent: PersistedThreadEvent;
+  messages: ProjectedMessageWithBlocks[];
+  turnOrder: number;
+}
+
+interface ComputedTurnProjection {
+  turn: CanonicalTurn;
+  turnIsChunkEligible: boolean;
+}
+
+interface ComputedChunkArtifact {
+  threadId: string;
+  chunkId: string;
+  band: "detailed" | "brief";
+  record: JsonObject;
+}
+
 interface SqliteMasterObjectRow {
   name: string;
   type: string;
@@ -206,6 +391,12 @@ interface BlockProjectionDraft {
 }
 
 const SQLITE_BUSY_TIMEOUT_MS = 5_000;
+
+const DEFAULT_CHUNK_CLOSE_SETTINGS: ChunkCloseSettings = {
+  targetMinSmoothTokens: 1_200,
+  targetSoftMaxSmoothTokens: 1_800,
+  hardMaxSmoothTokens: 2_200,
+};
 
 const EXPECTED_TABLE_SCHEMAS: Readonly<Record<string, ExpectedTableSchema>> = {
   threads: {
@@ -261,6 +452,62 @@ const EXPECTED_TABLE_SCHEMAS: Readonly<Record<string, ExpectedTableSchema>> = {
     },
     uniqueColumnSets: [["message_id", "block_order"]],
   },
+  turn_processing_triggers: {
+    columns: {
+      trigger_id: { type: "TEXT", notnull: true, pk: true },
+      thread_id: { type: "TEXT", notnull: true, pk: false },
+      turn_end_event_order: { type: "INTEGER", notnull: true, pk: false },
+      status: { type: "TEXT", notnull: true, pk: false },
+      created_at: { type: "TEXT", notnull: true, pk: false },
+      updated_at: { type: "TEXT", notnull: true, pk: false },
+      claimed_at: { type: "TEXT", notnull: false, pk: false },
+      completed_at: { type: "TEXT", notnull: false, pk: false },
+      attempt_count: { type: "INTEGER", notnull: true, pk: false },
+      last_error: { type: "TEXT", notnull: false, pk: false },
+    },
+    uniqueColumnSets: [["thread_id", "turn_end_event_order"]],
+  },
+  turns: {
+    columns: {
+      turn_id: { type: "TEXT", notnull: true, pk: true },
+      thread_id: { type: "TEXT", notnull: true, pk: false },
+      turn_order: { type: "INTEGER", notnull: true, pk: false },
+      lifecycle_status: { type: "TEXT", notnull: true, pk: false },
+      processing_status: { type: "TEXT", notnull: true, pk: false },
+      initiating_message_id: { type: "TEXT", notnull: true, pk: false },
+      message_ids_json: { type: "TEXT", notnull: true, pk: false },
+      from_message_order: { type: "INTEGER", notnull: true, pk: false },
+      to_message_order: { type: "INTEGER", notnull: true, pk: false },
+      from_event_order: { type: "INTEGER", notnull: true, pk: false },
+      turn_end_event_order: { type: "INTEGER", notnull: true, pk: false },
+      opened_at: { type: "TEXT", notnull: true, pk: false },
+      closed_at: { type: "TEXT", notnull: true, pk: false },
+      source_revision: { type: "INTEGER", notnull: true, pk: false },
+      raw_token_count_metadata_json: { type: "TEXT", notnull: false, pk: false },
+      smooth_json: { type: "TEXT", notnull: false, pk: false },
+      lower_band_projection_json: { type: "TEXT", notnull: false, pk: false },
+      repair_metadata_json: { type: "TEXT", notnull: false, pk: false },
+    },
+    uniqueColumnSets: [["thread_id", "turn_order"], ["thread_id", "turn_end_event_order"]],
+  },
+  chunks: {
+    columns: {
+      chunk_id: { type: "TEXT", notnull: true, pk: true },
+      thread_id: { type: "TEXT", notnull: true, pk: false },
+      chunk_order: { type: "INTEGER", notnull: true, pk: false },
+      lifecycle_status: { type: "TEXT", notnull: true, pk: false },
+      opened_at: { type: "TEXT", notnull: true, pk: false },
+      closed_at: { type: "TEXT", notnull: false, pk: false },
+      close_reason: { type: "TEXT", notnull: false, pk: false },
+      source_revision: { type: "INTEGER", notnull: false, pk: false },
+      source_turn_ids_json: { type: "TEXT", notnull: true, pk: false },
+      smooth_text: { type: "TEXT", notnull: false, pk: false },
+      smooth_token_count_metadata_json: { type: "TEXT", notnull: false, pk: false },
+      conversation_transcript_json: { type: "TEXT", notnull: false, pk: false },
+      lower_band_json: { type: "TEXT", notnull: false, pk: false },
+    },
+    uniqueColumnSets: [["thread_id", "chunk_order"]],
+  },
 };
 
 const THREAD_CREATED_ACTOR: ActorRef = {
@@ -276,6 +523,7 @@ export class ThreadEventStore {
   private readonly eventDbPath: string;
   private readonly now: () => Date;
   private readonly idGenerator: () => string;
+  private readonly worker: TurnEndWorkerDependencies;
 
   constructor(options: ThreadEventStoreOptions) {
     const eventDbPath = options.eventDbPath ?? options.threadDbPath;
@@ -286,6 +534,7 @@ export class ThreadEventStore {
     this.eventDbPath = resolve(eventDbPath);
     this.now = options.now ?? (() => new Date());
     this.idGenerator = options.idGenerator ?? (() => randomUUID());
+    this.worker = options.worker ?? {};
   }
 
   close(): void {
@@ -385,8 +634,19 @@ export class ThreadEventStore {
 
         let returnedThread = thread;
         const results: AppendThreadEventsItemResult[] = [];
+        let skipUntilUserPrompt = false;
         for (let index = 0; index < batch.events.length; index += 1) {
           const eventInput = batch.events[index];
+          if (skipUntilUserPrompt && !isUserPromptAppendInput(eventInput)) {
+            results.push({
+              ok: true,
+              inputIndex: index,
+              skipped: true,
+              reason: "ignored_after_turn_end",
+            });
+            continue;
+          }
+
           let normalized: NormalizedThreadEventAppendInput;
           try {
             normalized = decodeThreadEventAppendInput(eventInput);
@@ -400,6 +660,10 @@ export class ThreadEventStore {
               },
             });
             break;
+          }
+
+          if (skipUntilUserPrompt && normalized.eventKind === "user_prompt") {
+            skipUntilUserPrompt = false;
           }
 
           const appendedEither = yield* appendDecodedEvent(
@@ -433,6 +697,9 @@ export class ThreadEventStore {
             inputIndex: index,
             ...appended,
           });
+          if (appended.event.eventKind === "turn_end" && appended.triggered !== false) {
+            skipUntilUserPrompt = true;
+          }
         }
 
         return {
@@ -452,7 +719,7 @@ export class ThreadEventStore {
     }
 
     const first = result.results[0];
-    if (!first?.ok) {
+    if (!first?.ok || "skipped" in first) {
       throw new ThreadEventStoreError("Thread event append produced no result.");
     }
 
@@ -461,6 +728,9 @@ export class ThreadEventStore {
       duplicate: first.duplicate,
       messages: first.messages,
       blocks: first.blocks,
+      trigger: first.trigger,
+      triggered: first.triggered,
+      reason: first.reason,
     };
   }
 
@@ -491,6 +761,88 @@ export class ThreadEventStore {
         return rows.map(rowToThread);
       }),
     );
+  }
+
+  async listTurnProcessingTriggers(): Promise<TurnProcessingTrigger[]> {
+    return this.runSql(
+      Effect.gen(function*() {
+        const sql = yield* SqlClient.SqlClient;
+        const rows = yield* sql<TriggerSqlRow>`
+          SELECT *
+          FROM turn_processing_triggers
+          ORDER BY created_at ASC, trigger_id ASC
+        `;
+        return rows.map(rowToTrigger);
+      }),
+    );
+  }
+
+  async readTurns(clientThreadId: string): Promise<CanonicalTurn[]> {
+    const thread = await this.findThread(clientThreadId);
+    if (!thread) {
+      return [];
+    }
+
+    return this.runSql(
+      Effect.gen(function*() {
+        const sql = yield* SqlClient.SqlClient;
+        const rows = yield* sql<TurnSqlRow>`
+          SELECT *
+          FROM turns
+          WHERE thread_id = ${thread.threadId}
+          ORDER BY turn_order ASC
+        `;
+        return rows.map(rowToTurn);
+      }),
+    );
+  }
+
+  async readChunks(clientThreadId: string): Promise<CanonicalChunk[]> {
+    const thread = await this.findThread(clientThreadId);
+    if (!thread) {
+      return [];
+    }
+
+    return this.runSql(
+      Effect.gen(function*() {
+        const sql = yield* SqlClient.SqlClient;
+        const rows = yield* sql<ChunkSqlRow>`
+          SELECT *
+          FROM chunks
+          WHERE thread_id = ${thread.threadId}
+          ORDER BY chunk_order ASC
+        `;
+        return rows.map(rowToChunk);
+      }),
+    );
+  }
+
+  async processNextTurnEndTrigger(): Promise<ProcessTurnEndTriggerResult> {
+    const claimed = await this.claimNextTurnEndTrigger();
+    if (!claimed) {
+      return {
+        updatedChunkIds: [],
+        completed: false,
+        retryable: false,
+        reason: "no_pending_trigger",
+      };
+    }
+
+    return this.processClaimedTurnEndTrigger(claimed);
+  }
+
+  async processTurnEndTrigger(triggerId: string): Promise<ProcessTurnEndTriggerResult> {
+    const claimed = await this.claimTurnEndTrigger(triggerId);
+    if (!claimed) {
+      return {
+        updatedChunkIds: [],
+        completed: false,
+        retryable: false,
+        reason: "no_pending_trigger",
+      };
+    }
+
+    return this.processClaimedTurnEndTrigger(claimed);
   }
 
   async readThread(clientThreadId: string): Promise<ProjectedThreadRead | undefined> {
@@ -532,6 +884,189 @@ export class ThreadEventStore {
             };
           }),
         };
+      }),
+    );
+  }
+
+  private async claimNextTurnEndTrigger(): Promise<TurnProcessingTrigger | undefined> {
+    const now = this.now;
+    return this.runSql(
+      Effect.gen(function*() {
+        const sql = yield* SqlClient.SqlClient;
+        const rows = yield* sql<TriggerSqlRow>`
+          SELECT *
+          FROM turn_processing_triggers
+          WHERE status IN ('pending', 'failed')
+            AND NOT EXISTS (
+              SELECT 1
+              FROM turn_processing_triggers claimed
+              WHERE claimed.thread_id = turn_processing_triggers.thread_id
+                AND claimed.status = 'claimed'
+            )
+            AND NOT EXISTS (
+              SELECT 1
+              FROM turn_processing_triggers earlier
+              WHERE earlier.thread_id = turn_processing_triggers.thread_id
+                AND earlier.turn_end_event_order < turn_processing_triggers.turn_end_event_order
+                AND earlier.status <> 'complete'
+            )
+          ORDER BY created_at ASC, trigger_id ASC
+          LIMIT 1
+        `;
+        const row = rows[0];
+        if (!row) {
+          return undefined;
+        }
+        return yield* claimTrigger(sql, row.trigger_id, now().toISOString());
+      }),
+    );
+  }
+
+  private async claimTurnEndTrigger(triggerId: string): Promise<TurnProcessingTrigger | undefined> {
+    const now = this.now;
+    return this.runSql(
+      Effect.gen(function*() {
+        const sql = yield* SqlClient.SqlClient;
+        return yield* claimTrigger(sql, triggerId, now().toISOString());
+      }),
+    );
+  }
+
+  private async processClaimedTurnEndTrigger(
+    trigger: TurnProcessingTrigger,
+  ): Promise<ProcessTurnEndTriggerResult> {
+    try {
+      const input = await this.readTurnWorkerInput(trigger);
+      if (!input) {
+        await this.markTriggerFailed(trigger.triggerId, "Turn trigger source state was not found.");
+        return { trigger, updatedChunkIds: [], completed: false, retryable: true };
+      }
+
+      const computed = await computeTurnProjection(input, this.worker);
+      const persisted = await this.persistComputedTurn(trigger, computed);
+      if (!persisted.turnIsChunkEligible) {
+        const completedTrigger = await this.completeTrigger(persisted.trigger.triggerId);
+        return {
+          trigger: completedTrigger ?? persisted.trigger,
+          turn: persisted.turn,
+          updatedChunkIds: [],
+          completed: true,
+          retryable: false,
+          reason: "turn_not_ready",
+        };
+      }
+
+      const chunkUpdate = await this.updateChunkForTurn(persisted.turn);
+      const priorMissingArtifactTargets = await this.readClosedChunkArtifactTargetsForTurn(persisted.turn);
+      const chunkArtifacts = await computeClosedChunkArtifacts(
+        uniqueChunksById([...chunkUpdate.closedChunks, ...priorMissingArtifactTargets]),
+        this.worker,
+        this.now,
+      );
+      const finalChunks = await this.persistChunkArtifactsAndCompleteTrigger(
+        persisted.trigger.triggerId,
+        chunkArtifacts,
+      );
+      return {
+        trigger: finalChunks.trigger,
+        turn: persisted.turn,
+        updatedChunkIds: [...new Set([...chunkUpdate.updatedChunkIds, ...finalChunks.updatedChunkIds])],
+        completed: true,
+        retryable: false,
+      };
+    } catch (error) {
+      await this.markTriggerFailed(
+        trigger.triggerId,
+        error instanceof Error ? error.message : String(error),
+      );
+      return {
+        trigger,
+        updatedChunkIds: [],
+        completed: false,
+        retryable: true,
+      };
+    }
+  }
+
+  private async readTurnWorkerInput(trigger: TurnProcessingTrigger): Promise<TurnWorkerInput | undefined> {
+    return this.runSql(
+      Effect.gen(function*() {
+        const sql = yield* SqlClient.SqlClient;
+        return yield* readTurnWorkerInput(sql, trigger);
+      }),
+    );
+  }
+
+  private async persistComputedTurn(
+    trigger: TurnProcessingTrigger,
+    computed: ComputedTurnProjection,
+  ): Promise<{ trigger: TurnProcessingTrigger; turn: CanonicalTurn; turnIsChunkEligible: boolean }> {
+    return this.runSql(
+      Effect.gen(function*() {
+        const sql = yield* SqlClient.SqlClient;
+        return yield* persistComputedTurn(sql, trigger, computed);
+      }),
+    );
+  }
+
+  private async updateChunkForTurn(
+    turn: CanonicalTurn,
+  ): Promise<{ updatedChunkIds: string[]; closedChunks: CanonicalChunk[] }> {
+    const settings = { ...DEFAULT_CHUNK_CLOSE_SETTINGS, ...this.worker.chunkSettings };
+    return this.runSql(
+      Effect.gen(function*() {
+        const sql = yield* SqlClient.SqlClient;
+        return yield* updateChunkForEligibleTurn(sql, turn, settings);
+      }),
+    );
+  }
+
+  private async readClosedChunkArtifactTargetsForTurn(turn: CanonicalTurn): Promise<CanonicalChunk[]> {
+    return this.runSql(
+      Effect.gen(function*() {
+        const sql = yield* SqlClient.SqlClient;
+        return yield* readClosedChunkArtifactTargetsForTurn(sql, turn.threadId, turn.turnId);
+      }),
+    );
+  }
+
+  private async persistChunkArtifactsAndCompleteTrigger(
+    triggerId: string,
+    artifacts: readonly ComputedChunkArtifact[],
+  ): Promise<{ trigger?: TurnProcessingTrigger; updatedChunkIds: string[] }> {
+    const now = this.now;
+    return this.runSql(
+      Effect.gen(function*() {
+        const sql = yield* SqlClient.SqlClient;
+        return yield* Effect.gen(function*() {
+          const updatedChunkIds: string[] = [];
+          for (const artifact of artifacts) {
+            yield* persistChunkArtifact(sql, artifact);
+            updatedChunkIds.push(artifact.chunkId);
+          }
+          const trigger = yield* markTriggerComplete(sql, triggerId, now().toISOString());
+          return { trigger, updatedChunkIds };
+        }).pipe(sql.withTransaction);
+      }),
+    );
+  }
+
+  private async completeTrigger(triggerId: string): Promise<TurnProcessingTrigger | undefined> {
+    const now = this.now;
+    return this.runSql(
+      Effect.gen(function*() {
+        const sql = yield* SqlClient.SqlClient;
+        return yield* markTriggerComplete(sql, triggerId, now().toISOString());
+      }),
+    );
+  }
+
+  private async markTriggerFailed(triggerId: string, message: string): Promise<void> {
+    const now = this.now;
+    await this.runSql(
+      Effect.gen(function*() {
+        const sql = yield* SqlClient.SqlClient;
+        yield* markTriggerFailed(sql, triggerId, message, now().toISOString());
       }),
     );
   }
@@ -720,12 +1255,81 @@ function setupThreadEventsSchema(sql: SqlClient.SqlClient): Effect.Effect<void, 
         ) STRICT
       `);
       yield* sql.unsafe(`
+        CREATE TABLE IF NOT EXISTS turn_processing_triggers (
+          trigger_id TEXT PRIMARY KEY,
+          thread_id TEXT NOT NULL,
+          turn_end_event_order INTEGER NOT NULL,
+          status TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          claimed_at TEXT,
+          completed_at TEXT,
+          attempt_count INTEGER NOT NULL,
+          last_error TEXT,
+          UNIQUE(thread_id, turn_end_event_order)
+        ) STRICT
+      `);
+      yield* sql.unsafe(`
+        CREATE TABLE IF NOT EXISTS turns (
+          turn_id TEXT PRIMARY KEY,
+          thread_id TEXT NOT NULL,
+          turn_order INTEGER NOT NULL,
+          lifecycle_status TEXT NOT NULL,
+          processing_status TEXT NOT NULL,
+          initiating_message_id TEXT NOT NULL,
+          message_ids_json TEXT NOT NULL,
+          from_message_order INTEGER NOT NULL,
+          to_message_order INTEGER NOT NULL,
+          from_event_order INTEGER NOT NULL,
+          turn_end_event_order INTEGER NOT NULL,
+          opened_at TEXT NOT NULL,
+          closed_at TEXT NOT NULL,
+          source_revision INTEGER NOT NULL,
+          raw_token_count_metadata_json TEXT,
+          smooth_json TEXT,
+          lower_band_projection_json TEXT,
+          repair_metadata_json TEXT,
+          UNIQUE(thread_id, turn_order),
+          UNIQUE(thread_id, turn_end_event_order)
+        ) STRICT
+      `);
+      yield* sql.unsafe(`
+        CREATE TABLE IF NOT EXISTS chunks (
+          chunk_id TEXT PRIMARY KEY,
+          thread_id TEXT NOT NULL,
+          chunk_order INTEGER NOT NULL,
+          lifecycle_status TEXT NOT NULL,
+          opened_at TEXT NOT NULL,
+          closed_at TEXT,
+          close_reason TEXT,
+          source_revision INTEGER,
+          source_turn_ids_json TEXT NOT NULL,
+          smooth_text TEXT,
+          smooth_token_count_metadata_json TEXT,
+          conversation_transcript_json TEXT,
+          lower_band_json TEXT,
+          UNIQUE(thread_id, chunk_order)
+        ) STRICT
+      `);
+      yield* sql.unsafe(`
         CREATE INDEX IF NOT EXISTS idx_messages_thread_order
         ON messages(thread_id, message_order)
       `);
       yield* sql.unsafe(`
         CREATE INDEX IF NOT EXISTS idx_message_blocks_thread_message_order
         ON message_blocks(thread_id, message_id, block_order)
+      `);
+      yield* sql.unsafe(`
+        CREATE INDEX IF NOT EXISTS idx_turn_processing_triggers_status
+        ON turn_processing_triggers(status, updated_at)
+      `);
+      yield* sql.unsafe(`
+        CREATE INDEX IF NOT EXISTS idx_turns_thread_order
+        ON turns(thread_id, turn_order)
+      `);
+      yield* sql.unsafe(`
+        CREATE INDEX IF NOT EXISTS idx_chunks_thread_order
+        ON chunks(thread_id, chunk_order)
       `);
     }).pipe(sql.withTransaction);
   });
@@ -926,9 +1530,15 @@ function appendDecodedEvent(
     const duplicate = yield* findByIdempotencyKey(sql, thread.threadId, input.idempotencyKey);
     if (duplicate) {
       const projections = yield* findProjectionsForEvent(sql, duplicate.threadEventId);
+      const trigger = duplicate.eventKind === "turn_end"
+        ? yield* findTriggerForTurnEnd(sql, duplicate.threadId, duplicate.eventOrder)
+        : undefined;
       return {
         event: duplicate,
         duplicate: true,
+        trigger,
+        triggered: duplicate.eventKind === "turn_end" ? trigger !== undefined : undefined,
+        reason: duplicate.eventKind === "turn_end" && !trigger ? "no_open_turn_span" as const : undefined,
         ...projections,
       };
     }
@@ -944,10 +1554,16 @@ function appendDecodedEvent(
     if (insertedRow) {
       const event = rowToPersistedEvent(insertedRow);
       const projections = yield* projectEvent(sql, event);
+      const trigger = event.eventKind === "turn_end"
+        ? yield* ensureTriggerForTurnEnd(sql, event)
+        : undefined;
       yield* updateThreadUpdatedAt(sql, thread.threadId, event.recordedAt);
       return {
         event,
         duplicate: false,
+        trigger,
+        triggered: event.eventKind === "turn_end" ? trigger !== undefined : undefined,
+        reason: event.eventKind === "turn_end" && !trigger ? "no_open_turn_span" as const : undefined,
         ...projections,
       };
     }
@@ -955,9 +1571,15 @@ function appendDecodedEvent(
     const concurrentDuplicate = yield* findByIdempotencyKey(sql, thread.threadId, input.idempotencyKey);
     if (concurrentDuplicate) {
       const projections = yield* findProjectionsForEvent(sql, concurrentDuplicate.threadEventId);
+      const trigger = concurrentDuplicate.eventKind === "turn_end"
+        ? yield* findTriggerForTurnEnd(sql, concurrentDuplicate.threadId, concurrentDuplicate.eventOrder)
+        : undefined;
       return {
         event: concurrentDuplicate,
         duplicate: true,
+        trigger,
+        triggered: concurrentDuplicate.eventKind === "turn_end" ? trigger !== undefined : undefined,
+        reason: concurrentDuplicate.eventKind === "turn_end" && !trigger ? "no_open_turn_span" as const : undefined,
         ...projections,
       };
     }
@@ -1172,6 +1794,8 @@ function projectionDraftsForEvent(event: PersistedThreadEvent): MessageProjectio
   switch (event.payload._tag) {
     case "thread_created":
       return [];
+    case "turn_end":
+      return [];
     case "user_prompt":
       return [{
         messageKind: "user",
@@ -1299,6 +1923,88 @@ function updateThreadUpdatedAt(
   `;
 }
 
+function ensureTriggerForTurnEnd(
+  sql: SqlClient.SqlClient,
+  event: PersistedThreadEvent,
+): Effect.Effect<TurnProcessingTrigger | undefined, SqlError.SqlError> {
+  return Effect.gen(function*() {
+    const closesOpenSpan = yield* turnEndClosesOpenSpan(sql, event.threadId, event.eventOrder);
+    if (!closesOpenSpan) {
+      return undefined;
+    }
+
+    const triggerId = turnProcessingTriggerId(event.threadId, event.eventOrder);
+    const triggerRows = yield* sql<TriggerSqlRow>`
+      INSERT INTO turn_processing_triggers (
+        trigger_id,
+        thread_id,
+        turn_end_event_order,
+        status,
+        created_at,
+        updated_at,
+        claimed_at,
+        completed_at,
+        attempt_count,
+        last_error
+      )
+      VALUES (
+        ${triggerId},
+        ${event.threadId},
+        ${event.eventOrder},
+        ${"pending"},
+        ${event.recordedAt},
+        ${event.recordedAt},
+        ${null},
+        ${null},
+        ${0},
+        ${null}
+      )
+      ON CONFLICT(thread_id, turn_end_event_order) DO NOTHING
+      RETURNING *
+    `;
+    const inserted = triggerRows[0];
+    if (inserted) {
+      return rowToTrigger(inserted);
+    }
+
+    return yield* findTriggerForTurnEnd(sql, event.threadId, event.eventOrder);
+  });
+}
+
+function turnEndClosesOpenSpan(
+  sql: SqlClient.SqlClient,
+  threadId: string,
+  turnEndEventOrder: number,
+): Effect.Effect<boolean, SqlError.SqlError> {
+  return Effect.map(
+    sql<{ event_kind: string }>`
+      SELECT event_kind
+      FROM thread_events
+      WHERE thread_id = ${threadId}
+        AND event_order < ${turnEndEventOrder}
+        AND event_kind IN ('user_prompt', 'turn_end')
+      ORDER BY event_order DESC
+      LIMIT 1
+    `,
+    (rows) => rows[0]?.event_kind === "user_prompt",
+  );
+}
+
+function findTriggerForTurnEnd(
+  sql: SqlClient.SqlClient,
+  threadId: string,
+  turnEndEventOrder: number,
+): Effect.Effect<TurnProcessingTrigger | undefined, SqlError.SqlError> {
+  return Effect.map(
+    sql<TriggerSqlRow>`
+      SELECT *
+      FROM turn_processing_triggers
+      WHERE thread_id = ${threadId} AND turn_end_event_order = ${turnEndEventOrder}
+    `,
+    (rows) => rows[0] ? rowToTrigger(rows[0]) : undefined,
+  );
+}
+
 function findProjectionsForEvent(
   sql: SqlClient.SqlClient,
   threadEventId: string,
@@ -1321,6 +2027,653 @@ function findProjectionsForEvent(
       messages: messageRows.map(rowToMessage),
       blocks: blockRows.map(rowToMessageBlock),
     };
+  });
+}
+
+function claimTrigger(
+  sql: SqlClient.SqlClient,
+  triggerId: string,
+  claimedAt: string,
+): Effect.Effect<TurnProcessingTrigger | undefined, SqlError.SqlError> {
+  return Effect.gen(function*() {
+    const rows = yield* sql<TriggerSqlRow>`
+      UPDATE turn_processing_triggers
+      SET
+        status = 'claimed',
+        claimed_at = ${claimedAt},
+        updated_at = ${claimedAt},
+        attempt_count = attempt_count + 1,
+        last_error = NULL
+      WHERE trigger_id = ${triggerId}
+        AND status IN ('pending', 'failed')
+        AND NOT EXISTS (
+          SELECT 1
+          FROM turn_processing_triggers claimed
+          WHERE claimed.thread_id = turn_processing_triggers.thread_id
+            AND claimed.status = 'claimed'
+        )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM turn_processing_triggers earlier
+          WHERE earlier.thread_id = turn_processing_triggers.thread_id
+            AND earlier.turn_end_event_order < turn_processing_triggers.turn_end_event_order
+            AND earlier.status <> 'complete'
+        )
+      RETURNING *
+    `;
+    return rows[0] ? rowToTrigger(rows[0]) : undefined;
+  });
+}
+
+function markTriggerFailed(
+  sql: SqlClient.SqlClient,
+  triggerId: string,
+  message: string,
+  updatedAt: string,
+): Effect.Effect<TurnProcessingTrigger | undefined, SqlError.SqlError> {
+  return Effect.map(
+    sql<TriggerSqlRow>`
+      UPDATE turn_processing_triggers
+      SET
+        status = 'failed',
+        updated_at = ${updatedAt},
+        last_error = ${message}
+      WHERE trigger_id = ${triggerId}
+      RETURNING *
+    `,
+    (rows) => rows[0] ? rowToTrigger(rows[0]) : undefined,
+  );
+}
+
+function markTriggerComplete(
+  sql: SqlClient.SqlClient,
+  triggerId: string,
+  completedAt: string,
+): Effect.Effect<TurnProcessingTrigger | undefined, SqlError.SqlError> {
+  return Effect.map(
+    sql<TriggerSqlRow>`
+      UPDATE turn_processing_triggers
+      SET
+        status = 'complete',
+        completed_at = ${completedAt},
+        updated_at = ${completedAt},
+        last_error = NULL
+      WHERE trigger_id = ${triggerId}
+      RETURNING *
+    `,
+    (rows) => rows[0] ? rowToTrigger(rows[0]) : undefined,
+  );
+}
+
+function readTurnWorkerInput(
+  sql: SqlClient.SqlClient,
+  trigger: TurnProcessingTrigger,
+): Effect.Effect<TurnWorkerInput | undefined, SqlError.SqlError> {
+  return Effect.gen(function*() {
+    const turnEndRows = yield* sql<ThreadEventSqlRow>`
+      SELECT *
+      FROM thread_events
+      WHERE thread_id = ${trigger.threadId}
+        AND event_order = ${trigger.turnEndEventOrder}
+        AND event_kind = 'turn_end'
+    `;
+    const turnEndRow = turnEndRows[0];
+    if (!turnEndRow) {
+      return undefined;
+    }
+    const turnEndEvent = rowToPersistedEvent(turnEndRow);
+    const priorBoundaryRows = yield* sql<ThreadEventSqlRow>`
+      SELECT *
+      FROM thread_events
+      WHERE thread_id = ${trigger.threadId}
+        AND event_order < ${trigger.turnEndEventOrder}
+        AND event_kind IN ('user_prompt', 'turn_end')
+      ORDER BY event_order DESC
+      LIMIT 1
+    `;
+    const priorBoundary = priorBoundaryRows[0] ? rowToPersistedEvent(priorBoundaryRows[0]) : undefined;
+    if (priorBoundary?.eventKind !== "user_prompt") {
+      return undefined;
+    }
+
+    const messageRows = yield* sql<MessageSqlRow>`
+      SELECT *
+      FROM messages
+      WHERE thread_id = ${trigger.threadId}
+        AND source_event_order >= ${priorBoundary.eventOrder}
+        AND source_event_order < ${trigger.turnEndEventOrder}
+      ORDER BY message_order ASC
+    `;
+    if (messageRows.length === 0) {
+      return undefined;
+    }
+
+    const messageIds = messageRows.map((row) => row.message_id);
+    const blockRows = yield* sql<MessageBlockSqlRow>`
+      SELECT *
+      FROM message_blocks
+      WHERE message_id IN ${sql.in(messageIds)}
+      ORDER BY message_id ASC, block_order ASC
+    `;
+    const blocksByMessage = new Map<string, ProjectedMessageBlock[]>();
+    for (const block of blockRows.map(rowToMessageBlock)) {
+      const existing = blocksByMessage.get(block.messageId) ?? [];
+      existing.push(block);
+      blocksByMessage.set(block.messageId, existing);
+    }
+    const maxTurnRows = yield* sql<{ max_turn_order: number | null }>`
+      SELECT MAX(turn_order) AS max_turn_order
+      FROM turns
+      WHERE thread_id = ${trigger.threadId}
+        AND turn_end_event_order < ${trigger.turnEndEventOrder}
+    `;
+
+    return {
+      trigger,
+      turnEndEvent,
+      messages: messageRows.map((row) => {
+        const message = rowToMessage(row);
+        return { ...message, blocks: blocksByMessage.get(message.messageId) ?? [] };
+      }),
+      turnOrder: (maxTurnRows[0]?.max_turn_order ?? 0) + 1,
+    };
+  });
+}
+
+async function computeTurnProjection(
+  input: TurnWorkerInput,
+  dependencies: TurnEndWorkerDependencies,
+): Promise<ComputedTurnProjection> {
+  const userMessage = input.messages.find((message) => message.messageKind === "user");
+  if (!userMessage) {
+    throw new ThreadEventStoreError("Turn worker input is missing an initiating user message.");
+  }
+
+  const generatedAt = input.turnEndEvent.recordedAt;
+  const components = [];
+  let userPromptSmoothFailed = false;
+  for (const message of input.messages) {
+    for (const block of message.blocks) {
+      if (block.blockKind === "thinking") {
+        const text = typeof block.payload.text === "string" ? block.payload.text.trim() : "";
+        components.push({
+          componentId: `${message.messageId}:${block.blockId}`,
+          kind: "thinking",
+          status: text ? "ready" : "omitted",
+          text: text || undefined,
+          quality: text ? "deterministic_preserved" : "omitted_no_plaintext",
+          sourceMessageIds: [message.messageId],
+          sourceBlockIds: [block.blockId],
+          generatedAt,
+        });
+        continue;
+      }
+
+      if (message.messageKind === "tool_result" || block.blockKind === "tool_call" || block.blockKind === "tool_result") {
+        components.push({
+          componentId: `${message.messageId}:${block.blockId}`,
+          kind: "tool_exchange",
+          status: "ready",
+          text: stablePayloadText(block.payload),
+          quality: "deterministic_rendered",
+          sourceMessageIds: [message.messageId],
+          sourceBlockIds: [block.blockId],
+          generatedAt,
+        });
+        continue;
+      }
+
+      const text = blockPayloadText(block);
+      if (!text) {
+        continue;
+      }
+      const isUserPrompt = message.messageKind === "user";
+      let componentText = text;
+      let quality = isUserPrompt ? "deterministic_preserved" : "deterministic_preserved";
+      let providerMetadata: JsonObject | undefined;
+      if (isUserPrompt && dependencies.smoothingProvider) {
+        try {
+          const smoothed = await dependencies.smoothingProvider.smoothUserPrompt({
+            threadId: input.trigger.threadId,
+            turnId: projectedTurnId(input.trigger.threadId, input.turnOrder),
+            text,
+          });
+          componentText = smoothed.text;
+          quality = "model_smoothed";
+          providerMetadata = smoothed.metadata;
+        } catch (error) {
+          userPromptSmoothFailed = true;
+          providerMetadata = {
+            error: error instanceof Error ? error.message : String(error),
+          };
+        }
+      }
+      components.push({
+        componentId: `${message.messageId}:${block.blockId}`,
+        kind: isUserPrompt ? "user_prompt" : "assistant_message",
+        status: isUserPrompt && quality !== "model_smoothed" ? "degraded" : "ready",
+        text: componentText,
+        quality,
+        sourceMessageIds: [message.messageId],
+        sourceBlockIds: [block.blockId],
+        generatedAt,
+        providerMetadata,
+      });
+    }
+  }
+
+  const smoothText = components
+    .filter((component) => typeof component.text === "string" && component.text.length > 0)
+    .map((component) => component.text)
+    .join("\n\n");
+  const smooth = {
+    schemaVersion: "canonical_smooth_turn.v1",
+    status: userPromptSmoothFailed ? "degraded" : "ready",
+    text: smoothText,
+    generatedAt,
+    sourceRevision: input.turnEndEvent.eventOrder,
+    components,
+    tokenCountMetadata: tokenMetadata("turn_smooth_materialized", smoothText, input.turnEndEvent.eventOrder, "heuristic"),
+  } as JsonObject;
+
+  const projectionText = buildLowerBandProjectionText(input.messages);
+  let lowerBandProjection: JsonObject;
+  let turnIsChunkEligible = false;
+  if (!projectionText) {
+    lowerBandProjection = {
+      status: "invalid",
+      generatedAt,
+      errorCode: "LOWER_BAND_PROJECTION_EMPTY",
+      errorMessage: "Turn has no user/assistant text for lower-band projection.",
+    };
+  } else if (!dependencies.lowerBandProjectionTokenCounter) {
+    lowerBandProjection = {
+      status: "failed",
+      text: projectionText,
+      generatedAt,
+      sourceRevision: input.turnEndEvent.eventOrder,
+      sourceFingerprint: textHash(projectionText),
+      errorCode: "LOWER_BAND_PROJECTION_TOKEN_COUNT_MISSING",
+      errorMessage: "Exact token counter is required before turn can be chunked.",
+    };
+  } else {
+    try {
+      const counted = await dependencies.lowerBandProjectionTokenCounter.countTurnLowerBandProjection({
+        threadId: input.trigger.threadId,
+        turnId: projectedTurnId(input.trigger.threadId, input.turnOrder),
+        text: projectionText,
+      });
+      lowerBandProjection = {
+        status: "ready",
+        text: projectionText,
+        generatedAt,
+        sourceRevision: input.turnEndEvent.eventOrder,
+        sourceFingerprint: textHash(projectionText),
+        tokenCountMetadata: counted.metadata ?? tokenMetadata(
+          "turn_lower_band_projection_materialized",
+          projectionText,
+          input.turnEndEvent.eventOrder,
+          "exact",
+          counted.count,
+        ),
+      };
+      turnIsChunkEligible = true;
+    } catch (error) {
+      lowerBandProjection = {
+        status: "failed",
+        text: projectionText,
+        generatedAt,
+        sourceRevision: input.turnEndEvent.eventOrder,
+        sourceFingerprint: textHash(projectionText),
+        errorCode: "LOWER_BAND_PROJECTION_TOKEN_COUNT_FAILED",
+        errorMessage: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  const turn: CanonicalTurn = {
+    turnId: projectedTurnId(input.trigger.threadId, input.turnOrder),
+    threadId: input.trigger.threadId,
+    turnOrder: input.turnOrder,
+    lifecycleStatus: "closed",
+    processingStatus: turnIsChunkEligible ? "ready" : "non_ready",
+    initiatingMessageId: userMessage.messageId,
+    messageIds: input.messages.map((message) => message.messageId),
+    fromMessageOrder: input.messages[0]!.messageOrder,
+    toMessageOrder: input.messages.at(-1)!.messageOrder,
+    fromEventOrder: input.messages[0]!.sourceEventOrder,
+    turnEndEventOrder: input.turnEndEvent.eventOrder,
+    openedAt: userMessage.createdAt,
+    closedAt: input.turnEndEvent.occurredAt ?? input.turnEndEvent.recordedAt,
+    sourceRevision: input.turnEndEvent.eventOrder,
+    rawTokenCountMetadata: tokenMetadata(
+      "raw_turn_materialized",
+      input.messages.map(renderMessageForSmooth).join("\n\n"),
+      input.turnEndEvent.eventOrder,
+      "heuristic",
+    ),
+    smooth,
+    lowerBandProjection,
+  };
+  return { turn, turnIsChunkEligible };
+}
+
+function persistComputedTurn(
+  sql: SqlClient.SqlClient,
+  trigger: TurnProcessingTrigger,
+  computed: ComputedTurnProjection,
+): Effect.Effect<{ trigger: TurnProcessingTrigger; turn: CanonicalTurn; turnIsChunkEligible: boolean }, SqlError.SqlError> {
+  return Effect.gen(function*() {
+    return yield* Effect.gen(function*() {
+      const latestTrigger = yield* findTriggerForTurnEnd(sql, trigger.threadId, trigger.turnEndEventOrder);
+      if (!latestTrigger || latestTrigger.status === "complete") {
+        return {
+          trigger: latestTrigger ?? trigger,
+          turn: computed.turn,
+          turnIsChunkEligible: computed.turnIsChunkEligible,
+        };
+      }
+      yield* upsertTurn(sql, computed.turn);
+      const rows = yield* sql<TurnSqlRow>`
+        SELECT *
+        FROM turns
+        WHERE turn_id = ${computed.turn.turnId}
+      `;
+      const turn = rows[0] ? rowToTurn(rows[0]) : computed.turn;
+      return {
+        trigger: latestTrigger,
+        turn,
+        turnIsChunkEligible: computed.turnIsChunkEligible,
+      };
+    }).pipe(sql.withTransaction);
+  });
+}
+
+function upsertTurn(
+  sql: SqlClient.SqlClient,
+  turn: CanonicalTurn,
+): Effect.Effect<ReadonlyArray<TurnSqlRow>, SqlError.SqlError> {
+  return sql<TurnSqlRow>`
+    INSERT INTO turns (
+      turn_id,
+      thread_id,
+      turn_order,
+      lifecycle_status,
+      processing_status,
+      initiating_message_id,
+      message_ids_json,
+      from_message_order,
+      to_message_order,
+      from_event_order,
+      turn_end_event_order,
+      opened_at,
+      closed_at,
+      source_revision,
+      raw_token_count_metadata_json,
+      smooth_json,
+      lower_band_projection_json,
+      repair_metadata_json
+    )
+    VALUES (
+      ${turn.turnId},
+      ${turn.threadId},
+      ${turn.turnOrder},
+      ${turn.lifecycleStatus},
+      ${turn.processingStatus},
+      ${turn.initiatingMessageId},
+      ${JSON.stringify(turn.messageIds)},
+      ${turn.fromMessageOrder},
+      ${turn.toMessageOrder},
+      ${turn.fromEventOrder},
+      ${turn.turnEndEventOrder},
+      ${turn.openedAt},
+      ${turn.closedAt},
+      ${turn.sourceRevision},
+      ${turn.rawTokenCountMetadata ? JSON.stringify(turn.rawTokenCountMetadata) : null},
+      ${turn.smooth ? JSON.stringify(turn.smooth) : null},
+      ${turn.lowerBandProjection ? JSON.stringify(turn.lowerBandProjection) : null},
+      ${turn.repairMetadata ? JSON.stringify(turn.repairMetadata) : null}
+    )
+    ON CONFLICT(thread_id, turn_end_event_order) DO UPDATE SET
+      lifecycle_status = excluded.lifecycle_status,
+      processing_status = excluded.processing_status,
+      initiating_message_id = excluded.initiating_message_id,
+      message_ids_json = excluded.message_ids_json,
+      from_message_order = excluded.from_message_order,
+      to_message_order = excluded.to_message_order,
+      from_event_order = excluded.from_event_order,
+      opened_at = excluded.opened_at,
+      closed_at = excluded.closed_at,
+      source_revision = excluded.source_revision,
+      raw_token_count_metadata_json = excluded.raw_token_count_metadata_json,
+      smooth_json = excluded.smooth_json,
+      lower_band_projection_json = excluded.lower_band_projection_json,
+      repair_metadata_json = excluded.repair_metadata_json
+    RETURNING *
+  `;
+}
+
+function updateChunkForEligibleTurn(
+  sql: SqlClient.SqlClient,
+  turn: CanonicalTurn,
+  settings: ChunkCloseSettings,
+): Effect.Effect<{ updatedChunkIds: string[]; closedChunks: CanonicalChunk[] }, SqlError.SqlError> {
+  return Effect.gen(function*() {
+    return yield* Effect.gen(function*() {
+      const existingChunks = (yield* sql<ChunkSqlRow>`
+        SELECT *
+        FROM chunks
+        WHERE thread_id = ${turn.threadId}
+        ORDER BY chunk_order ASC
+      `).map(rowToChunk);
+      if (existingChunks.some((chunk) => chunk.sourceTurnIds.includes(turn.turnId))) {
+        return { updatedChunkIds: [], closedChunks: [] };
+      }
+
+      const updatedChunkIds = new Set<string>();
+      const closedChunks: CanonicalChunk[] = [];
+      let openChunk = existingChunks.find((chunk) => chunk.lifecycleStatus === "open");
+      if (!openChunk) {
+        openChunk = createOpenChunk(turn.threadId, nextChunkOrder(existingChunks), turn.closedAt);
+        yield* upsertChunk(sql, openChunk);
+        existingChunks.push(openChunk);
+        updatedChunkIds.add(openChunk.chunkId);
+      }
+
+      const openProjectionCount = chunkProjectionTokenCount(openChunk);
+      const turnProjectionCount = turnLowerBandProjectionTokenCount(turn);
+      if (
+        openChunk.sourceTurnIds.length > 0 &&
+        openProjectionCount >= settings.targetMinSmoothTokens &&
+        openProjectionCount + turnProjectionCount > settings.targetSoftMaxSmoothTokens
+      ) {
+        openChunk = {
+          ...openChunk,
+          lifecycleStatus: "closed",
+          closedAt: turn.closedAt,
+          closeReason: "soft_threshold",
+        };
+        yield* upsertChunk(sql, openChunk);
+        updatedChunkIds.add(openChunk.chunkId);
+        closedChunks.push(openChunk);
+        const newChunk = createOpenChunk(turn.threadId, nextChunkOrder(existingChunks), turn.closedAt);
+        existingChunks.push(newChunk);
+        yield* upsertChunk(sql, newChunk);
+        updatedChunkIds.add(newChunk.chunkId);
+        openChunk = newChunk;
+      }
+
+      openChunk = appendTurnToChunkState(openChunk, turn);
+      if (chunkProjectionTokenCount(openChunk) >= settings.hardMaxSmoothTokens) {
+        openChunk = {
+          ...openChunk,
+          lifecycleStatus: "closed",
+          closedAt: turn.closedAt,
+          closeReason: "hard_max",
+        };
+        closedChunks.push(openChunk);
+        const newChunk = createOpenChunk(turn.threadId, nextChunkOrder(existingChunks), turn.closedAt);
+        existingChunks.push(newChunk);
+        yield* upsertChunk(sql, newChunk);
+        updatedChunkIds.add(newChunk.chunkId);
+      }
+      yield* upsertChunk(sql, openChunk);
+      updatedChunkIds.add(openChunk.chunkId);
+      return { updatedChunkIds: [...updatedChunkIds], closedChunks };
+    }).pipe(sql.withTransaction);
+  });
+}
+
+function readClosedChunkArtifactTargetsForTurn(
+  sql: SqlClient.SqlClient,
+  threadId: string,
+  turnId: string,
+): Effect.Effect<CanonicalChunk[], SqlError.SqlError> {
+  return Effect.map(
+    sql<ChunkSqlRow>`
+      SELECT *
+      FROM chunks
+      WHERE thread_id = ${threadId}
+        AND lifecycle_status = 'closed'
+      ORDER BY chunk_order ASC
+    `,
+    (rows) => rows
+      .map(rowToChunk)
+      .filter((chunk) => chunk.sourceTurnIds.includes(turnId) && closedChunkNeedsArtifacts(chunk)),
+  );
+}
+
+function upsertChunk(
+  sql: SqlClient.SqlClient,
+  chunk: CanonicalChunk,
+): Effect.Effect<ReadonlyArray<ChunkSqlRow>, SqlError.SqlError> {
+  return sql<ChunkSqlRow>`
+    INSERT INTO chunks (
+      chunk_id,
+      thread_id,
+      chunk_order,
+      lifecycle_status,
+      opened_at,
+      closed_at,
+      close_reason,
+      source_revision,
+      source_turn_ids_json,
+      smooth_text,
+      smooth_token_count_metadata_json,
+      conversation_transcript_json,
+      lower_band_json
+    )
+    VALUES (
+      ${chunk.chunkId},
+      ${chunk.threadId},
+      ${chunk.chunkOrder},
+      ${chunk.lifecycleStatus},
+      ${chunk.openedAt},
+      ${chunk.closedAt ?? null},
+      ${chunk.closeReason ?? null},
+      ${chunk.sourceRevision ?? null},
+      ${JSON.stringify(chunk.sourceTurnIds)},
+      ${chunk.smoothText ?? null},
+      ${chunk.smoothTokenCountMetadata ? JSON.stringify(chunk.smoothTokenCountMetadata) : null},
+      ${chunk.conversationTranscript ? JSON.stringify(chunk.conversationTranscript) : null},
+      ${chunk.lowerBand ? JSON.stringify(chunk.lowerBand) : null}
+    )
+    ON CONFLICT(thread_id, chunk_order) DO UPDATE SET
+      lifecycle_status = excluded.lifecycle_status,
+      opened_at = excluded.opened_at,
+      closed_at = excluded.closed_at,
+      close_reason = excluded.close_reason,
+      source_revision = excluded.source_revision,
+      source_turn_ids_json = excluded.source_turn_ids_json,
+      smooth_text = excluded.smooth_text,
+      smooth_token_count_metadata_json = excluded.smooth_token_count_metadata_json,
+      conversation_transcript_json = excluded.conversation_transcript_json,
+      lower_band_json = excluded.lower_band_json
+    RETURNING *
+  `;
+}
+
+async function computeClosedChunkArtifacts(
+  chunks: readonly CanonicalChunk[],
+  dependencies: TurnEndWorkerDependencies,
+  now: () => Date,
+): Promise<ComputedChunkArtifact[]> {
+  const artifacts: ComputedChunkArtifact[] = [];
+  for (const chunk of chunks) {
+    if (chunk.lifecycleStatus !== "closed" || !chunk.conversationTranscript || typeof chunk.conversationTranscript.text !== "string") {
+      continue;
+    }
+    const transcript = chunk.conversationTranscript.text;
+    for (const band of ["detailed", "brief"] as const) {
+      if (!dependencies.chunkCompressionProvider) {
+        artifacts.push({
+          threadId: chunk.threadId,
+          chunkId: chunk.chunkId,
+          band,
+          record: {
+            status: "failed",
+            errorCode: "CHUNK_COMPRESSION_PROVIDER_MISSING",
+            errorMessage: "Chunk compression provider is required for inline chunk-close projection.",
+            updatedAt: now().toISOString(),
+          },
+        });
+        continue;
+      }
+      try {
+        const compressed = await dependencies.chunkCompressionProvider.compressChunk({
+          threadId: chunk.threadId,
+          chunkId: chunk.chunkId,
+          band,
+          transcript,
+        });
+        artifacts.push({
+          threadId: chunk.threadId,
+          chunkId: chunk.chunkId,
+          band,
+          record: {
+            status: "ready",
+            text: compressed.text,
+            ...(compressed.metadata ? { providerMetadata: compressed.metadata } : {}),
+            updatedAt: now().toISOString(),
+          },
+        });
+      } catch (error) {
+        artifacts.push({
+          threadId: chunk.threadId,
+          chunkId: chunk.chunkId,
+          band,
+          record: {
+            status: "failed",
+            errorCode: "CHUNK_COMPRESSION_FAILED",
+            errorMessage: error instanceof Error ? error.message : String(error),
+            updatedAt: now().toISOString(),
+          },
+        });
+      }
+    }
+  }
+  return artifacts;
+}
+
+function persistChunkArtifact(
+  sql: SqlClient.SqlClient,
+  artifact: ComputedChunkArtifact,
+): Effect.Effect<ReadonlyArray<ChunkSqlRow>, SqlError.SqlError> {
+  return Effect.gen(function*() {
+    const rows = yield* sql<ChunkSqlRow>`
+      SELECT *
+      FROM chunks
+      WHERE thread_id = ${artifact.threadId} AND chunk_id = ${artifact.chunkId}
+    `;
+    const chunk = rows[0] ? rowToChunk(rows[0]) : undefined;
+    if (!chunk) {
+      return [];
+    }
+    const lowerBand = {
+      ...(chunk.lowerBand ?? {}),
+      [artifact.band]: artifact.record,
+    } as JsonObject;
+    return yield* upsertChunk(sql, { ...chunk, lowerBand });
   });
 }
 
@@ -1377,8 +2730,80 @@ function rowToMessageBlock(row: MessageBlockSqlRow): ProjectedMessageBlock {
   };
 }
 
+function rowToTrigger(row: TriggerSqlRow): TurnProcessingTrigger {
+  return {
+    triggerId: row.trigger_id,
+    threadId: row.thread_id,
+    turnEndEventOrder: row.turn_end_event_order,
+    status: row.status,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    claimedAt: row.claimed_at ?? undefined,
+    completedAt: row.completed_at ?? undefined,
+    attemptCount: row.attempt_count,
+    lastError: row.last_error ?? undefined,
+  };
+}
+
+function rowToTurn(row: TurnSqlRow): CanonicalTurn {
+  return {
+    turnId: row.turn_id,
+    threadId: row.thread_id,
+    turnOrder: row.turn_order,
+    lifecycleStatus: row.lifecycle_status,
+    processingStatus: row.processing_status,
+    initiatingMessageId: row.initiating_message_id,
+    messageIds: parseJson(row.message_ids_json) as string[],
+    fromMessageOrder: row.from_message_order,
+    toMessageOrder: row.to_message_order,
+    fromEventOrder: row.from_event_order,
+    turnEndEventOrder: row.turn_end_event_order,
+    openedAt: row.opened_at,
+    closedAt: row.closed_at,
+    sourceRevision: row.source_revision,
+    rawTokenCountMetadata: row.raw_token_count_metadata_json ? parseJson(row.raw_token_count_metadata_json) as JsonObject : undefined,
+    smooth: row.smooth_json ? parseJson(row.smooth_json) as JsonObject : undefined,
+    lowerBandProjection: row.lower_band_projection_json ? parseJson(row.lower_band_projection_json) as JsonObject : undefined,
+    repairMetadata: row.repair_metadata_json ? parseJson(row.repair_metadata_json) as JsonObject : undefined,
+  };
+}
+
+function rowToChunk(row: ChunkSqlRow): CanonicalChunk {
+  return {
+    chunkId: row.chunk_id,
+    threadId: row.thread_id,
+    chunkOrder: row.chunk_order,
+    lifecycleStatus: row.lifecycle_status,
+    openedAt: row.opened_at,
+    closedAt: row.closed_at ?? undefined,
+    closeReason: row.close_reason === "soft_threshold" || row.close_reason === "hard_max" ? row.close_reason : undefined,
+    sourceRevision: row.source_revision ?? undefined,
+    sourceTurnIds: parseJson(row.source_turn_ids_json) as string[],
+    smoothText: row.smooth_text ?? undefined,
+    smoothTokenCountMetadata: row.smooth_token_count_metadata_json
+      ? parseJson(row.smooth_token_count_metadata_json) as JsonObject
+      : undefined,
+    conversationTranscript: row.conversation_transcript_json
+      ? parseJson(row.conversation_transcript_json) as JsonObject
+      : undefined,
+    lowerBand: row.lower_band_json ? parseJson(row.lower_band_json) as JsonObject : undefined,
+  };
+}
+
 function projectedMessageId(threadId: string, messageOrder: number): string {
   return `msg_${toIdSegment(threadId)}_${messageOrder}`;
+}
+
+function projectedTurnId(threadId: string, turnOrder: number): string {
+  return `turn_${toIdSegment(threadId)}_${turnOrder}`;
+}
+
+function projectedChunkId(threadId: string, chunkOrder: number): string {
+  return `chunk_${toIdSegment(threadId)}_${chunkOrder}`;
+}
+
+function turnProcessingTriggerId(threadId: string, turnEndEventOrder: number): string {
+  return `turn_trg_${toIdSegment(threadId)}_${turnEndEventOrder}`;
 }
 
 function projectedBlockId(messageId: string, blockOrder: number): string {
@@ -1394,10 +2819,156 @@ function omitTag(payload: ThreadEventPayload): JsonObject {
   return rest;
 }
 
+function blockPayloadText(block: ProjectedMessageBlock): string {
+  if (typeof block.payload.text === "string") {
+    return block.payload.text;
+  }
+  if (typeof block.payload.outputText === "string") {
+    return block.payload.outputText;
+  }
+  return stablePayloadText(block.payload);
+}
+
+function renderMessageForSmooth(message: ProjectedMessageWithBlocks): string {
+  return message.blocks.map(blockPayloadText).filter((text) => text.length > 0).join("\n");
+}
+
+function buildLowerBandProjectionText(messages: readonly ProjectedMessageWithBlocks[]): string {
+  const parts: string[] = [];
+  for (const message of messages) {
+    if (message.messageKind !== "user" && message.messageKind !== "assistant") {
+      continue;
+    }
+    const text = message.blocks
+      .filter((block) => block.blockKind === "text")
+      .map(blockPayloadText)
+      .filter((part) => part.length > 0)
+      .join("\n");
+    if (!text) {
+      continue;
+    }
+    parts.push(`${message.messageKind === "user" ? ">" : "●"} ${text}`);
+  }
+  return parts.join("\n\n");
+}
+
+function stablePayloadText(payload: JsonObject): string {
+  return JSON.stringify(sortJsonValue(payload));
+}
+
+function sortJsonValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((entry) => sortJsonValue(entry));
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, entry]) => [key, sortJsonValue(entry)]),
+    );
+  }
+  return value;
+}
+
+function textHash(text: string): string {
+  return `sha256:${createHash("sha256").update(text).digest("hex")}`;
+}
+
+function tokenMetadata(
+  scope: string,
+  text: string,
+  sourceRevision: number,
+  trustClass: "exact" | "heuristic",
+  count?: number,
+): JsonObject {
+  return {
+    scope,
+    count: count ?? estimateTokens(text),
+    source: trustClass === "exact" ? "provider_input_count" : "deterministic_estimate",
+    trustClass,
+    sourceRevision,
+    representationHash: textHash(text),
+  };
+}
+
+function estimateTokens(text: string): number {
+  return Math.max(1, Math.ceil(text.length / 4));
+}
+
+function createOpenChunk(threadId: string, chunkOrder: number, openedAt: string): CanonicalChunk {
+  return {
+    chunkId: projectedChunkId(threadId, chunkOrder),
+    threadId,
+    chunkOrder,
+    lifecycleStatus: "open",
+    openedAt,
+    sourceTurnIds: [],
+  };
+}
+
+function nextChunkOrder(chunks: readonly CanonicalChunk[]): number {
+  return chunks.reduce((highest, chunk) => Math.max(highest, chunk.chunkOrder), 0) + 1;
+}
+
+function appendTurnToChunkState(chunk: CanonicalChunk, turn: CanonicalTurn): CanonicalChunk {
+  const smoothText = typeof turn.smooth?.text === "string" ? turn.smooth.text : "";
+  const projectionText = typeof turn.lowerBandProjection?.text === "string" ? turn.lowerBandProjection.text : "";
+  const nextSmoothText = [chunk.smoothText, smoothText].filter(Boolean).join("\n\n");
+  const transcriptText = [
+    typeof chunk.conversationTranscript?.text === "string" ? chunk.conversationTranscript.text : undefined,
+    projectionText,
+  ].filter(Boolean).join("\n\n");
+  return {
+    ...chunk,
+    sourceTurnIds: [...chunk.sourceTurnIds, turn.turnId],
+    smoothText: nextSmoothText,
+    sourceRevision: Math.max(chunk.sourceRevision ?? 0, turn.sourceRevision),
+    smoothTokenCountMetadata: tokenMetadata("chunk_smooth_materialized", nextSmoothText, turn.sourceRevision, "heuristic"),
+    conversationTranscript: {
+      status: "ready",
+      text: transcriptText,
+      sourceRevision: turn.sourceRevision,
+      sourceFingerprint: textHash(transcriptText),
+      updatedAt: turn.closedAt,
+    },
+  };
+}
+
+function turnLowerBandProjectionTokenCount(turn: CanonicalTurn): number {
+  const metadata = turn.lowerBandProjection?.tokenCountMetadata;
+  return isObject(metadata) && typeof metadata.count === "number" ? metadata.count : 0;
+}
+
+function chunkProjectionTokenCount(chunk: CanonicalChunk): number {
+  const transcript = typeof chunk.conversationTranscript?.text === "string" ? chunk.conversationTranscript.text : "";
+  return estimateTokens(transcript);
+}
+
+function uniqueChunksById(chunks: readonly CanonicalChunk[]): CanonicalChunk[] {
+  const byChunkId = new Map<string, CanonicalChunk>();
+  for (const chunk of chunks) {
+    byChunkId.set(chunk.chunkId, chunk);
+  }
+  return [...byChunkId.values()];
+}
+
+function closedChunkNeedsArtifacts(chunk: CanonicalChunk): boolean {
+  return chunk.lifecycleStatus === "closed" &&
+    (!hasTerminalChunkArtifact(chunk.lowerBand?.detailed) || !hasTerminalChunkArtifact(chunk.lowerBand?.brief));
+}
+
+function hasTerminalChunkArtifact(value: unknown): boolean {
+  return isObject(value) && (value.status === "ready" || value.status === "failed");
+}
+
 function parseJson(value: string): unknown {
   return JSON.parse(value);
 }
 
 function isObject(value: unknown): value is { [key: string]: unknown } {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isUserPromptAppendInput(value: unknown): boolean {
+  return isObject(value) && value.eventKind === "user_prompt";
 }
