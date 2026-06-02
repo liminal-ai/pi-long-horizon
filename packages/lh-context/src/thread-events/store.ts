@@ -1962,6 +1962,9 @@ function projectionDraftsForEvent(event: PersistedThreadEvent): MessageProjectio
         blocks: [{ blockKind: "tool_result", payload: omitTag(event.payload) }],
       }];
     case "runtime_note":
+      if (event.payload.systemKind === "lifecycle") {
+        return [];
+      }
       return [{
         messageKind: "system",
         actor: event.actor,

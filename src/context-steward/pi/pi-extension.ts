@@ -72,6 +72,10 @@ import {
   inspectSmoothingStatus,
 } from "../../workbench/services/smoothing-inspection-service.js";
 import { mapPiMessageEnd } from "./pi-message-mapper.js";
+import {
+  recordParallelEventIntakeMessageEnd,
+  recordParallelEventIntakeTurnEnd,
+} from "./parallel-event-intake.js";
 import type { PiImportSessionManager } from "./pi-session-importer.js";
 
 type PiCaptureEvent =
@@ -1804,6 +1808,7 @@ export function registerContextStewardExtension(
     const startedAt = Date.now();
     let resolveMs = 0;
     let captureMs = 0;
+    let parallelEventIntakeMs = 0;
     let threadId = "none";
     let duplicate = "n/a";
     try {
@@ -1894,12 +1899,26 @@ export function registerContextStewardExtension(
         activeThread = captureThread;
       }
       duplicate = String(result.value?.duplicate);
+      if (captureThread && event.type === "message_end") {
+        stepStartedAt = Date.now();
+        await recordParallelEventIntakeMessageEnd({
+          store,
+          thread: captureThread,
+          ctx,
+          event: {
+            type: "message_end",
+            message: event.message,
+          },
+        });
+        parallelEventIntakeMs = Date.now() - stepStartedAt;
+      }
       return result.value;
     } finally {
       logTiming("captureEvent", startedAt, {
         event: event.type,
         resolve: `${resolveMs}ms`,
         capture: `${captureMs}ms`,
+        parallelEventIntake: `${parallelEventIntakeMs}ms`,
         threadId,
         duplicate,
       });
@@ -2218,6 +2237,7 @@ export function registerContextStewardExtension(
     let maintenanceDelayMs = 0;
     let maintenanceScheduleMs = 0;
     let catalogRefreshScheduleMs = 0;
+    let parallelEventIntakeMs = 0;
     let refreshMs = 0;
     let threadId = "none";
     try {
@@ -2247,6 +2267,16 @@ export function registerContextStewardExtension(
       if (!finalized.ok) {
         throw new StewardResultError(finalized.issues);
       }
+
+      stepStartedAt = Date.now();
+      await recordParallelEventIntakeTurnEnd({
+        store,
+        thread,
+        ctx: resolvedContext,
+        event,
+        finalized: finalized.value,
+      });
+      parallelEventIntakeMs = Date.now() - stepStartedAt;
 
       stepStartedAt = Date.now();
       await refreshActivePromptProjectionFromContext({
@@ -2296,6 +2326,7 @@ export function registerContextStewardExtension(
         maintenanceDelay: `${maintenanceDelayMs}ms`,
         maintenanceSchedule: `${maintenanceScheduleMs}ms`,
         catalogRefreshSchedule: `${catalogRefreshScheduleMs}ms`,
+        parallelEventIntake: `${parallelEventIntakeMs}ms`,
         threadId,
       });
     }
@@ -2322,16 +2353,18 @@ export function registerContextStewardExtension(
     let fallback = false;
     let duplicate = "n/a";
     let smoothingScheduled = false;
+    let restoredMessage: AgentMessage | undefined;
     try {
       let stepStartedAt = Date.now();
+      restoredMessage = restoreOriginalToolResultMessage({
+        message: event.message,
+        ctx,
+        originals: originalToolResults,
+      });
       const captureResult = await captureEvent(
         {
           ...event,
-          message: restoreOriginalToolResultMessage({
-            message: event.message,
-            ctx,
-            originals: originalToolResults,
-          }),
+          message: restoredMessage,
         },
         ctx,
       );
@@ -2358,14 +2391,15 @@ export function registerContextStewardExtension(
 
       fallback = true;
       const stepStartedAt = Date.now();
+      const fallbackMessage = restoredMessage ?? restoreOriginalToolResultMessage({
+        message: event.message,
+        ctx: activeSessionContext,
+        originals: originalToolResults,
+      });
       const captureResult = await captureEvent(
         {
           ...event,
-          message: restoreOriginalToolResultMessage({
-            message: event.message,
-            ctx: activeSessionContext,
-            originals: originalToolResults,
-          }),
+          message: fallbackMessage,
         },
         activeSessionContext,
       );

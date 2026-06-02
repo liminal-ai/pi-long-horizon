@@ -191,12 +191,14 @@ export type ToolResultPayload = Schema.Schema.Type<typeof ToolResultPayloadSchem
 const RuntimeNotePayloadInputSchema = Schema.Struct({
   text: Schema.String,
   systemKind: Schema.optional(SystemKindSchema),
+  metadata: Schema.optional(JsonObjectSchema),
 });
 
 export const RuntimeNotePayloadSchema = Schema.Struct({
   _tag: Schema.Literal("runtime_note"),
   text: Schema.String,
   systemKind: Schema.optional(SystemKindSchema),
+  metadata: Schema.optional(JsonObjectSchema),
 });
 export type RuntimeNotePayload = Schema.Schema.Type<typeof RuntimeNotePayloadSchema>;
 

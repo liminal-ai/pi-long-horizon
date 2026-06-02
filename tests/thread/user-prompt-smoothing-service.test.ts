@@ -8,6 +8,7 @@ import { ensureSmoothTurn, readSmoothTurnState } from "../../src/thread/async-th
 import {
   USER_PROMPT_SMOOTHING_PROMPT_VERSION,
   UserPromptSmoothingService,
+  extractProtectedUserPromptLiterals,
   type UserPromptSmoothingProvider,
 } from "../../src/thread/async-thread/services/user-prompt-smoothing-service.js";
 import { withTempSqliteThreadStore, withTempThreadStore } from "../../src/thread/async-thread/test/temp-thread-store.js";
@@ -54,6 +55,15 @@ async function waitForAssertion(
 
   throw new Error(description);
 }
+
+test("protected literal extraction ignores fenced-code bodies for inline-code matching", () => {
+  const literals = extractProtectedUserPromptLiterals(`Patch result:\n\n\`\`\`ts\n{\n  ok: false,\n  cause: "SQLite thread DB path unavailable for parallel event intake"\n}\n\`\`\`\n\nKeep inline \`thread_db_path_unavailable\` and path /tmp/thread.sqlite.`);
+
+  assert.equal(literals.includes("thread_db_path_unavailable"), true);
+  assert.equal(literals.includes("/tmp/thread.sqlite"), true);
+  assert.equal(literals.some((literal) => literal.includes("SQLite thread DB path unavailable")), false);
+  assert.equal(literals.some((literal) => literal.startsWith("ts\n{")), false);
+});
 
 class RowLevelOnlySqliteSmoothingStore extends SqliteThreadStore {
   compatibilityWrites = 0;

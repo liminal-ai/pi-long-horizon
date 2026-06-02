@@ -119,14 +119,30 @@ function uniqueNonEmpty(values: Iterable<string>): string[] {
   return result;
 }
 
+const FENCED_CODE_BLOCK_PATTERN = /```[\s\S]*?```/gu;
+const INLINE_CODE_LITERAL_PATTERN = /(?<!`)`([^`\n]+)`(?!`)/gu;
+const MAX_REPORTED_MISSING_LITERALS = 5;
+const MAX_REPORTED_LITERAL_CHARS = 240;
+
+function textWithoutFencedCodeBlocks(rawText: string): string {
+  return rawText.replace(FENCED_CODE_BLOCK_PATTERN, " ");
+}
+
 export function extractProtectedUserPromptLiterals(rawText: string): string[] {
   const literals: string[] = [];
+  const inlineLiteralText = textWithoutFencedCodeBlocks(rawText);
   literals.push(...rawText.match(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/giu) ?? []);
   literals.push(...rawText.match(/\b[A-Za-z][A-Za-z0-9_-]*-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/giu) ?? []);
   literals.push(...rawText.match(/(?:^|[\s("'`])((?:\/[^\s"'`<>|]+)+)/gu)?.map((match) => match.trimStart().replace(/^[("'`]+/u, "")) ?? []);
-  literals.push(...rawText.match(/`([^`]+)`/gu)?.map((match) => match.slice(1, -1)) ?? []);
+  literals.push(...Array.from(inlineLiteralText.matchAll(INLINE_CODE_LITERAL_PATTERN), (match) => match[1] ?? ""));
   literals.push(...rawText.match(/\b\d+(?:\.\d+)?%?\b/gu) ?? []);
   return uniqueNonEmpty(literals).filter((literal) => literal.length >= 2);
+}
+
+function previewProtectedLiteral(literal: string): string {
+  return literal.length > MAX_REPORTED_LITERAL_CHARS
+    ? `${literal.slice(0, MAX_REPORTED_LITERAL_CHARS)}…[${literal.length} chars]`
+    : literal;
 }
 
 function validateProtectedLiterals(input: {
@@ -140,13 +156,16 @@ function validateProtectedLiterals(input: {
     return;
   }
 
+  const missingPreview = missing.slice(0, MAX_REPORTED_MISSING_LITERALS).map(previewProtectedLiteral);
   throw new Error(
     [
       "User prompt smoothing output omitted or changed protected literal(s).",
       `threadId=${input.threadId}`,
       `messageId=${input.messageId}`,
-      `missing=${JSON.stringify(missing)}`,
-    ].join(" "),
+      `missingCount=${missing.length}`,
+      `missingPreview=${JSON.stringify(missingPreview)}`,
+      missing.length > missingPreview.length ? `missingPreviewTruncated=${missing.length - missingPreview.length}` : undefined,
+    ].filter((part) => part !== undefined).join(" "),
   );
 }
 
