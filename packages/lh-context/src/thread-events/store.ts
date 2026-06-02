@@ -1,11 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { dirname, resolve } from "node:path";
-
-import * as SqlClient from "@effect/sql/SqlClient";
-import * as SqlError from "@effect/sql/SqlError";
-import * as SqliteClient from "@effect/sql-sqlite-node/SqliteClient";
-import { Effect } from "effect";
+import { DatabaseSync } from "node:sqlite";
 
 import {
   THREAD_EVENT_SCHEMA_VERSION,
@@ -392,6 +388,138 @@ interface BlockProjectionDraft {
 
 const SQLITE_BUSY_TIMEOUT_MS = 5_000;
 
+type SqlValue = string | number | bigint | null;
+type SqlIn = { readonly _tag: "in"; readonly values: readonly SqlValue[] };
+
+type Sql = (<A = Record<string, unknown>>(
+  strings: TemplateStringsArray,
+  ...values: readonly (SqlValue | SqlIn)[]
+) => EffectValue<ReadonlyArray<A>>) & {
+  unsafe: <A = Record<string, unknown>>(sqlText: string) => EffectValue<ReadonlyArray<A>>;
+  in: (values: readonly SqlValue[]) => SqlIn;
+  withTransaction: <A>(effect: EffectValue<A>) => EffectValue<A>;
+};
+
+class EffectValue<A> {
+  constructor(private readonly evaluate: () => A) {}
+
+  run(): A {
+    return this.evaluate();
+  }
+
+  pipe<B>(fn: (effect: EffectValue<A>) => EffectValue<B>): EffectValue<B> {
+    return fn(this);
+  }
+
+  [Symbol.iterator](): Generator<EffectValue<A>, A> {
+    const self = this;
+    function* iterator(): Generator<EffectValue<A>, A> {
+      return (yield self) as A;
+    }
+    return iterator();
+  }
+}
+
+let currentSql: Sql | undefined;
+const Sql = new EffectValue<Sql>(() => {
+  if (!currentSql) {
+    throw new ThreadEventStoreError("Thread event SQLite client is not available.");
+  }
+  return currentSql;
+});
+
+const Effect = {
+  gen<A>(body: () => Generator<EffectValue<any>, A, any>): EffectValue<A> {
+    return new EffectValue(() => {
+      const iterator = body();
+      let next = iterator.next();
+      while (!next.done) {
+        next = iterator.next(next.value.run());
+      }
+      return next.value;
+    });
+  },
+  map<A, B>(effect: EffectValue<A>, mapper: (value: A) => B): EffectValue<B> {
+    return new EffectValue(() => mapper(effect.run()));
+  },
+  fail(error: unknown): EffectValue<never> {
+    return new EffectValue(() => { throw error; });
+  },
+  either<A>(effect: EffectValue<A>): EffectValue<{ _tag: "Right"; right: A } | { _tag: "Left"; left: unknown }> {
+    return new EffectValue(() => {
+      try {
+        return { _tag: "Right", right: effect.run() };
+      } catch (error) {
+        return { _tag: "Left", left: error };
+      }
+    });
+  },
+};
+
+function openThreadEventsDb(filename: string): DatabaseSync {
+  mkdirSync(dirname(filename), { recursive: true });
+  const db = new DatabaseSync(filename);
+  applyPragmas(db);
+  return db;
+}
+
+function applyPragmas(db: DatabaseSync): void {
+  db.exec(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
+  db.exec("PRAGMA foreign_keys = ON");
+}
+
+function makeSql(db: DatabaseSync): Sql {
+  const sql = (<A = Record<string, unknown>>(strings: TemplateStringsArray, ...values: readonly (SqlValue | SqlIn)[]) =>
+    new EffectValue<ReadonlyArray<A>>(() => {
+      const { text, params } = renderSql(strings, values);
+      return db.prepare(text).all(...params) as A[];
+    })) as Sql;
+  sql.unsafe = <A = Record<string, unknown>>(sqlText: string) => new EffectValue<ReadonlyArray<A>>(() => {
+    const trimmed = sqlText.trim();
+    if (/^(CREATE|PRAGMA|BEGIN|COMMIT|ROLLBACK)\b/i.test(trimmed) && !/^PRAGMA\s+(table_info|index_list|index_info)\b/i.test(trimmed)) {
+      db.exec(sqlText);
+      return [];
+    }
+    return db.prepare(sqlText).all() as A[];
+  });
+  sql.in = (values: readonly SqlValue[]) => ({ _tag: "in", values });
+  sql.withTransaction = <A>(effect: EffectValue<A>) => new EffectValue(() => withTransaction(db, () => effect.run()));
+  return sql;
+}
+
+function renderSql(strings: TemplateStringsArray, values: readonly (SqlValue | SqlIn)[]): { text: string; params: SqlValue[] } {
+  let text = strings[0] ?? "";
+  const params: SqlValue[] = [];
+  for (let index = 0; index < values.length; index += 1) {
+    const value = values[index];
+    if (isSqlIn(value)) {
+      text += `(${value.values.map(() => "?").join(", ") || "NULL"})`;
+      params.push(...value.values);
+    } else {
+      text += "?";
+      params.push(value);
+    }
+    text += strings[index + 1] ?? "";
+  }
+  return { text, params };
+}
+
+function isSqlIn(value: SqlValue | SqlIn): value is SqlIn {
+  return typeof value === "object" && value !== null && "_tag" in value && value._tag === "in";
+}
+
+function withTransaction<A>(db: DatabaseSync, body: () => A): A {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const result = body();
+    db.exec("COMMIT");
+    return result;
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
 const DEFAULT_CHUNK_CLOSE_SETTINGS: ChunkCloseSettings = {
   targetMinSmoothTokens: 1_200,
   targetSoftMaxSmoothTokens: 1_800,
@@ -549,7 +677,7 @@ export class ThreadEventStore {
 
     return this.runSql(
       Effect.gen(function*() {
-        const sql = yield* SqlClient.SqlClient;
+        const sql = yield* Sql;
 
         return yield* Effect.gen(function*() {
           const requestedClientThreadId = input.clientThreadId;
@@ -618,7 +746,7 @@ export class ThreadEventStore {
 
     return this.runSql(
       Effect.gen(function*() {
-        const sql = yield* SqlClient.SqlClient;
+        const sql = yield* Sql;
         const thread = yield* findThreadByClientThreadId(sql, batch.clientThreadId);
         if (!thread) {
           return {
@@ -737,7 +865,7 @@ export class ThreadEventStore {
   async list(): Promise<PersistedThreadEvent[]> {
     return this.runSql(
       Effect.gen(function*() {
-        const sql = yield* SqlClient.SqlClient;
+        const sql = yield* Sql;
         const rows = yield* sql<ThreadEventSqlRow>`
           SELECT *
           FROM thread_events
@@ -752,7 +880,7 @@ export class ThreadEventStore {
   async listThreads(): Promise<ProjectedThread[]> {
     return this.runSql(
       Effect.gen(function*() {
-        const sql = yield* SqlClient.SqlClient;
+        const sql = yield* Sql;
         const rows = yield* sql<ThreadSqlRow>`
           SELECT *
           FROM threads
@@ -766,7 +894,7 @@ export class ThreadEventStore {
   async listTurnProcessingTriggers(): Promise<TurnProcessingTrigger[]> {
     return this.runSql(
       Effect.gen(function*() {
-        const sql = yield* SqlClient.SqlClient;
+        const sql = yield* Sql;
         const rows = yield* sql<TriggerSqlRow>`
           SELECT *
           FROM turn_processing_triggers
@@ -785,7 +913,7 @@ export class ThreadEventStore {
 
     return this.runSql(
       Effect.gen(function*() {
-        const sql = yield* SqlClient.SqlClient;
+        const sql = yield* Sql;
         const rows = yield* sql<TurnSqlRow>`
           SELECT *
           FROM turns
@@ -805,7 +933,7 @@ export class ThreadEventStore {
 
     return this.runSql(
       Effect.gen(function*() {
-        const sql = yield* SqlClient.SqlClient;
+        const sql = yield* Sql;
         const rows = yield* sql<ChunkSqlRow>`
           SELECT *
           FROM chunks
@@ -853,7 +981,7 @@ export class ThreadEventStore {
 
     return this.runSql(
       Effect.gen(function*() {
-        const sql = yield* SqlClient.SqlClient;
+        const sql = yield* Sql;
         const messageRows = yield* sql<MessageSqlRow>`
           SELECT *
           FROM messages
@@ -892,7 +1020,7 @@ export class ThreadEventStore {
     const now = this.now;
     return this.runSql(
       Effect.gen(function*() {
-        const sql = yield* SqlClient.SqlClient;
+        const sql = yield* Sql;
         const rows = yield* sql<TriggerSqlRow>`
           SELECT *
           FROM turn_processing_triggers
@@ -926,7 +1054,7 @@ export class ThreadEventStore {
     const now = this.now;
     return this.runSql(
       Effect.gen(function*() {
-        const sql = yield* SqlClient.SqlClient;
+        const sql = yield* Sql;
         return yield* claimTrigger(sql, triggerId, now().toISOString());
       }),
     );
@@ -991,7 +1119,7 @@ export class ThreadEventStore {
   private async readTurnWorkerInput(trigger: TurnProcessingTrigger): Promise<TurnWorkerInput | undefined> {
     return this.runSql(
       Effect.gen(function*() {
-        const sql = yield* SqlClient.SqlClient;
+        const sql = yield* Sql;
         return yield* readTurnWorkerInput(sql, trigger);
       }),
     );
@@ -1003,7 +1131,7 @@ export class ThreadEventStore {
   ): Promise<{ trigger: TurnProcessingTrigger; turn: CanonicalTurn; turnIsChunkEligible: boolean }> {
     return this.runSql(
       Effect.gen(function*() {
-        const sql = yield* SqlClient.SqlClient;
+        const sql = yield* Sql;
         return yield* persistComputedTurn(sql, trigger, computed);
       }),
     );
@@ -1015,7 +1143,7 @@ export class ThreadEventStore {
     const settings = { ...DEFAULT_CHUNK_CLOSE_SETTINGS, ...this.worker.chunkSettings };
     return this.runSql(
       Effect.gen(function*() {
-        const sql = yield* SqlClient.SqlClient;
+        const sql = yield* Sql;
         return yield* updateChunkForEligibleTurn(sql, turn, settings);
       }),
     );
@@ -1024,7 +1152,7 @@ export class ThreadEventStore {
   private async readClosedChunkArtifactTargetsForTurn(turn: CanonicalTurn): Promise<CanonicalChunk[]> {
     return this.runSql(
       Effect.gen(function*() {
-        const sql = yield* SqlClient.SqlClient;
+        const sql = yield* Sql;
         return yield* readClosedChunkArtifactTargetsForTurn(sql, turn.threadId, turn.turnId);
       }),
     );
@@ -1037,7 +1165,7 @@ export class ThreadEventStore {
     const now = this.now;
     return this.runSql(
       Effect.gen(function*() {
-        const sql = yield* SqlClient.SqlClient;
+        const sql = yield* Sql;
         return yield* Effect.gen(function*() {
           const updatedChunkIds: string[] = [];
           for (const artifact of artifacts) {
@@ -1055,7 +1183,7 @@ export class ThreadEventStore {
     const now = this.now;
     return this.runSql(
       Effect.gen(function*() {
-        const sql = yield* SqlClient.SqlClient;
+        const sql = yield* Sql;
         return yield* markTriggerComplete(sql, triggerId, now().toISOString());
       }),
     );
@@ -1065,7 +1193,7 @@ export class ThreadEventStore {
     const now = this.now;
     await this.runSql(
       Effect.gen(function*() {
-        const sql = yield* SqlClient.SqlClient;
+        const sql = yield* Sql;
         yield* markTriggerFailed(sql, triggerId, message, now().toISOString());
       }),
     );
@@ -1078,31 +1206,26 @@ export class ThreadEventStore {
 
     return this.runSql(
       Effect.gen(function*() {
-        const sql = yield* SqlClient.SqlClient;
+        const sql = yield* Sql;
         return yield* findThreadByClientThreadId(sql, clientThreadId);
       }),
     );
   }
 
-  private runSql<A>(
-    program: Effect.Effect<A, unknown, SqlClient.SqlClient>,
-  ): Promise<A> {
-    mkdirSync(dirname(this.eventDbPath), { recursive: true });
-
-    return Effect.runPromise(
-      Effect.gen(function*() {
-        const sql = yield* SqlClient.SqlClient;
-        yield* setupThreadEventsSchema(sql);
-        return yield* program;
-      }).pipe(
-        Effect.provide(
-          SqliteClient.layer({
-            filename: this.eventDbPath,
-          }),
-        ),
-        Effect.mapError(toThreadEventStoreError),
-      ),
-    );
+  async runSql<A>(program: EffectValue<A>): Promise<A> {
+    const db = openThreadEventsDb(this.eventDbPath);
+    const previousSql = currentSql;
+    try {
+      const sql = makeSql(db);
+      currentSql = sql;
+      setupThreadEventsSchema(sql).run();
+      return program.run();
+    } catch (error) {
+      throw toThreadEventStoreError(error);
+    } finally {
+      currentSql = previousSql;
+      db.close();
+    }
   }
 }
 
@@ -1195,7 +1318,7 @@ export async function readThread(eventDbPath: string, clientThreadId: string): P
   }
 }
 
-function setupThreadEventsSchema(sql: SqlClient.SqlClient): Effect.Effect<void, SqlError.SqlError | ThreadEventStoreError> {
+function setupThreadEventsSchema(sql: Sql): EffectValue<void> {
   return Effect.gen(function*() {
     yield* sql.unsafe(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
     yield* sql.unsafe("PRAGMA foreign_keys = ON");
@@ -1336,8 +1459,8 @@ function setupThreadEventsSchema(sql: SqlClient.SqlClient): Effect.Effect<void, 
 }
 
 function assertCompatibleThreadEventsSchema(
-  sql: SqlClient.SqlClient,
-): Effect.Effect<void, SqlError.SqlError | ThreadEventStoreError> {
+  sql: Sql,
+): EffectValue<void> {
   return Effect.gen(function*() {
     const tableNames = Object.keys(EXPECTED_TABLE_SCHEMAS);
     const rows = yield* sql<SqliteMasterObjectRow>`
@@ -1391,9 +1514,9 @@ function hasExpectedColumns(
 }
 
 function loadUniqueColumnSets(
-  sql: SqlClient.SqlClient,
+  sql: Sql,
   tableName: string,
-): Effect.Effect<readonly (readonly string[])[], SqlError.SqlError> {
+): EffectValue<readonly (readonly string[])[]> {
   return Effect.gen(function*() {
     const indexes = yield* sql.unsafe<SqliteIndexListRow>(`PRAGMA index_list(${tableName})`);
     const uniqueColumnSets: string[][] = [];
@@ -1518,14 +1641,14 @@ function makePersistedEventDraft(
 }
 
 function appendDecodedEvent(
-  sql: SqlClient.SqlClient,
+  sql: Sql,
   thread: ProjectedThread,
   input: NormalizedThreadEventAppendInput,
   dependencies: {
     idGenerator: () => string;
     now: () => Date;
   },
-): Effect.Effect<AppendThreadEventResult, SqlError.SqlError | ThreadEventStoreError> {
+): EffectValue<AppendThreadEventResult> {
   return Effect.gen(function*() {
     const duplicate = yield* findByIdempotencyKey(sql, thread.threadId, input.idempotencyKey);
     if (duplicate) {
@@ -1591,9 +1714,9 @@ function appendDecodedEvent(
 }
 
 function insertThread(
-  sql: SqlClient.SqlClient,
+  sql: Sql,
   thread: ProjectedThread,
-): Effect.Effect<ReadonlyArray<ThreadSqlRow>, SqlError.SqlError> {
+): EffectValue<ReadonlyArray<ThreadSqlRow>> {
   return sql<ThreadSqlRow>`
     INSERT INTO threads (
       thread_id,
@@ -1615,9 +1738,9 @@ function insertThread(
 }
 
 function insertCreatedEvent(
-  sql: SqlClient.SqlClient,
+  sql: Sql,
   event: PersistedThreadEvent,
-): Effect.Effect<ReadonlyArray<ThreadEventSqlRow>, SqlError.SqlError> {
+): EffectValue<ReadonlyArray<ThreadEventSqlRow>> {
   return sql<ThreadEventSqlRow>`
     INSERT INTO thread_events (
       thread_event_id,
@@ -1652,9 +1775,9 @@ function insertCreatedEvent(
 }
 
 function insertEvent(
-  sql: SqlClient.SqlClient,
+  sql: Sql,
   event: Omit<PersistedThreadEvent, "eventOrder">,
-): Effect.Effect<ReadonlyArray<ThreadEventSqlRow>, SqlError.SqlError> {
+): EffectValue<ReadonlyArray<ThreadEventSqlRow>> {
   return sql<ThreadEventSqlRow>`
     INSERT INTO thread_events (
       thread_event_id,
@@ -1691,9 +1814,9 @@ function insertEvent(
 }
 
 function findThreadByClientThreadId(
-  sql: SqlClient.SqlClient,
+  sql: Sql,
   clientThreadId: string,
-): Effect.Effect<ProjectedThread | undefined, SqlError.SqlError> {
+): EffectValue<ProjectedThread | undefined> {
   return Effect.map(
     sql<ThreadSqlRow>`
       SELECT *
@@ -1708,10 +1831,10 @@ function findThreadByClientThreadId(
 }
 
 function findByIdempotencyKey(
-  sql: SqlClient.SqlClient,
+  sql: Sql,
   threadId: string,
   idempotencyKey: string,
-): Effect.Effect<PersistedThreadEvent | undefined, SqlError.SqlError> {
+): EffectValue<PersistedThreadEvent | undefined> {
   return Effect.map(
     sql<ThreadEventSqlRow>`
       SELECT *
@@ -1726,9 +1849,9 @@ function findByIdempotencyKey(
 }
 
 function projectEvent(
-  sql: SqlClient.SqlClient,
+  sql: Sql,
   event: PersistedThreadEvent,
-): Effect.Effect<{ messages: ProjectedMessage[]; blocks: ProjectedMessageBlock[] }, SqlError.SqlError> {
+): EffectValue<{ messages: ProjectedMessage[]; blocks: ProjectedMessageBlock[] }> {
   return Effect.gen(function*() {
     const drafts = projectionDraftsForEvent(event);
     if (drafts.length === 0) {
@@ -1854,9 +1977,9 @@ function projectionDraftsForEvent(event: PersistedThreadEvent): MessageProjectio
 }
 
 function insertMessage(
-  sql: SqlClient.SqlClient,
+  sql: Sql,
   message: Omit<ProjectedMessage, "actor"> & { actor: ActorRef },
-): Effect.Effect<ReadonlyArray<MessageSqlRow>, SqlError.SqlError> {
+): EffectValue<ReadonlyArray<MessageSqlRow>> {
   return sql<MessageSqlRow>`
     INSERT INTO messages (
       message_id,
@@ -1885,9 +2008,9 @@ function insertMessage(
 }
 
 function insertMessageBlock(
-  sql: SqlClient.SqlClient,
+  sql: Sql,
   block: Omit<ProjectedMessageBlock, "payload"> & { payload: JsonObject },
-): Effect.Effect<ReadonlyArray<MessageBlockSqlRow>, SqlError.SqlError> {
+): EffectValue<ReadonlyArray<MessageBlockSqlRow>> {
   return sql<MessageBlockSqlRow>`
     INSERT INTO message_blocks (
       block_id,
@@ -1912,10 +2035,10 @@ function insertMessageBlock(
 }
 
 function updateThreadUpdatedAt(
-  sql: SqlClient.SqlClient,
+  sql: Sql,
   threadId: string,
   updatedAt: string,
-): Effect.Effect<ReadonlyArray<never>, SqlError.SqlError> {
+): EffectValue<ReadonlyArray<never>> {
   return sql`
     UPDATE threads
     SET updated_at = ${updatedAt}
@@ -1924,9 +2047,9 @@ function updateThreadUpdatedAt(
 }
 
 function ensureTriggerForTurnEnd(
-  sql: SqlClient.SqlClient,
+  sql: Sql,
   event: PersistedThreadEvent,
-): Effect.Effect<TurnProcessingTrigger | undefined, SqlError.SqlError> {
+): EffectValue<TurnProcessingTrigger | undefined> {
   return Effect.gen(function*() {
     const closesOpenSpan = yield* turnEndClosesOpenSpan(sql, event.threadId, event.eventOrder);
     if (!closesOpenSpan) {
@@ -1972,10 +2095,10 @@ function ensureTriggerForTurnEnd(
 }
 
 function turnEndClosesOpenSpan(
-  sql: SqlClient.SqlClient,
+  sql: Sql,
   threadId: string,
   turnEndEventOrder: number,
-): Effect.Effect<boolean, SqlError.SqlError> {
+): EffectValue<boolean> {
   return Effect.map(
     sql<{ event_kind: string }>`
       SELECT event_kind
@@ -1991,10 +2114,10 @@ function turnEndClosesOpenSpan(
 }
 
 function findTriggerForTurnEnd(
-  sql: SqlClient.SqlClient,
+  sql: Sql,
   threadId: string,
   turnEndEventOrder: number,
-): Effect.Effect<TurnProcessingTrigger | undefined, SqlError.SqlError> {
+): EffectValue<TurnProcessingTrigger | undefined> {
   return Effect.map(
     sql<TriggerSqlRow>`
       SELECT *
@@ -2006,9 +2129,9 @@ function findTriggerForTurnEnd(
 }
 
 function findProjectionsForEvent(
-  sql: SqlClient.SqlClient,
+  sql: Sql,
   threadEventId: string,
-): Effect.Effect<{ messages: ProjectedMessage[]; blocks: ProjectedMessageBlock[] }, SqlError.SqlError> {
+): EffectValue<{ messages: ProjectedMessage[]; blocks: ProjectedMessageBlock[] }> {
   return Effect.gen(function*() {
     const messageRows = yield* sql<MessageSqlRow>`
       SELECT *
@@ -2031,10 +2154,10 @@ function findProjectionsForEvent(
 }
 
 function claimTrigger(
-  sql: SqlClient.SqlClient,
+  sql: Sql,
   triggerId: string,
   claimedAt: string,
-): Effect.Effect<TurnProcessingTrigger | undefined, SqlError.SqlError> {
+): EffectValue<TurnProcessingTrigger | undefined> {
   return Effect.gen(function*() {
     const rows = yield* sql<TriggerSqlRow>`
       UPDATE turn_processing_triggers
@@ -2066,11 +2189,11 @@ function claimTrigger(
 }
 
 function markTriggerFailed(
-  sql: SqlClient.SqlClient,
+  sql: Sql,
   triggerId: string,
   message: string,
   updatedAt: string,
-): Effect.Effect<TurnProcessingTrigger | undefined, SqlError.SqlError> {
+): EffectValue<TurnProcessingTrigger | undefined> {
   return Effect.map(
     sql<TriggerSqlRow>`
       UPDATE turn_processing_triggers
@@ -2086,10 +2209,10 @@ function markTriggerFailed(
 }
 
 function markTriggerComplete(
-  sql: SqlClient.SqlClient,
+  sql: Sql,
   triggerId: string,
   completedAt: string,
-): Effect.Effect<TurnProcessingTrigger | undefined, SqlError.SqlError> {
+): EffectValue<TurnProcessingTrigger | undefined> {
   return Effect.map(
     sql<TriggerSqlRow>`
       UPDATE turn_processing_triggers
@@ -2106,9 +2229,9 @@ function markTriggerComplete(
 }
 
 function readTurnWorkerInput(
-  sql: SqlClient.SqlClient,
+  sql: Sql,
   trigger: TurnProcessingTrigger,
-): Effect.Effect<TurnWorkerInput | undefined, SqlError.SqlError> {
+): EffectValue<TurnWorkerInput | undefined> {
   return Effect.gen(function*() {
     const turnEndRows = yield* sql<ThreadEventSqlRow>`
       SELECT *
@@ -2359,10 +2482,10 @@ async function computeTurnProjection(
 }
 
 function persistComputedTurn(
-  sql: SqlClient.SqlClient,
+  sql: Sql,
   trigger: TurnProcessingTrigger,
   computed: ComputedTurnProjection,
-): Effect.Effect<{ trigger: TurnProcessingTrigger; turn: CanonicalTurn; turnIsChunkEligible: boolean }, SqlError.SqlError> {
+): EffectValue<{ trigger: TurnProcessingTrigger; turn: CanonicalTurn; turnIsChunkEligible: boolean }> {
   return Effect.gen(function*() {
     return yield* Effect.gen(function*() {
       const latestTrigger = yield* findTriggerForTurnEnd(sql, trigger.threadId, trigger.turnEndEventOrder);
@@ -2390,9 +2513,9 @@ function persistComputedTurn(
 }
 
 function upsertTurn(
-  sql: SqlClient.SqlClient,
+  sql: Sql,
   turn: CanonicalTurn,
-): Effect.Effect<ReadonlyArray<TurnSqlRow>, SqlError.SqlError> {
+): EffectValue<ReadonlyArray<TurnSqlRow>> {
   return sql<TurnSqlRow>`
     INSERT INTO turns (
       turn_id,
@@ -2454,10 +2577,10 @@ function upsertTurn(
 }
 
 function updateChunkForEligibleTurn(
-  sql: SqlClient.SqlClient,
+  sql: Sql,
   turn: CanonicalTurn,
   settings: ChunkCloseSettings,
-): Effect.Effect<{ updatedChunkIds: string[]; closedChunks: CanonicalChunk[] }, SqlError.SqlError> {
+): EffectValue<{ updatedChunkIds: string[]; closedChunks: CanonicalChunk[] }> {
   return Effect.gen(function*() {
     return yield* Effect.gen(function*() {
       const existingChunks = (yield* sql<ChunkSqlRow>`
@@ -2525,10 +2648,10 @@ function updateChunkForEligibleTurn(
 }
 
 function readClosedChunkArtifactTargetsForTurn(
-  sql: SqlClient.SqlClient,
+  sql: Sql,
   threadId: string,
   turnId: string,
-): Effect.Effect<CanonicalChunk[], SqlError.SqlError> {
+): EffectValue<CanonicalChunk[]> {
   return Effect.map(
     sql<ChunkSqlRow>`
       SELECT *
@@ -2544,9 +2667,9 @@ function readClosedChunkArtifactTargetsForTurn(
 }
 
 function upsertChunk(
-  sql: SqlClient.SqlClient,
+  sql: Sql,
   chunk: CanonicalChunk,
-): Effect.Effect<ReadonlyArray<ChunkSqlRow>, SqlError.SqlError> {
+): EffectValue<ReadonlyArray<ChunkSqlRow>> {
   return sql<ChunkSqlRow>`
     INSERT INTO chunks (
       chunk_id,
@@ -2656,9 +2779,9 @@ async function computeClosedChunkArtifacts(
 }
 
 function persistChunkArtifact(
-  sql: SqlClient.SqlClient,
+  sql: Sql,
   artifact: ComputedChunkArtifact,
-): Effect.Effect<ReadonlyArray<ChunkSqlRow>, SqlError.SqlError> {
+): EffectValue<ReadonlyArray<ChunkSqlRow>> {
   return Effect.gen(function*() {
     const rows = yield* sql<ChunkSqlRow>`
       SELECT *

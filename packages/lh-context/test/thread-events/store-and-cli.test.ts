@@ -3,20 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import Database from "better-sqlite3";
-import { describe, expect, it, vi } from "vitest";
-
-const sqliteClientMockState = vi.hoisted(() => ({ layerCalls: 0 }));
-
-vi.mock("@effect/sql-sqlite-node/SqliteClient", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@effect/sql-sqlite-node/SqliteClient")>();
-  return {
-    ...actual,
-    layer: (...args: Parameters<typeof actual.layer>) => {
-      sqliteClientMockState.layerCalls += 1;
-      return actual.layer(...args);
-    },
-  };
-});
+import { describe, expect, it } from "vitest";
 
 import { runCli } from "../../src/commands/run.js";
 import { ThreadEventStore, ThreadEventStoreError } from "../../src/thread-events/store.js";
@@ -442,7 +429,7 @@ describe("ThreadEventStore", () => {
     }
   });
 
-  it("uses one SQL layer setup for an appendMany batch", async () => {
+  it("persists all appendMany successes in one batch", async () => {
     let idCounter = 0;
     const store = new ThreadEventStore({
       threadDbPath: tempThreadDbPath(),
@@ -453,7 +440,6 @@ describe("ThreadEventStore", () => {
     try {
       await store.createThread({ clientThreadId: "client-alpha" });
 
-      sqliteClientMockState.layerCalls = 0;
       const appended = await store.appendMany("client-alpha", [
         appendInput({ idempotencyKey: "prompt-1", payload: { text: "first" } }),
         appendInput({
@@ -467,7 +453,7 @@ describe("ThreadEventStore", () => {
 
       expect(appended.ok).toBe(true);
       expect(appended.results).toHaveLength(3);
-      expect(sqliteClientMockState.layerCalls).toBe(1);
+      expect(await store.list("client-alpha")).toHaveLength(4);
     } finally {
       store.close();
     }
