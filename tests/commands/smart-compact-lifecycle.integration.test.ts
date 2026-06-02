@@ -35,7 +35,8 @@ import {
 } from "../thread-view/helpers.js";
 import type { StewardResult } from "../../src/thread/domain/errors.js";
 import type { TurnRecord } from "../../src/thread/domain/records.js";
-import { FileThreadStore } from "../../src/thread/store/file-thread-store.js";
+import { SqliteThreadStore } from "../../src/thread/store/sqlite-thread-store.js";
+import type { ThreadStore } from "../../src/thread/store/thread-store.js";
 import type { UserPromptSmoothingProvider } from "../../src/thread/async-thread/services/user-prompt-smoothing-service.js";
 
 const READY_LOWER_BOUND = 2_000;
@@ -69,8 +70,10 @@ class FakeExtensionApi {
   }
 }
 
-type SeededSmartCompactContext = Awaited<ReturnType<typeof seedDeterministicRebuildThread>>;
-type SmartCompactTestContext = Pick<SeededSmartCompactContext, "threadId" | "threadStore">;
+interface SmartCompactTestContext {
+  threadId: string;
+  threadStore: ThreadStore;
+}
 
 function asProviderInputCount<TRecord extends TokenCountRecord>(record: TRecord): TRecord {
   return assertTokenCountRecord({
@@ -270,7 +273,7 @@ async function createLifecycleCaptureContext(input: {
   });
   await ensureTargetSessionFile(target);
 
-  const threadStore = new FileThreadStore(input.storeRootDir);
+  const threadStore = new SqliteThreadStore(input.storeRootDir);
   const threadViewStore = new FileThreadViewStore(input.storeRootDir, threadStore);
   const pi = new FakeExtensionApi();
   registerContextStewardExtension(pi as unknown as ExtensionAPI, {

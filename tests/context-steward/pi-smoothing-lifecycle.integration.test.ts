@@ -16,8 +16,8 @@ import {
   makePiUserMessage,
   makeThreadTarget,
 } from "../../src/context-steward/test/fixtures.js";
-import { withTempThreadStore } from "../../src/context-steward/test/temp-store.js";
-import { FileThreadStore } from "../../src/thread/store/file-thread-store.js";
+import { withTempSqliteThreadStore } from "../../src/context-steward/test/temp-store.js";
+import { SqliteThreadStore } from "../../src/thread/store/sqlite-thread-store.js";
 import { materializeSmoothTurn } from "../../src/thread/async-thread/services/smooth-turn-service.js";
 import type { UserPromptSmoothingProvider } from "../../src/thread/async-thread/services/user-prompt-smoothing-service.js";
 
@@ -136,7 +136,7 @@ async function createRegisteredContext(input: {
   });
   await ensureTargetSessionFile(target);
 
-  const store = new FileThreadStore(input.storeRootDir);
+  const store = new SqliteThreadStore(input.storeRootDir);
   const pi = new FakeExtensionApi();
   registerContextStewardExtension(pi as unknown as ExtensionAPI, {
     createStore: () => store,
@@ -188,7 +188,7 @@ async function findScenarioThread(input: Awaited<ReturnType<typeof createRegiste
 }
 
 async function waitForUserPromptComponentCount(input: {
-  store: FileThreadStore;
+  store: SqliteThreadStore;
   threadId: string;
   count: number;
   description: string;
@@ -275,7 +275,7 @@ async function emitUserOnlyFallbackClosureScenario(input: Awaited<ReturnType<typ
 }
 
 test("message_end writes model-smoothed user_prompt component to canonical thread", async () => {
-  await withTempThreadStore(async ({ storeRootDir, projectDir }) => {
+  await withTempSqliteThreadStore(async ({ storeRootDir, projectDir }) => {
     const rawPrompt = "maybe smooth this exact lifecycle prompt";
     const smoothedPrompt = "Please smooth this exact lifecycle prompt.";
     const { target, ctx, store, pi } = await createRegisteredContext({
@@ -308,7 +308,7 @@ test("message_end writes model-smoothed user_prompt component to canonical threa
 });
 
 test("replayed message_end does not duplicate messages or user_prompt smoothing components", async () => {
-  await withTempThreadStore(async ({ storeRootDir, projectDir }) => {
+  await withTempSqliteThreadStore(async ({ storeRootDir, projectDir }) => {
     let providerCalls = 0;
     const event = {
       type: "message_end",
@@ -342,7 +342,7 @@ test("replayed message_end does not duplicate messages or user_prompt smoothing 
 });
 
 test("message_end and turn_end create complete component-first smooth turn", async () => {
-  await withTempThreadStore(async ({ storeRootDir, projectDir }) => {
+  await withTempSqliteThreadStore(async ({ storeRootDir, projectDir }) => {
     const { target, ctx, store, pi } = await createRegisteredContext({
       storeRootDir,
       projectDir,
@@ -396,7 +396,7 @@ test("message_end and turn_end create complete component-first smooth turn", asy
 });
 
 test("message_end with final assistant stop closes the canonical turn without turn_end", async () => {
-  await withTempThreadStore(async ({ storeRootDir, projectDir }) => {
+  await withTempSqliteThreadStore(async ({ storeRootDir, projectDir }) => {
     const scenario = await createRegisteredContext({
       storeRootDir,
       projectDir,
@@ -423,7 +423,7 @@ test("message_end with final assistant stop closes the canonical turn without tu
 });
 
 test("next user prompt closes a still-open prior turn after non-final assistant/tool activity", async () => {
-  await withTempThreadStore(async ({ storeRootDir, projectDir }) => {
+  await withTempSqliteThreadStore(async ({ storeRootDir, projectDir }) => {
     const scenario = await createRegisteredContext({
       storeRootDir,
       projectDir,
@@ -460,7 +460,7 @@ test("next user prompt closes a still-open prior turn after non-final assistant/
 });
 
 test("next user prompt after stop-closed turn leaves prior turn unchanged and opens a new turn", async () => {
-  await withTempThreadStore(async ({ storeRootDir, projectDir }) => {
+  await withTempSqliteThreadStore(async ({ storeRootDir, projectDir }) => {
     const scenario = await createRegisteredContext({
       storeRootDir,
       projectDir,
@@ -485,7 +485,7 @@ test("next user prompt after stop-closed turn leaves prior turn unchanged and op
 });
 
 test("fallback-closed incomplete turn does not invent assistant or tool smooth components", async () => {
-  await withTempThreadStore(async ({ storeRootDir, projectDir }) => {
+  await withTempSqliteThreadStore(async ({ storeRootDir, projectDir }) => {
     const scenario = await createRegisteredContext({
       storeRootDir,
       projectDir,
@@ -509,7 +509,7 @@ test("fallback-closed incomplete turn does not invent assistant or tool smooth c
 });
 
 test("open turns do not get deterministic assistant/thinking/tool components before closure", async () => {
-  await withTempThreadStore(async ({ storeRootDir, projectDir }) => {
+  await withTempSqliteThreadStore(async ({ storeRootDir, projectDir }) => {
     const { target, ctx, store, pi } = await createRegisteredContext({
       storeRootDir,
       projectDir,

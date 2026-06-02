@@ -28,8 +28,10 @@ import {
   makeThreadTarget,
   makeTurnRecord,
 } from "../../src/context-steward/test/fixtures.js";
-import { withTempThreadStore } from "../../src/context-steward/test/temp-store.js";
+import { withTempSqliteThreadStore, withTempThreadStore } from "../../src/context-steward/test/temp-store.js";
 import { FileThreadStore } from "../../src/context-steward/store/file-thread-store.js";
+import { SqliteThreadStore } from "../../src/context-steward/store/sqlite-thread-store.js";
+import type { ThreadStore } from "../../src/context-steward/store/thread-store.js";
 import { openOrCreateManagedThread } from "../../src/context-steward/services/thread-service.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { TokenCountingMaintenanceRecord } from "../../src/thread/domain/records.js";
@@ -169,7 +171,7 @@ function exactTokenRecord(expected: any, count: number, model?: string) {
   });
 }
 
-class TokenCountingTrackingStore extends FileThreadStore {
+class TokenCountingTrackingStore extends SqliteThreadStore {
   private readonly waiters = new Map<string, Array<(value: TokenCountingMaintenanceRecord) => void>>();
 
   override async updateThreadMetadata(input: UpdateThreadMetadataInput) {
@@ -237,7 +239,7 @@ class FakeExtensionApi {
 async function createManagedThread(
   storeRootDir: string,
   target = makeThreadTarget(),
-  store = new FileThreadStore(storeRootDir),
+  store: ThreadStore = new FileThreadStore(storeRootDir),
 ) {
   await ensureTargetSessionFile(target);
   const thread = expectOk(await openOrCreateManagedThread({ target }, store));
@@ -530,8 +532,9 @@ test("live PI context leaves tool results untouched before the raw-zone threshol
 });
 
 test("production hooks preserve canonical tool output when PI-visible tool result was truncated", async () => {
-  await withTempThreadStore(async ({ storeRootDir }) => {
-    const { store, thread, ctx } = await createManagedThread(storeRootDir);
+  await withTempSqliteThreadStore(async ({ storeRootDir }) => {
+    const sqliteStore = new SqliteThreadStore(storeRootDir);
+    const { store, thread, ctx } = await createManagedThread(storeRootDir, makeThreadTarget(), sqliteStore);
     const pi = new FakeExtensionApi();
     const fullOutput = "canonical tool output ".repeat(40);
 
@@ -956,14 +959,14 @@ test("captures message_end events through the thin PI extension helper", async (
 });
 
 test("production PI handlers schedule user prompt smoothing on non-duplicate message_end without blocking capture", async () => {
-  await withTempThreadStore(async ({ storeRootDir, projectDir, resolveProjectPath }) => {
+  await withTempSqliteThreadStore(async ({ storeRootDir, projectDir, resolveProjectPath }) => {
     const target = makeThreadTarget({
       sessionId: "session-production-user-smoothing",
       sessionFilePath: resolveProjectPath("pi", "session-production-user-smoothing.jsonl"),
       cwd: projectDir,
     });
     await ensureTargetSessionFile(target);
-    const store = new FileThreadStore(storeRootDir);
+    const store = new SqliteThreadStore(storeRootDir);
     const pi = new FakeExtensionApi();
     let providerCalls = 0;
     let release!: () => void;
@@ -1020,14 +1023,14 @@ test("production PI handlers schedule user prompt smoothing on non-duplicate mes
 });
 
 test("registers production PI handlers that capture live message_end prompt, response, and tool result events", async () => {
-  await withTempThreadStore(async ({ storeRootDir, projectDir, resolveProjectPath }) => {
+  await withTempSqliteThreadStore(async ({ storeRootDir, projectDir, resolveProjectPath }) => {
     const target = makeThreadTarget({
       sessionId: "session-production-001",
       sessionFilePath: resolveProjectPath("pi", "session-production-001.jsonl"),
       cwd: projectDir,
     });
     await ensureTargetSessionFile(target);
-    const store = new FileThreadStore(storeRootDir);
+    const store = new SqliteThreadStore(storeRootDir);
     const ctx = makePiExtensionContext(target);
     const pi = new FakeExtensionApi();
 
@@ -1078,14 +1081,14 @@ test("registers production PI handlers that capture live message_end prompt, res
 });
 
 test("production PI handlers ignore session_start without creating runtime messages", async () => {
-  await withTempThreadStore(async ({ storeRootDir, projectDir, resolveProjectPath }) => {
+  await withTempSqliteThreadStore(async ({ storeRootDir, projectDir, resolveProjectPath }) => {
     const target = makeThreadTarget({
       sessionId: "session-production-fresh",
       sessionFilePath: resolveProjectPath("pi", "session-production-fresh.jsonl"),
       cwd: projectDir,
     });
     await ensureTargetSessionFile(target);
-    const store = new FileThreadStore(storeRootDir);
+    const store = new SqliteThreadStore(storeRootDir);
     const ctx = makeImportCapableContext(target, {
       entries: [],
     });
@@ -1102,7 +1105,7 @@ test("production PI handlers ignore session_start without creating runtime messa
 });
 
 test("production PI handlers do not auto-manage pre-populated sessions before attach/import", async () => {
-  await withTempThreadStore(async ({ storeRootDir, projectDir, resolveProjectPath }) => {
+  await withTempSqliteThreadStore(async ({ storeRootDir, projectDir, resolveProjectPath }) => {
     const target = makeThreadTarget({
       sessionId: "session-production-prepopulated",
       sessionFilePath: resolveProjectPath("pi", "session-production-prepopulated.jsonl"),
@@ -1115,7 +1118,7 @@ test("production PI handlers do not auto-manage pre-populated sessions before at
         makePiAssistantMessage({ content: [{ type: "text", text: "Imported response" }] }),
       ],
     });
-    const store = new FileThreadStore(storeRootDir);
+    const store = new SqliteThreadStore(storeRootDir);
     const ctx = makeImportCapableContext(target, {
       entries,
     });
@@ -1143,7 +1146,7 @@ test("production PI handlers do not auto-manage pre-populated sessions before at
 });
 
 test("production PI handlers resolve a fresh managed thread when the PI session target changes", async () => {
-  await withTempThreadStore(async ({ storeRootDir, projectDir, resolveProjectPath }) => {
+  await withTempSqliteThreadStore(async ({ storeRootDir, projectDir, resolveProjectPath }) => {
     const targetOne = makeThreadTarget({
       sessionId: "session-production-cache-a",
       sessionFilePath: resolveProjectPath("pi", "session-production-cache-a.jsonl"),
@@ -1156,7 +1159,7 @@ test("production PI handlers resolve a fresh managed thread when the PI session 
     });
     await ensureTargetSessionFile(targetOne);
     await ensureTargetSessionFile(targetTwo);
-    const store = new FileThreadStore(storeRootDir);
+    const store = new SqliteThreadStore(storeRootDir);
     const ctxOne = makePiExtensionContext(targetOne);
     const ctxTwo = makePiExtensionContext(targetTwo);
     const pi = new FakeExtensionApi();
@@ -1182,7 +1185,7 @@ test("production PI handlers resolve a fresh managed thread when the PI session 
 });
 
 test("production PI handlers resolve generated rollout sessions through the threadId-map", async () => {
-  await withTempThreadStore(async ({ storeRootDir, projectDir, resolveProjectPath }) => {
+  await withTempSqliteThreadStore(async ({ storeRootDir, projectDir, resolveProjectPath }) => {
     const originalTarget = makeThreadTarget({
       sessionId: "session-production-original",
       sessionFilePath: resolveProjectPath("pi", "session-production-original.jsonl"),
@@ -1193,7 +1196,7 @@ test("production PI handlers resolve generated rollout sessions through the thre
     await mkdir(dirname(generatedFilePath), { recursive: true });
     await writeFile(generatedFilePath, '{"type":"generated"}\n');
 
-    const store = new FileThreadStore(storeRootDir);
+    const store = new SqliteThreadStore(storeRootDir);
     const thread = expectOk(await openOrCreateManagedThread({ target: originalTarget }, store));
     expectOk(
       await store.updateThreadMetadata({
@@ -1255,14 +1258,14 @@ test("production PI handlers resolve generated rollout sessions through the thre
 });
 
 test("production PI handlers suppress duplicate live message_end events without appending another source record", async () => {
-  await withTempThreadStore(async ({ storeRootDir, projectDir, resolveProjectPath }) => {
+  await withTempSqliteThreadStore(async ({ storeRootDir, projectDir, resolveProjectPath }) => {
     const target = makeThreadTarget({
       sessionId: "session-production-duplicate",
       sessionFilePath: resolveProjectPath("pi", "session-production-duplicate.jsonl"),
       cwd: projectDir,
     });
     await ensureTargetSessionFile(target);
-    const store = new FileThreadStore(storeRootDir);
+    const store = new SqliteThreadStore(storeRootDir);
     const ctx = makePiExtensionContext(target);
     const pi = new FakeExtensionApi();
     const event = {
@@ -1291,7 +1294,7 @@ test("production PI handlers suppress duplicate live message_end events without 
 });
 
 test("production PI handlers do not store session and turn lifecycle events as messages", async () => {
-  await withTempThreadStore(async ({ storeRootDir, projectDir, resolveProjectPath }) => {
+  await withTempSqliteThreadStore(async ({ storeRootDir, projectDir, resolveProjectPath }) => {
     const target = makeThreadTarget({
       sessionId: "session-production-runtime",
       sessionFilePath: resolveProjectPath("pi", "session-production-runtime.jsonl"),
@@ -1341,7 +1344,7 @@ test("production PI handlers do not store session and turn lifecycle events as m
 });
 
 test("production turn_end handler closes the latest open turn and smooths closed turns", async () => {
-  await withTempThreadStore(async ({ storeRootDir, projectDir, resolveProjectPath }) => {
+  await withTempSqliteThreadStore(async ({ storeRootDir, projectDir, resolveProjectPath }) => {
     const target = makeThreadTarget({
       sessionId: "session-production-turn-end-smooth",
       sessionFilePath: resolveProjectPath("pi", "session-production-turn-end-smooth.jsonl"),
@@ -1436,7 +1439,7 @@ test("production turn_end handler closes the latest open turn and smooths closed
 });
 
 test("production turn_end handler refreshes the active generated session file for known prompt truncations", async () => {
-  await withTempThreadStore(async ({ storeRootDir, projectDir, resolveProjectPath }) => {
+  await withTempSqliteThreadStore(async ({ storeRootDir, projectDir, resolveProjectPath }) => {
     const generatedFilePath = resolveProjectPath(".context-steward", "threads", "thread-active-prompt", "generated", "active.jsonl");
     const target = makeThreadTarget({
       sessionId: "session-active-prompt",
@@ -1525,7 +1528,7 @@ test("production turn_end handler refreshes the active generated session file fo
 });
 
 test("production prompt projection does not reset when PI leaf advances during ordinary appends", async () => {
-  await withTempThreadStore(async ({ storeRootDir, projectDir, resolveProjectPath }) => {
+  await withTempSqliteThreadStore(async ({ storeRootDir, projectDir, resolveProjectPath }) => {
     const generatedFilePath = resolveProjectPath(".context-steward", "threads", "thread-leaf-advance-prompt", "generated", "active.jsonl");
     const target = makeThreadTarget({
       sessionId: "session-leaf-advance-prompt",
@@ -1635,7 +1638,7 @@ test("production prompt projection does not reset when PI leaf advances during o
 });
 
 test("production session_start handler refreshes an oversized active generated session file before the next turn", async () => {
-  await withTempThreadStore(async ({ storeRootDir, projectDir, resolveProjectPath }) => {
+  await withTempSqliteThreadStore(async ({ storeRootDir, projectDir, resolveProjectPath }) => {
     const generatedFilePath = resolveProjectPath(".context-steward", "threads", "thread-startup-prompt", "generated", "active.jsonl");
     const target = makeThreadTarget({
       sessionId: "session-startup-prompt",
@@ -1680,7 +1683,7 @@ test("production session_start handler refreshes an oversized active generated s
       ].join("\n") + "\n",
       "utf8",
     );
-    const store = new FileThreadStore(storeRootDir);
+    const store = new SqliteThreadStore(storeRootDir);
     await openOrCreateManagedThread({ target }, store);
     const entries = makePiSessionEntries({ messages: [oldToolResult, newerAssistant] });
     const ctx = makeImportCapableContext(target, { entries });
@@ -1708,7 +1711,7 @@ test("production session_start handler refreshes an oversized active generated s
 });
 
 test("production context projection state is scoped to the active PI session branch", async () => {
-  await withTempThreadStore(async ({ projectDir, resolveProjectPath }) => {
+  await withTempSqliteThreadStore(async ({ projectDir, resolveProjectPath }) => {
     const sharedToolCallId = "call-shared-scope-001";
     const firstTarget = makeThreadTarget({
       sessionId: "session-prompt-scope-one",
@@ -1773,7 +1776,7 @@ test("production context projection state is scoped to the active PI session bra
 });
 
 test("production turn_end handler persists token-count maintenance failures", async () => {
-  await withTempThreadStore(async ({ storeRootDir, projectDir, resolveProjectPath }) => {
+  await withTempSqliteThreadStore(async ({ storeRootDir, projectDir, resolveProjectPath }) => {
     const target = makeThreadTarget({
       sessionId: "session-production-turn-end-token-count-failure",
       sessionFilePath: resolveProjectPath("pi", "session-production-turn-end-token-count-failure.jsonl"),
