@@ -131,6 +131,19 @@ async function readChunks(store: FileThreadStore, threadId: string): Promise<Chu
   return expectOk(await store.readChunks(threadId));
 }
 
+async function writeChunks(store: FileThreadStore, threadId: string, chunks: ChunkState[]) {
+  const thread = expectOk(await store.assertCanMutate(threadId));
+  expectOk(
+    await store.writeChunks({
+      threadId,
+      expectedSourceRevision: thread.sourceRevision,
+      expectedMessageHighWatermark: thread.messageHighWatermark,
+      expectedTurnsRevision: thread.turnsRevision,
+      chunks,
+    }),
+  );
+}
+
 async function appendTurn(
   store: FileThreadStore,
   input: {
@@ -270,6 +283,83 @@ test("open or unsmoothed turn is not eligible", async () => {
     assert.deepEqual(result.blockers, []);
     assert.equal(countOpenChunks(chunks), 1);
     assert.deepEqual(expectSingleOpenChunk(chunks).sourceTurnIds, []);
+  });
+});
+
+test("stale open chunk with missing turn ids is reset and rebuilt from current turns", async () => {
+  await withTempThreadStore(async ({ storeRootDir }) => {
+    const store = new FileThreadStore(storeRootDir);
+    await createThread(store, "thread-chunk-stale-open");
+
+    await appendTurn(store, {
+      threadId: "thread-chunk-stale-open",
+      turnId: "turn-current",
+      lifecycleStatus: "closed",
+      userText: "Please include the current turn in a rebuilt open chunk.",
+      assistantText: "This turn has ready projection state.",
+      smooth: true,
+    });
+    await writeChunks(store, "thread-chunk-stale-open", [
+      makeChunkState({
+        chunkId: "chunk-116",
+        threadId: "thread-chunk-stale-open",
+        lifecycleStatus: "open",
+        sourceTurnIds: ["turn-deleted-1", "turn-deleted-2"],
+        smoothText: "stale smooth text",
+      }),
+    ]);
+
+    const result = await updateChunkState(
+      { threadId: "thread-chunk-stale-open" },
+      {
+        store,
+        now: () => new Date(DEFAULT_TEST_TIMESTAMP),
+      },
+    );
+
+    const chunks = await readChunks(store, "thread-chunk-stale-open");
+    assert.deepEqual(result.blockers, []);
+    assert.deepEqual(expectSingleOpenChunk(chunks).sourceTurnIds, ["turn-current"]);
+    assert.equal(expectSingleOpenChunk(chunks).smoothText?.includes("current turn"), true);
+    assert.deepEqual((await readTurns(store, "thread-chunk-stale-open")).map((turn) => turn.turnId), ["turn-current"]);
+  });
+});
+
+test("open chunk with present but non-ready turn blocks instead of resetting", async () => {
+  await withTempThreadStore(async ({ storeRootDir }) => {
+    const store = new FileThreadStore(storeRootDir);
+    await createThread(store, "thread-chunk-open-not-ready");
+
+    await appendTurn(store, {
+      threadId: "thread-chunk-open-not-ready",
+      turnId: "turn-present-not-ready",
+      lifecycleStatus: "closed",
+      userText: "This turn exists but has no smooth lower-band projection yet.",
+      assistantText: "Chunk assembly should wait instead of discarding membership.",
+    });
+    await writeChunks(store, "thread-chunk-open-not-ready", [
+      makeChunkState({
+        chunkId: "chunk-116",
+        threadId: "thread-chunk-open-not-ready",
+        lifecycleStatus: "open",
+        sourceTurnIds: ["turn-present-not-ready"],
+        smoothText: "existing chunk text",
+      }),
+    ]);
+
+    const result = await updateChunkState(
+      { threadId: "thread-chunk-open-not-ready" },
+      {
+        store,
+        now: () => new Date(DEFAULT_TEST_TIMESTAMP),
+      },
+    );
+
+    const openChunk = expectSingleOpenChunk(await readChunks(store, "thread-chunk-open-not-ready"));
+    assert.equal(result.blockers.length, 1);
+    assert.equal(result.blockers[0]?.cause, "open_chunk_projection_not_ready");
+    assert.deepEqual(openChunk.sourceTurnIds, ["turn-present-not-ready"]);
+    assert.equal(openChunk.smoothText, "existing chunk text");
   });
 });
 

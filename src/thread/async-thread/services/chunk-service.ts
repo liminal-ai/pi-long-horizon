@@ -390,6 +390,22 @@ export function materializeChunkConversationTranscriptFromTurns(input: {
     : undefined;
 }
 
+function resetStaleOpenChunk(chunk: ChunkState, updatedAt: string): void {
+  chunk.sourceTurnIds = [];
+  chunk.smoothText = undefined;
+  chunk.smoothTokenCountMetadata = undefined;
+  chunk.sourceRevision = undefined;
+  chunk.openedAt = chunk.openedAt ?? updatedAt;
+  chunk.closedAt = undefined;
+  chunk.closeReason = undefined;
+  if (isCanonicalChunkState(chunk)) {
+    chunk.conversationTranscript = undefined;
+    chunk.lowerBand = undefined;
+  } else {
+    chunk.placeholders = undefined;
+  }
+}
+
 function calculateChunkLowerBandProjectionTokenCount(input: {
   chunk: ChunkState;
   turnsById: ReadonlyMap<string, TurnRecord>;
@@ -579,7 +595,6 @@ export async function updateChunkState(
       updatedChunkIds.add(openChunk.chunkId);
     }
 
-    const assignedTurnIds = new Set(nextChunks.flatMap((chunk) => chunk.sourceTurnIds));
     const messagesById = new Map(snapshotResult.value.messages.map((message) => [message.messageId, message]));
     const turnsById = new Map(snapshotResult.value.turns.map((turn) => [turn.turnId, turn]));
     for (const chunk of nextChunks) {
@@ -592,18 +607,29 @@ export async function updateChunkState(
       turnsById,
       messagesById,
     });
-    const blockOpenChunkAssembly =
-      openChunk.sourceTurnIds.length > 0 && openChunkProjectionTokenCount === undefined;
-    if (blockOpenChunkAssembly) {
-      blockers.push(
-        buildChunkStateIssue(
-          `Open chunk ${openChunk.chunkId} is missing current exact conversation-only projection state required for chunk assembly.`,
-          input.threadId,
-          "open_chunk_projection_not_ready",
-        ),
-      );
+    let blockOpenChunkAssembly = false;
+    if (openChunk.sourceTurnIds.length > 0 && openChunkProjectionTokenCount === undefined) {
+      const referencesMissingSourceTurns = openChunk.sourceTurnIds.some((turnId) => !turnsById.has(turnId));
+      if (referencesMissingSourceTurns) {
+        resetStaleOpenChunk(openChunk, timestamp);
+        updatedChunkIds.add(openChunk.chunkId);
+      } else {
+        blockOpenChunkAssembly = true;
+        blockers.push(
+          buildChunkStateIssue(
+            `Open chunk ${openChunk.chunkId} is missing current exact conversation-only projection state required for chunk assembly.`,
+            input.threadId,
+            "open_chunk_projection_not_ready",
+          ),
+        );
+      }
     }
-    let currentOpenChunkProjectionTokenCount = openChunkProjectionTokenCount ?? 0;
+    const assignedTurnIds = new Set(nextChunks.flatMap((chunk) => chunk.sourceTurnIds));
+    let currentOpenChunkProjectionTokenCount = calculateChunkLowerBandProjectionTokenCount({
+      chunk: openChunk,
+      turnsById,
+      messagesById,
+    }) ?? 0;
     const turnMessages = (turn: TurnRecord) =>
       sortMessages(
         turn.messageIds
