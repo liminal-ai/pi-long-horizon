@@ -26,7 +26,7 @@ function listSqliteTables(dbPath: string): string[] {
   }
 }
 
-function createLegacyShapedThreadDb(dbPath: string): void {
+function createProductionStylePluralThreadDb(dbPath: string): void {
   const db = new Database(dbPath);
   try {
     db.exec(`
@@ -56,7 +56,73 @@ function createLegacyShapedThreadDb(dbPath: string): void {
         message_json TEXT NOT NULL,
         PRIMARY KEY (thread_id, message_id)
       ) STRICT;
+
+      CREATE TABLE turns (
+        thread_id TEXT NOT NULL,
+        turn_index INTEGER NOT NULL,
+        turn_json TEXT NOT NULL,
+        PRIMARY KEY (thread_id, turn_index)
+      ) STRICT;
+
+      CREATE TABLE chunks (
+        thread_id TEXT NOT NULL,
+        chunk_index INTEGER NOT NULL,
+        chunk_json TEXT NOT NULL,
+        PRIMARY KEY (thread_id, chunk_index)
+      ) STRICT;
+
+      INSERT INTO threads (
+        thread_id,
+        created_at,
+        updated_at,
+        source_revision,
+        message_high_watermark,
+        turns_revision,
+        target_runtime,
+        thread_json
+      ) VALUES (
+        'production-thread',
+        '2026-05-30T12:00:00.000Z',
+        '2026-05-30T12:00:00.000Z',
+        1,
+        1,
+        1,
+        'pi',
+        '{}'
+      );
+      INSERT INTO messages (
+        thread_id,
+        message_id,
+        source_order,
+        source_revision,
+        actor_id,
+        message_kind,
+        captured_at,
+        message_json
+      ) VALUES (
+        'production-thread',
+        'production-message',
+        1,
+        1,
+        'user',
+        'user_prompt',
+        '2026-05-30T12:00:00.000Z',
+        '{}'
+      );
+      INSERT INTO turns (thread_id, turn_index, turn_json)
+      VALUES ('production-thread', 1, '{}');
+      INSERT INTO chunks (thread_id, chunk_index, chunk_json)
+      VALUES ('production-thread', 1, '{}');
     `);
+  } finally {
+    db.close();
+  }
+}
+
+function countRows(dbPath: string, tableName: string): number {
+  const db = new Database(dbPath);
+  try {
+    return (db.prepare(`SELECT COUNT(*) AS count FROM ${tableName}`).get() as { count: number }).count;
   } finally {
     db.close();
   }
@@ -66,7 +132,7 @@ function createSameColumnsMissingUniqueThreadDb(dbPath: string): void {
   const db = new Database(dbPath);
   try {
     db.exec(`
-      CREATE TABLE threads (
+      CREATE TABLE thread (
         thread_id TEXT PRIMARY KEY,
         client_thread_id TEXT NOT NULL,
         title TEXT,
@@ -83,7 +149,7 @@ function createPartialUniqueThreadDb(dbPath: string): void {
   const db = new Database(dbPath);
   try {
     db.exec(`
-      CREATE TABLE threads (
+      CREATE TABLE thread (
         thread_id TEXT PRIMARY KEY,
         client_thread_id TEXT NOT NULL,
         title TEXT,
@@ -91,8 +157,8 @@ function createPartialUniqueThreadDb(dbPath: string): void {
         updated_at TEXT NOT NULL
       ) STRICT;
 
-      CREATE UNIQUE INDEX idx_threads_client_thread_id_partial
-        ON threads(client_thread_id)
+      CREATE UNIQUE INDEX idx_thread_client_thread_id_partial
+        ON thread(client_thread_id)
         WHERE title IS NOT NULL;
     `);
   } finally {
@@ -104,7 +170,7 @@ function createSameNameViewDb(dbPath: string): void {
   const db = new Database(dbPath);
   try {
     db.exec(`
-      CREATE VIEW threads AS
+      CREATE VIEW thread AS
       SELECT
         'thread-id' AS thread_id,
         'client-id' AS client_thread_id,
@@ -215,16 +281,45 @@ describe("ThreadEventStore", () => {
     }
   });
 
-  it("rejects legacy-shaped steward thread.sqlite before creating any thread-event tables", async () => {
+  it("coexists with production-style plural tables while using singular thread-event tables", async () => {
     const dbPath = tempThreadDbPath();
-    createLegacyShapedThreadDb(dbPath);
+    createProductionStylePluralThreadDb(dbPath);
+    expect(["threads", "messages", "turns", "chunks"].map((tableName) => countRows(dbPath, tableName))).toEqual([
+      1,
+      1,
+      1,
+      1,
+    ]);
+
     const store = new ThreadEventStore({ eventDbPath: dbPath });
 
     try {
-      await expect(store.createThread({ clientThreadId: "client-alpha" })).rejects.toThrow(
-        /incompatible thread-events database schema/,
-      );
-      expect(listSqliteTables(dbPath)).toEqual(["messages", "threads"]);
+      const created = await store.createThread({ clientThreadId: "client-alpha" });
+      expect(created.created).toBe(true);
+      const appended = await store.appendMany("client-alpha", [appendInput()]);
+      expect(appended.ok).toBe(true);
+      expect(appended.results).toHaveLength(1);
+      expect((await store.readThread("client-alpha"))?.messages).toHaveLength(1);
+
+      expect(listSqliteTables(dbPath)).toEqual([
+        "chunk",
+        "chunks",
+        "event",
+        "message",
+        "message_block",
+        "messages",
+        "thread",
+        "threads",
+        "turn",
+        "turn_trigger",
+        "turns",
+      ]);
+      expect(["threads", "messages", "turns", "chunks"].map((tableName) => countRows(dbPath, tableName))).toEqual([
+        1,
+        1,
+        1,
+        1,
+      ]);
     } finally {
       store.close();
     }
@@ -239,7 +334,7 @@ describe("ThreadEventStore", () => {
       await expect(store.createThread({ clientThreadId: "client-alpha" })).rejects.toThrow(
         /incompatible thread-events database schema/,
       );
-      expect(listSqliteTables(dbPath)).toEqual(["threads"]);
+      expect(listSqliteTables(dbPath)).toEqual(["thread"]);
     } finally {
       store.close();
     }
@@ -254,7 +349,7 @@ describe("ThreadEventStore", () => {
       await expect(store.createThread({ clientThreadId: "client-alpha" })).rejects.toThrow(
         /incompatible thread-events database schema/,
       );
-      expect(listSqliteTables(dbPath)).toEqual(["threads"]);
+      expect(listSqliteTables(dbPath)).toEqual(["thread"]);
     } finally {
       store.close();
     }
@@ -1121,9 +1216,9 @@ describe("ThreadEventStore", () => {
 
       const db = new Database(dbPath);
       try {
-        db.prepare("UPDATE chunks SET lower_band_json = NULL WHERE chunk_id = ?").run(closedChunk.chunkId);
+        db.prepare("UPDATE chunk SET lower_band_json = NULL WHERE chunk_id = ?").run(closedChunk.chunkId);
         db.prepare(`
-          UPDATE turn_processing_triggers
+          UPDATE turn_trigger
           SET status = 'failed',
               completed_at = NULL,
               claimed_at = NULL,

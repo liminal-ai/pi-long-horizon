@@ -529,7 +529,7 @@ const DEFAULT_CHUNK_CLOSE_SETTINGS: ChunkCloseSettings = {
 };
 
 const EXPECTED_TABLE_SCHEMAS: Readonly<Record<string, ExpectedTableSchema>> = {
-  threads: {
+  thread: {
     columns: {
       thread_id: { type: "TEXT", notnull: true, pk: true },
       client_thread_id: { type: "TEXT", notnull: true, pk: false },
@@ -539,7 +539,7 @@ const EXPECTED_TABLE_SCHEMAS: Readonly<Record<string, ExpectedTableSchema>> = {
     },
     uniqueColumnSets: [["client_thread_id"]],
   },
-  thread_events: {
+  event: {
     columns: {
       thread_event_id: { type: "TEXT", notnull: true, pk: true },
       thread_id: { type: "TEXT", notnull: true, pk: false },
@@ -556,7 +556,7 @@ const EXPECTED_TABLE_SCHEMAS: Readonly<Record<string, ExpectedTableSchema>> = {
     },
     uniqueColumnSets: [["thread_id", "event_order"], ["thread_id", "idempotency_key"]],
   },
-  messages: {
+  message: {
     columns: {
       message_id: { type: "TEXT", notnull: true, pk: true },
       thread_id: { type: "TEXT", notnull: true, pk: false },
@@ -570,7 +570,7 @@ const EXPECTED_TABLE_SCHEMAS: Readonly<Record<string, ExpectedTableSchema>> = {
     },
     uniqueColumnSets: [["thread_id", "message_order"]],
   },
-  message_blocks: {
+  message_block: {
     columns: {
       block_id: { type: "TEXT", notnull: true, pk: true },
       message_id: { type: "TEXT", notnull: true, pk: false },
@@ -582,7 +582,7 @@ const EXPECTED_TABLE_SCHEMAS: Readonly<Record<string, ExpectedTableSchema>> = {
     },
     uniqueColumnSets: [["message_id", "block_order"]],
   },
-  turn_processing_triggers: {
+  turn_trigger: {
     columns: {
       trigger_id: { type: "TEXT", notnull: true, pk: true },
       thread_id: { type: "TEXT", notnull: true, pk: false },
@@ -597,7 +597,7 @@ const EXPECTED_TABLE_SCHEMAS: Readonly<Record<string, ExpectedTableSchema>> = {
     },
     uniqueColumnSets: [["thread_id", "turn_end_event_order"]],
   },
-  turns: {
+  turn: {
     columns: {
       turn_id: { type: "TEXT", notnull: true, pk: true },
       thread_id: { type: "TEXT", notnull: true, pk: false },
@@ -620,7 +620,7 @@ const EXPECTED_TABLE_SCHEMAS: Readonly<Record<string, ExpectedTableSchema>> = {
     },
     uniqueColumnSets: [["thread_id", "turn_order"], ["thread_id", "turn_end_event_order"]],
   },
-  chunks: {
+  chunk: {
     columns: {
       chunk_id: { type: "TEXT", notnull: true, pk: true },
       thread_id: { type: "TEXT", notnull: true, pk: false },
@@ -870,7 +870,7 @@ export class ThreadEventStore {
         const sql = yield* Sql;
         const rows = yield* sql<ThreadEventSqlRow>`
           SELECT *
-          FROM thread_events
+          FROM event
           ORDER BY thread_id ASC, event_order ASC
         `;
 
@@ -885,7 +885,7 @@ export class ThreadEventStore {
         const sql = yield* Sql;
         const rows = yield* sql<ThreadSqlRow>`
           SELECT *
-          FROM threads
+          FROM thread
           ORDER BY created_at ASC, thread_id ASC
         `;
         return rows.map(rowToThread);
@@ -899,7 +899,7 @@ export class ThreadEventStore {
         const sql = yield* Sql;
         const rows = yield* sql<TriggerSqlRow>`
           SELECT *
-          FROM turn_processing_triggers
+          FROM turn_trigger
           ORDER BY created_at ASC, trigger_id ASC
         `;
         return rows.map(rowToTrigger);
@@ -918,7 +918,7 @@ export class ThreadEventStore {
         const sql = yield* Sql;
         const rows = yield* sql<TurnSqlRow>`
           SELECT *
-          FROM turns
+          FROM turn
           WHERE thread_id = ${thread.threadId}
           ORDER BY turn_order ASC
         `;
@@ -938,7 +938,7 @@ export class ThreadEventStore {
         const sql = yield* Sql;
         const rows = yield* sql<ChunkSqlRow>`
           SELECT *
-          FROM chunks
+          FROM chunk
           WHERE thread_id = ${thread.threadId}
           ORDER BY chunk_order ASC
         `;
@@ -986,13 +986,13 @@ export class ThreadEventStore {
         const sql = yield* Sql;
         const messageRows = yield* sql<MessageSqlRow>`
           SELECT *
-          FROM messages
+          FROM message
           WHERE thread_id = ${thread.threadId}
           ORDER BY message_order ASC
         `;
         const blockRows = yield* sql<MessageBlockSqlRow>`
           SELECT *
-          FROM message_blocks
+          FROM message_block
           WHERE thread_id = ${thread.threadId}
           ORDER BY message_id ASC, block_order ASC
         `;
@@ -1025,19 +1025,19 @@ export class ThreadEventStore {
         const sql = yield* Sql;
         const rows = yield* sql<TriggerSqlRow>`
           SELECT *
-          FROM turn_processing_triggers
+          FROM turn_trigger
           WHERE status IN ('pending', 'failed')
             AND NOT EXISTS (
               SELECT 1
-              FROM turn_processing_triggers claimed
-              WHERE claimed.thread_id = turn_processing_triggers.thread_id
+              FROM turn_trigger claimed
+              WHERE claimed.thread_id = turn_trigger.thread_id
                 AND claimed.status = 'claimed'
             )
             AND NOT EXISTS (
               SELECT 1
-              FROM turn_processing_triggers earlier
-              WHERE earlier.thread_id = turn_processing_triggers.thread_id
-                AND earlier.turn_end_event_order < turn_processing_triggers.turn_end_event_order
+              FROM turn_trigger earlier
+              WHERE earlier.thread_id = turn_trigger.thread_id
+                AND earlier.turn_end_event_order < turn_trigger.turn_end_event_order
                 AND earlier.status <> 'complete'
             )
           ORDER BY created_at ASC, trigger_id ASC
@@ -1327,7 +1327,7 @@ function setupThreadEventsSchema(sql: Sql): EffectValue<void> {
     yield* Effect.gen(function*() {
       yield* assertCompatibleThreadEventsSchema(sql);
       yield* sql.unsafe(`
-        CREATE TABLE IF NOT EXISTS threads (
+        CREATE TABLE IF NOT EXISTS thread (
           thread_id TEXT PRIMARY KEY,
           client_thread_id TEXT NOT NULL UNIQUE,
           title TEXT,
@@ -1336,7 +1336,7 @@ function setupThreadEventsSchema(sql: Sql): EffectValue<void> {
         ) STRICT
       `);
       yield* sql.unsafe(`
-        CREATE TABLE IF NOT EXISTS thread_events (
+        CREATE TABLE IF NOT EXISTS event (
           thread_event_id TEXT PRIMARY KEY,
           thread_id TEXT NOT NULL,
           event_order INTEGER NOT NULL,
@@ -1354,7 +1354,7 @@ function setupThreadEventsSchema(sql: Sql): EffectValue<void> {
         ) STRICT
       `);
       yield* sql.unsafe(`
-        CREATE TABLE IF NOT EXISTS messages (
+        CREATE TABLE IF NOT EXISTS message (
           message_id TEXT PRIMARY KEY,
           thread_id TEXT NOT NULL,
           message_order INTEGER NOT NULL,
@@ -1368,7 +1368,7 @@ function setupThreadEventsSchema(sql: Sql): EffectValue<void> {
         ) STRICT
       `);
       yield* sql.unsafe(`
-        CREATE TABLE IF NOT EXISTS message_blocks (
+        CREATE TABLE IF NOT EXISTS message_block (
           block_id TEXT PRIMARY KEY,
           message_id TEXT NOT NULL,
           thread_id TEXT NOT NULL,
@@ -1380,7 +1380,7 @@ function setupThreadEventsSchema(sql: Sql): EffectValue<void> {
         ) STRICT
       `);
       yield* sql.unsafe(`
-        CREATE TABLE IF NOT EXISTS turn_processing_triggers (
+        CREATE TABLE IF NOT EXISTS turn_trigger (
           trigger_id TEXT PRIMARY KEY,
           thread_id TEXT NOT NULL,
           turn_end_event_order INTEGER NOT NULL,
@@ -1395,7 +1395,7 @@ function setupThreadEventsSchema(sql: Sql): EffectValue<void> {
         ) STRICT
       `);
       yield* sql.unsafe(`
-        CREATE TABLE IF NOT EXISTS turns (
+        CREATE TABLE IF NOT EXISTS turn (
           turn_id TEXT PRIMARY KEY,
           thread_id TEXT NOT NULL,
           turn_order INTEGER NOT NULL,
@@ -1419,7 +1419,7 @@ function setupThreadEventsSchema(sql: Sql): EffectValue<void> {
         ) STRICT
       `);
       yield* sql.unsafe(`
-        CREATE TABLE IF NOT EXISTS chunks (
+        CREATE TABLE IF NOT EXISTS chunk (
           chunk_id TEXT PRIMARY KEY,
           thread_id TEXT NOT NULL,
           chunk_order INTEGER NOT NULL,
@@ -1437,24 +1437,24 @@ function setupThreadEventsSchema(sql: Sql): EffectValue<void> {
         ) STRICT
       `);
       yield* sql.unsafe(`
-        CREATE INDEX IF NOT EXISTS idx_messages_thread_order
-        ON messages(thread_id, message_order)
+        CREATE INDEX IF NOT EXISTS idx_message_thread_order
+        ON message(thread_id, message_order)
       `);
       yield* sql.unsafe(`
-        CREATE INDEX IF NOT EXISTS idx_message_blocks_thread_message_order
-        ON message_blocks(thread_id, message_id, block_order)
+        CREATE INDEX IF NOT EXISTS idx_message_block_thread_message_order
+        ON message_block(thread_id, message_id, block_order)
       `);
       yield* sql.unsafe(`
-        CREATE INDEX IF NOT EXISTS idx_turn_processing_triggers_status
-        ON turn_processing_triggers(status, updated_at)
+        CREATE INDEX IF NOT EXISTS idx_turn_trigger_status
+        ON turn_trigger(status, updated_at)
       `);
       yield* sql.unsafe(`
-        CREATE INDEX IF NOT EXISTS idx_turns_thread_order
-        ON turns(thread_id, turn_order)
+        CREATE INDEX IF NOT EXISTS idx_turn_thread_order
+        ON turn(thread_id, turn_order)
       `);
       yield* sql.unsafe(`
-        CREATE INDEX IF NOT EXISTS idx_chunks_thread_order
-        ON chunks(thread_id, chunk_order)
+        CREATE INDEX IF NOT EXISTS idx_chunk_thread_order
+        ON chunk(thread_id, chunk_order)
       `);
     }).pipe(sql.withTransaction);
   });
@@ -1720,7 +1720,7 @@ function insertThread(
   thread: ProjectedThread,
 ): EffectValue<ReadonlyArray<ThreadSqlRow>> {
   return sql<ThreadSqlRow>`
-    INSERT INTO threads (
+    INSERT INTO thread (
       thread_id,
       client_thread_id,
       title,
@@ -1744,7 +1744,7 @@ function insertCreatedEvent(
   event: PersistedThreadEvent,
 ): EffectValue<ReadonlyArray<ThreadEventSqlRow>> {
   return sql<ThreadEventSqlRow>`
-    INSERT INTO thread_events (
+    INSERT INTO event (
       thread_event_id,
       thread_id,
       event_order,
@@ -1781,7 +1781,7 @@ function insertEvent(
   event: Omit<PersistedThreadEvent, "eventOrder">,
 ): EffectValue<ReadonlyArray<ThreadEventSqlRow>> {
   return sql<ThreadEventSqlRow>`
-    INSERT INTO thread_events (
+    INSERT INTO event (
       thread_event_id,
       thread_id,
       event_order,
@@ -1808,7 +1808,7 @@ function insertEvent(
       ${event.recordedAt},
       ${event.occurredAt ?? null},
       ${JSON.stringify(event.payload)}
-    FROM thread_events
+    FROM event
     WHERE thread_id = ${event.threadId}
     ON CONFLICT(thread_id, idempotency_key) DO NOTHING
     RETURNING *
@@ -1822,7 +1822,7 @@ function findThreadByClientThreadId(
   return Effect.map(
     sql<ThreadSqlRow>`
       SELECT *
-      FROM threads
+      FROM thread
       WHERE client_thread_id = ${clientThreadId}
     `,
     (rows) => {
@@ -1840,7 +1840,7 @@ function findByIdempotencyKey(
   return Effect.map(
     sql<ThreadEventSqlRow>`
       SELECT *
-      FROM thread_events
+      FROM event
       WHERE thread_id = ${threadId} AND idempotency_key = ${idempotencyKey}
     `,
     (rows) => {
@@ -1862,7 +1862,7 @@ function projectEvent(
 
     const nextOrderRows = yield* sql<{ max_message_order: number | null }>`
       SELECT MAX(message_order) AS max_message_order
-      FROM messages
+      FROM message
       WHERE thread_id = ${event.threadId}
     `;
     const firstMessageOrder = (nextOrderRows[0]?.max_message_order ?? 0) + 1;
@@ -1983,7 +1983,7 @@ function insertMessage(
   message: Omit<ProjectedMessage, "actor"> & { actor: ActorRef },
 ): EffectValue<ReadonlyArray<MessageSqlRow>> {
   return sql<MessageSqlRow>`
-    INSERT INTO messages (
+    INSERT INTO message (
       message_id,
       thread_id,
       message_order,
@@ -2014,7 +2014,7 @@ function insertMessageBlock(
   block: Omit<ProjectedMessageBlock, "payload"> & { payload: JsonObject },
 ): EffectValue<ReadonlyArray<MessageBlockSqlRow>> {
   return sql<MessageBlockSqlRow>`
-    INSERT INTO message_blocks (
+    INSERT INTO message_block (
       block_id,
       message_id,
       thread_id,
@@ -2042,7 +2042,7 @@ function updateThreadUpdatedAt(
   updatedAt: string,
 ): EffectValue<ReadonlyArray<never>> {
   return sql`
-    UPDATE threads
+    UPDATE thread
     SET updated_at = ${updatedAt}
     WHERE thread_id = ${threadId}
   `;
@@ -2060,7 +2060,7 @@ function ensureTriggerForTurnEnd(
 
     const triggerId = turnProcessingTriggerId(event.threadId, event.eventOrder);
     const triggerRows = yield* sql<TriggerSqlRow>`
-      INSERT INTO turn_processing_triggers (
+      INSERT INTO turn_trigger (
         trigger_id,
         thread_id,
         turn_end_event_order,
@@ -2104,7 +2104,7 @@ function turnEndClosesOpenSpan(
   return Effect.map(
     sql<{ event_kind: string }>`
       SELECT event_kind
-      FROM thread_events
+      FROM event
       WHERE thread_id = ${threadId}
         AND event_order < ${turnEndEventOrder}
         AND event_kind IN ('user_prompt', 'turn_end')
@@ -2123,7 +2123,7 @@ function findTriggerForTurnEnd(
   return Effect.map(
     sql<TriggerSqlRow>`
       SELECT *
-      FROM turn_processing_triggers
+      FROM turn_trigger
       WHERE thread_id = ${threadId} AND turn_end_event_order = ${turnEndEventOrder}
     `,
     (rows) => rows[0] ? rowToTrigger(rows[0]) : undefined,
@@ -2137,13 +2137,13 @@ function findProjectionsForEvent(
   return Effect.gen(function*() {
     const messageRows = yield* sql<MessageSqlRow>`
       SELECT *
-      FROM messages
+      FROM message
       WHERE source_thread_event_id = ${threadEventId}
       ORDER BY message_order ASC
     `;
     const blockRows = yield* sql<MessageBlockSqlRow>`
       SELECT *
-      FROM message_blocks
+      FROM message_block
       WHERE source_thread_event_id = ${threadEventId}
       ORDER BY message_id ASC, block_order ASC
     `;
@@ -2162,7 +2162,7 @@ function claimTrigger(
 ): EffectValue<TurnProcessingTrigger | undefined> {
   return Effect.gen(function*() {
     const rows = yield* sql<TriggerSqlRow>`
-      UPDATE turn_processing_triggers
+      UPDATE turn_trigger
       SET
         status = 'claimed',
         claimed_at = ${claimedAt},
@@ -2173,15 +2173,15 @@ function claimTrigger(
         AND status IN ('pending', 'failed')
         AND NOT EXISTS (
           SELECT 1
-          FROM turn_processing_triggers claimed
-          WHERE claimed.thread_id = turn_processing_triggers.thread_id
+          FROM turn_trigger claimed
+          WHERE claimed.thread_id = turn_trigger.thread_id
             AND claimed.status = 'claimed'
         )
         AND NOT EXISTS (
           SELECT 1
-          FROM turn_processing_triggers earlier
-          WHERE earlier.thread_id = turn_processing_triggers.thread_id
-            AND earlier.turn_end_event_order < turn_processing_triggers.turn_end_event_order
+          FROM turn_trigger earlier
+          WHERE earlier.thread_id = turn_trigger.thread_id
+            AND earlier.turn_end_event_order < turn_trigger.turn_end_event_order
             AND earlier.status <> 'complete'
         )
       RETURNING *
@@ -2198,7 +2198,7 @@ function markTriggerFailed(
 ): EffectValue<TurnProcessingTrigger | undefined> {
   return Effect.map(
     sql<TriggerSqlRow>`
-      UPDATE turn_processing_triggers
+      UPDATE turn_trigger
       SET
         status = 'failed',
         updated_at = ${updatedAt},
@@ -2217,7 +2217,7 @@ function markTriggerComplete(
 ): EffectValue<TurnProcessingTrigger | undefined> {
   return Effect.map(
     sql<TriggerSqlRow>`
-      UPDATE turn_processing_triggers
+      UPDATE turn_trigger
       SET
         status = 'complete',
         completed_at = ${completedAt},
@@ -2237,7 +2237,7 @@ function readTurnWorkerInput(
   return Effect.gen(function*() {
     const turnEndRows = yield* sql<ThreadEventSqlRow>`
       SELECT *
-      FROM thread_events
+      FROM event
       WHERE thread_id = ${trigger.threadId}
         AND event_order = ${trigger.turnEndEventOrder}
         AND event_kind = 'turn_end'
@@ -2249,7 +2249,7 @@ function readTurnWorkerInput(
     const turnEndEvent = rowToPersistedEvent(turnEndRow);
     const priorBoundaryRows = yield* sql<ThreadEventSqlRow>`
       SELECT *
-      FROM thread_events
+      FROM event
       WHERE thread_id = ${trigger.threadId}
         AND event_order < ${trigger.turnEndEventOrder}
         AND event_kind IN ('user_prompt', 'turn_end')
@@ -2263,7 +2263,7 @@ function readTurnWorkerInput(
 
     const messageRows = yield* sql<MessageSqlRow>`
       SELECT *
-      FROM messages
+      FROM message
       WHERE thread_id = ${trigger.threadId}
         AND source_event_order >= ${priorBoundary.eventOrder}
         AND source_event_order < ${trigger.turnEndEventOrder}
@@ -2276,7 +2276,7 @@ function readTurnWorkerInput(
     const messageIds = messageRows.map((row) => row.message_id);
     const blockRows = yield* sql<MessageBlockSqlRow>`
       SELECT *
-      FROM message_blocks
+      FROM message_block
       WHERE message_id IN ${sql.in(messageIds)}
       ORDER BY message_id ASC, block_order ASC
     `;
@@ -2288,7 +2288,7 @@ function readTurnWorkerInput(
     }
     const maxTurnRows = yield* sql<{ max_turn_order: number | null }>`
       SELECT MAX(turn_order) AS max_turn_order
-      FROM turns
+      FROM turn
       WHERE thread_id = ${trigger.threadId}
         AND turn_end_event_order < ${trigger.turnEndEventOrder}
     `;
@@ -2501,7 +2501,7 @@ function persistComputedTurn(
       yield* upsertTurn(sql, computed.turn);
       const rows = yield* sql<TurnSqlRow>`
         SELECT *
-        FROM turns
+        FROM turn
         WHERE turn_id = ${computed.turn.turnId}
       `;
       const turn = rows[0] ? rowToTurn(rows[0]) : computed.turn;
@@ -2519,7 +2519,7 @@ function upsertTurn(
   turn: CanonicalTurn,
 ): EffectValue<ReadonlyArray<TurnSqlRow>> {
   return sql<TurnSqlRow>`
-    INSERT INTO turns (
+    INSERT INTO turn (
       turn_id,
       thread_id,
       turn_order,
@@ -2587,7 +2587,7 @@ function updateChunkForEligibleTurn(
     return yield* Effect.gen(function*() {
       const existingChunks = (yield* sql<ChunkSqlRow>`
         SELECT *
-        FROM chunks
+        FROM chunk
         WHERE thread_id = ${turn.threadId}
         ORDER BY chunk_order ASC
       `).map(rowToChunk);
@@ -2657,7 +2657,7 @@ function readClosedChunkArtifactTargetsForTurn(
   return Effect.map(
     sql<ChunkSqlRow>`
       SELECT *
-      FROM chunks
+      FROM chunk
       WHERE thread_id = ${threadId}
         AND lifecycle_status = 'closed'
       ORDER BY chunk_order ASC
@@ -2673,7 +2673,7 @@ function upsertChunk(
   chunk: CanonicalChunk,
 ): EffectValue<ReadonlyArray<ChunkSqlRow>> {
   return sql<ChunkSqlRow>`
-    INSERT INTO chunks (
+    INSERT INTO chunk (
       chunk_id,
       thread_id,
       chunk_order,
@@ -2787,7 +2787,7 @@ function persistChunkArtifact(
   return Effect.gen(function*() {
     const rows = yield* sql<ChunkSqlRow>`
       SELECT *
-      FROM chunks
+      FROM chunk
       WHERE thread_id = ${artifact.threadId} AND chunk_id = ${artifact.chunkId}
     `;
     const chunk = rows[0] ? rowToChunk(rows[0]) : undefined;
