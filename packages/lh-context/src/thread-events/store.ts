@@ -3,6 +3,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
+import { countLocalTokens, localTokenizerMetadataFields } from "../token-counting/local-token-counter.js";
+
 import {
   THREAD_EVENT_SCHEMA_VERSION,
   decodePersistedThreadEvent,
@@ -2396,7 +2398,7 @@ async function computeTurnProjection(
     generatedAt,
     sourceRevision: input.turnEndEvent.eventOrder,
     components,
-    tokenCountMetadata: tokenMetadata("turn_smooth_materialized", smoothText, input.turnEndEvent.eventOrder, "heuristic"),
+    tokenCountMetadata: tokenMetadata("turn_smooth_materialized", smoothText, input.turnEndEvent.eventOrder, "local_tokenizer"),
   } as JsonObject;
 
   const projectionText = buildLowerBandProjectionText(input.messages);
@@ -2436,7 +2438,7 @@ async function computeTurnProjection(
           "turn_lower_band_projection_materialized",
           projectionText,
           input.turnEndEvent.eventOrder,
-          "exact",
+          "provider_input_count",
           counted.count,
         ),
       };
@@ -2473,7 +2475,7 @@ async function computeTurnProjection(
       "raw_turn_materialized",
       input.messages.map(renderMessageForSmooth).join("\n\n"),
       input.turnEndEvent.eventOrder,
-      "heuristic",
+      "local_tokenizer",
     ),
     smooth,
     lowerBandProjection,
@@ -3001,21 +3003,18 @@ function tokenMetadata(
   scope: string,
   text: string,
   sourceRevision: number,
-  trustClass: "exact" | "heuristic",
+  countSource: "provider_input_count" | "local_tokenizer",
   count?: number,
 ): JsonObject {
   return {
     scope,
-    count: count ?? estimateTokens(text),
-    source: trustClass === "exact" ? "provider_input_count" : "deterministic_estimate",
-    trustClass,
+    count: count ?? countLocalTokens(text),
+    ...(countSource === "provider_input_count"
+      ? { source: "provider_input_count", trustClass: "exact" }
+      : localTokenizerMetadataFields()),
     sourceRevision,
     representationHash: textHash(text),
   };
-}
-
-function estimateTokens(text: string): number {
-  return Math.max(1, Math.ceil(text.length / 4));
 }
 
 function createOpenChunk(threadId: string, chunkOrder: number, openedAt: string): CanonicalChunk {
@@ -3046,7 +3045,7 @@ function appendTurnToChunkState(chunk: CanonicalChunk, turn: CanonicalTurn): Can
     sourceTurnIds: [...chunk.sourceTurnIds, turn.turnId],
     smoothText: nextSmoothText,
     sourceRevision: Math.max(chunk.sourceRevision ?? 0, turn.sourceRevision),
-    smoothTokenCountMetadata: tokenMetadata("chunk_smooth_materialized", nextSmoothText, turn.sourceRevision, "heuristic"),
+    smoothTokenCountMetadata: tokenMetadata("chunk_smooth_materialized", nextSmoothText, turn.sourceRevision, "local_tokenizer"),
     conversationTranscript: {
       status: "ready",
       text: transcriptText,
@@ -3064,7 +3063,7 @@ function turnLowerBandProjectionTokenCount(turn: CanonicalTurn): number {
 
 function chunkProjectionTokenCount(chunk: CanonicalChunk): number {
   const transcript = typeof chunk.conversationTranscript?.text === "string" ? chunk.conversationTranscript.text : "";
-  return estimateTokens(transcript);
+  return countLocalTokens(transcript);
 }
 
 function uniqueChunksById(chunks: readonly CanonicalChunk[]): CanonicalChunk[] {

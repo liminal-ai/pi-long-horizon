@@ -1,0 +1,109 @@
+{
+  "clientThreadId": "fixture-basic-session",
+  "events": [
+    {
+      "idempotencyKey": "basic-session-001-user-prompt",
+      "eventKind": "user_prompt",
+      "actor": { "actorKind": "user", "actorId": "user-lee", "displayName": "Lee" },
+      "harness": { "runtime": "codex", "externalThreadId": "codex-basic-session" },
+      "origin": { "envelopeId": "basic-session-envelope-001", "envelopeOrder": 1 },
+      "occurredAt": "2026-05-30T15:00:00.000Z",
+      "payload": {
+        "text": "Can you inspect the failing thread-events test and explain what changed?"
+      }
+    },
+    {
+      "idempotencyKey": "basic-session-002-assistant-thinking",
+      "eventKind": "assistant_thinking",
+      "actor": { "actorKind": "assistant", "actorId": "codex-assistant" },
+      "harness": { "runtime": "codex", "externalThreadId": "codex-basic-session" },
+      "origin": { "envelopeId": "basic-session-envelope-002", "envelopeOrder": 2 },
+      "occurredAt": "2026-05-30T15:00:04.000Z",
+      "payload": {
+        "thinkingKind": "reasoning_summary",
+        "text": "I need to inspect the repo state and compare the expected projection with the current canonical path."
+      }
+    },
+    {
+      "idempotencyKey": "basic-session-003-tool-call",
+      "eventKind": "tool_call",
+      "actor": { "actorKind": "assistant", "actorId": "codex-assistant" },
+      "harness": { "runtime": "codex", "externalThreadId": "codex-basic-session" },
+      "origin": { "envelopeId": "basic-session-envelope-003", "envelopeOrder": 3 },
+      "occurredAt": "2026-05-30T15:00:07.000Z",
+      "payload": {
+        "toolCallId": "toolcall-read-store-test",
+        "toolName": "read",
+        "argumentsJson": {
+          "path": "packages/lh-context/test/thread-events/store-and-cli.test.ts",
+          "offset": 1,
+          "limit": 80
+        }
+      }
+    },
+    {
+      "idempotencyKey": "basic-session-004-tool-result",
+      "eventKind": "tool_result",
+      "actor": { "actorKind": "tool", "actorId": "read", "displayName": "read" },
+      "harness": { "runtime": "codex", "externalThreadId": "codex-basic-session" },
+      "origin": { "envelopeId": "basic-session-envelope-004", "envelopeOrder": 4 },
+      "occurredAt": "2026-05-30T15:00:09.000Z",
+      "payload": {
+        "toolCallId": "toolcall-read-store-test",
+        "toolName": "read",
+        "outputText": "Loaded store-and-cli.test.ts; append projections create one message/block per canonical event."
+      }
+    },
+    {
+      "idempotencyKey": "basic-session-005-assistant-text",
+      "eventKind": "assistant_text",
+      "actor": { "actorKind": "assistant", "actorId": "codex-assistant" },
+      "harness": { "runtime": "codex", "externalThreadId": "codex-basic-session" },
+      "origin": { "envelopeId": "basic-session-envelope-005", "envelopeOrder": 5 },
+      "occurredAt": "2026-05-30T15:00:12.000Z",
+      "payload": {
+        "text": "The fixture should cover user text, assistant reasoning summary, a tool exchange, assistant text, and a durable turn boundary."
+      }
+    },
+    {
+      "idempotencyKey": "basic-session-006-turn-end",
+      "eventKind": "turn_end",
+      "actor": { "actorKind": "runtime", "actorId": "codex-cli" },
+      "harness": { "runtime": "codex", "externalThreadId": "codex-basic-session" },
+      "origin": { "envelopeId": "basic-session-envelope-006", "envelopeOrder": 6 },
+      "occurredAt": "2026-05-30T15:00:13.000Z",
+      "payload": {}
+    },
+    {
+      "idempotencyKey": "basic-session-007-user-prompt",
+      "eventKind": "user_prompt",
+      "actor": { "actorKind": "user", "actorId": "user-lee", "displayName": "Lee" },
+      "harness": { "runtime": "codex", "externalThreadId": "codex-basic-session" },
+      "origin": { "envelopeId": "basic-session-envelope-007", "envelopeOrder": 7 },
+      "occurredAt": "2026-05-30T15:02:00.000Z",
+      "payload": {
+        "text": "Great. Keep the replay idempotent and make sure reopened stores can still read it."
+      }
+    },
+    {
+      "idempotencyKey": "basic-session-008-assistant-text",
+      "eventKind": "assistant_text",
+      "actor": { "actorKind": "assistant", "actorId": "codex-assistant" },
+      "harness": { "runtime": "codex", "externalThreadId": "codex-basic-session" },
+      "origin": { "envelopeId": "basic-session-envelope-008", "envelopeOrder": 8 },
+      "occurredAt": "2026-05-30T15:02:04.000Z",
+      "payload": {
+        "text": "I will replay the same canonical event envelope against the same thread and assert no duplicate events, messages, turns, triggers, or chunks are created."
+      }
+    },
+    {
+      "idempotencyKey": "basic-session-009-turn-end",
+      "eventKind": "turn_end",
+      "actor": { "actorKind": "runtime", "actorId": "codex-cli" },
+      "harness": { "runtime": "codex", "externalThreadId": "codex-basic-session" },
+      "origin": { "envelopeId": "basic-session-envelope-009", "envelopeOrder": 9 },
+      "occurredAt": "2026-05-30T15:02:05.000Z",
+      "payload": {}
+    }
+  ]
+}

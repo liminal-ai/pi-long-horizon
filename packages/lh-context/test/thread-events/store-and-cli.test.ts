@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 import { runCli } from "../../src/commands/run.js";
 import { ThreadEventStore, ThreadEventStoreError } from "../../src/thread-events/store.js";
 import type { ThreadEventAppendInput } from "../../src/thread-events/schema.js";
+import { countLocalTokens } from "../../src/token-counting/local-token-counter.js";
 
 function tempThreadDbPath(): string {
   return path.join(mkdtempSync(path.join(tmpdir(), "lhx-thread-events-")), "thread.sqlite");
@@ -735,7 +736,7 @@ describe("ThreadEventStore", () => {
     }
   });
 
-  it("worker persists deterministic non-ready turn state and blocks chunking without exact projection count", async () => {
+  it("worker persists local tokenizer metadata by default and blocks chunking without projection count", async () => {
     const store = new ThreadEventStore({ threadDbPath: tempThreadDbPath() });
 
     try {
@@ -766,11 +767,86 @@ describe("ThreadEventStore", () => {
           ],
         },
       });
+      const turns = await store.readTurns("client-alpha");
+      const rawMetadata = turns[0]?.rawTokenCountMetadata;
+      const smoothMetadata = turns[0]?.smooth?.tokenCountMetadata;
+      expect(rawMetadata).toMatchObject({
+        source: "local_tokenizer",
+        trustClass: "tokenizer_count",
+        encodingMethod: "tiktoken:o200k_base",
+        tokenizerModel: "o200k_base",
+      });
+      expect(smoothMetadata).toMatchObject({
+        source: "local_tokenizer",
+        trustClass: "tokenizer_count",
+        encodingMethod: "tiktoken:o200k_base",
+        tokenizerModel: "o200k_base",
+      });
+      expect(rawMetadata?.count).toBeGreaterThan(0);
+      expect(smoothMetadata?.count).toBeGreaterThan(0);
       expect((await store.listTurnProcessingTriggers())[0]?.status).toBe("complete");
       expect(await store.readChunks("client-alpha")).toEqual([]);
     } finally {
       store.close();
     }
+  });
+
+  it("local tokenizer counts are positive and deterministic", () => {
+    const text = "Hello from canonical lhx turn processing.";
+
+    expect(countLocalTokens(text)).toBeGreaterThan(0);
+    expect(countLocalTokens(text)).toBe(countLocalTokens(text));
+  });
+
+  it("injected lower-band projection token counter metadata still wins", async () => {
+    const store = new ThreadEventStore({
+      threadDbPath: tempThreadDbPath(),
+      worker: {
+        lowerBandProjectionTokenCounter: {
+          async countTurnLowerBandProjection() {
+            return {
+              count: 123,
+              metadata: {
+                count: 123,
+                source: "injected_test_counter",
+                trustClass: "exact",
+                encodingMethod: "test",
+              },
+            };
+          },
+        },
+      },
+    });
+
+    try {
+      await store.createThread({ clientThreadId: "client-alpha" });
+      await store.appendMany("client-alpha", [
+        appendInput({ idempotencyKey: "prompt-1", payload: { text: "Hello" } }),
+        appendInput({
+          idempotencyKey: "assistant-1",
+          eventKind: "assistant_text",
+          actor: { actorKind: "assistant", actorId: "assistant-main" },
+          payload: { text: "Hi" },
+        }),
+        turnEndInput(),
+      ]);
+
+      await store.processNextTurnEndTrigger();
+      expect((await store.readTurns("client-alpha"))[0]?.lowerBandProjection?.tokenCountMetadata).toMatchObject({
+        count: 123,
+        source: "injected_test_counter",
+        trustClass: "exact",
+        encodingMethod: "test",
+      });
+    } finally {
+      store.close();
+    }
+  });
+
+  it("local token counting does not introduce provider API dependencies", () => {
+    const packageJson = readFileSync(path.resolve(__dirname, "../../package.json"), "utf8");
+    expect(packageJson).not.toContain("openai");
+    expect(packageJson).not.toContain("anthropic");
   });
 
   it("does not claim another trigger for the same thread while one worker is running", async () => {

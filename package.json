@@ -32,7 +32,8 @@
     "@earendil-works/pi-ai": "^0.76.0",
     "@earendil-works/pi-coding-agent": "^0.76.0",
     "better-sqlite3": "^12.10.0",
-    "effect": "^3.21.2"
+    "effect": "^3.21.2",
+    "js-tiktoken": "^1.0.21"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
